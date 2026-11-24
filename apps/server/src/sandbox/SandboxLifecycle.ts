@@ -255,7 +255,7 @@ const make = Effect.gen(function* () {
   ) {
     return yield* lifecycleLock.withPermits(1)(
       Effect.gen(function* () {
-        const { account, driver } = yield* accounts.resolve(input.accountId);
+        const { account, driver, size, region } = yield* accounts.resolve(input.accountId);
         const createdAt = DateTime.formatIso(yield* DateTime.now);
         const id = SandboxInstanceId.make(yield* random.uuidV4());
         const record: SandboxTestSandbox = {
@@ -266,6 +266,9 @@ const make = Effect.gen(function* () {
           ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
           status: input.initialStatus ?? "provisioning",
           template: account.template,
+          ...(size === null ? {} : { size }),
+          ...(region === null ? {} : { region }),
+          lastActivityAt: createdAt,
           createdAt,
           updatedAt: createdAt,
         };

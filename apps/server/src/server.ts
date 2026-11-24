@@ -18,7 +18,7 @@ import * as NodeHttp from "node:http";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { EnvironmentHttpApi, type RepositoryIdentity } from "@t3tools/contracts";
+import { EnvironmentHttpApi, type RepositoryIdentity, ThreadId } from "@t3tools/contracts";
 import * as FeatureFlags from "@t3tools/shared/FeatureFlags";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Cause from "effect/Cause";
@@ -27,6 +27,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Layer from "effect/Layer";
+import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 import { FetchHttpClient, HttpRouter, HttpServer } from "effect/http";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
@@ -596,8 +597,32 @@ const layerSandbox = Layer.merge(
           Effect.logWarning("failed to reconcile sandbox state", { cause }),
         ),
       );
+      const cloudThreads = yield* CloudThreads.CloudThreads;
+      yield* cloudThreads.sweepIdle.pipe(
+        Effect.ignore,
+        Effect.repeat(Schedule.spaced("30 seconds")),
+        Effect.forkScoped,
+      );
+      // A preview on a cloud thread holds its sandbox awake; the preview manager owns open tabs.
+      // CLIs build the sandbox layer without a preview manager, so this bridge is optional.
+      const previews = yield* Effect.serviceOption(PreviewManager.PreviewManager);
+      if (Option.isSome(previews)) {
+        const subscription = yield* previews.value.subscribeEvents;
+        yield* Stream.fromSubscription(subscription).pipe(
+          Stream.runForEach((event) => {
+            const threadId = ThreadId.make(event.threadId);
+            return event.type === "opened"
+              ? cloudThreads.holdPreview(threadId, event.tabId)
+              : event.type === "closed"
+                ? cloudThreads.releasePreview(threadId, event.tabId)
+                : Effect.void;
+          }),
+          Effect.ignore,
+          Effect.forkScoped,
+        );
+      }
     }),
-  ).pipe(Layer.provide(layerSandboxLifecycle)),
+  ).pipe(Layer.provide(layerSandboxLifecycle), Layer.provide(layerCloudThreads)),
 );
 
 const layerWorkspaceEntries = WorkspaceEntries.layer.pipe(Layer.provide(WorkspacePaths.layer));

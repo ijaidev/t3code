@@ -102,6 +102,7 @@ import {
   PersistChatAttachmentsError,
   RpcClientId,
   EnvironmentAuthorizationError,
+  SandboxError,
   ThreadId,
   type TerminalMetadataStreamEvent,
   type PullRequestRef,
@@ -134,6 +135,7 @@ import * as DocumentText from "./provider/DocumentText.ts";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
 import * as SandboxAccounts from "./sandbox/SandboxAccounts.ts";
 import * as SandboxLifecycle from "./sandbox/SandboxLifecycle.ts";
+import * as CloudThreads from "./sandbox/CloudThreads.ts";
 import { projectPublicRemote } from "./sandbox/CloudRepository.ts";
 import * as Workflows from "./workflows/Workflows.ts";
 import * as WorkflowRuntime from "./workflows/WorkflowRuntime.ts";
@@ -1614,6 +1616,43 @@ export const layerWsRpc = (
       const textGenerators = yield* TextGenerators.TextGenerators;
       const sandboxAccounts = yield* SandboxAccounts.SandboxAccounts;
       const sandboxLifecycle = yield* SandboxLifecycle.SandboxLifecycle;
+      const cloudThreads = yield* Effect.serviceOption(CloudThreads.CloudThreads);
+      const requireCloudThreads = Effect.fn("ws.sandbox.requireCloudThreads")(function* () {
+        if (Option.isNone(cloudThreads)) {
+          return yield* new SandboxError({
+            operation: "check-sandbox",
+            detail: "This server cannot run cloud threads.",
+          });
+        }
+        return cloudThreads.value;
+      });
+      const requireCloudSandbox = Effect.fn("ws.sandbox.requireCloudSandbox")(function* (
+        threadId: ThreadId,
+      ) {
+        const service = yield* requireCloudThreads();
+        const state = yield* service.getCloudSandboxState(threadId);
+        if (Option.isNone(state)) {
+          return yield* new SandboxError({
+            operation: "check-sandbox",
+            detail: "This thread has no cloud sandbox.",
+          });
+        }
+        return state.value;
+      });
+      const cloudSandboxResult = (threadId: ThreadId) =>
+        requireCloudSandbox(threadId).pipe(Effect.map((state) => ({ state })));
+      const toSandboxError = (error: CloudThreads.CloudThreadError) =>
+        new SandboxError({
+          operation:
+            error.operation === "pause"
+              ? "pause-sandbox"
+              : error.operation === "resume"
+                ? "resume-sandbox"
+                : error.operation === "delete"
+                  ? "delete-sandbox"
+                  : "check-sandbox",
+          detail: error.detail,
+        });
       const listSandboxCloudTargets = Effect.fn("ws.sandbox.listCloudTargets")(function* (
         input: import("@t3tools/contracts").SandboxListCloudTargetsInput,
       ) {
@@ -2857,6 +2896,39 @@ export const layerWsRpc = (
         [WS_METHODS.sandboxResumeTestSandbox]: (input) => sandboxLifecycle.resumeTestSandbox(input),
         [WS_METHODS.sandboxDeleteTestSandbox]: (input) => sandboxLifecycle.deleteTestSandbox(input),
         [WS_METHODS.sandboxCheckTestSandbox]: (input) => sandboxLifecycle.checkTestSandbox(input),
+        [WS_METHODS.sandboxGetCloudSandbox]: (input) => cloudSandboxResult(input.threadId),
+        [WS_METHODS.sandboxSubscribeCloudSandbox]: (input) =>
+          Option.isSome(cloudThreads)
+            ? cloudThreads.value.subscribeCloudSandbox(input.threadId)
+            : Stream.fail(
+                new SandboxError({
+                  operation: "check-sandbox",
+                  detail: "This server cannot run cloud threads.",
+                }),
+              ),
+        [WS_METHODS.sandboxSleepCloudSandbox]: (input) =>
+          requireCloudThreads().pipe(
+            Effect.flatMap((service) => service.sleepCloudSandbox(input.threadId)),
+            Effect.map((state) => ({ state })),
+            Effect.catchTags({ CloudThreadError: toSandboxError }),
+          ),
+        [WS_METHODS.sandboxWakeCloudSandbox]: (input) =>
+          requireCloudThreads().pipe(
+            Effect.flatMap((service) => service.wakeCloudSandbox(input.threadId)),
+            Effect.map((state) => ({ state })),
+            Effect.catchTags({ CloudThreadError: toSandboxError }),
+          ),
+        [WS_METHODS.sandboxPreviewCloudSandboxDelete]: (input) =>
+          requireCloudThreads().pipe(
+            Effect.flatMap((service) => service.previewCloudSandboxDelete(input.threadId)),
+            Effect.catchTags({ CloudThreadError: toSandboxError }),
+          ),
+        [WS_METHODS.sandboxDeleteCloudSandbox]: (input) =>
+          requireCloudThreads().pipe(
+            Effect.flatMap((service) => service.deleteCloudSandbox(input)),
+            Effect.map((state) => ({ state })),
+            Effect.catchTags({ CloudThreadError: toSandboxError }),
+          ),
         [WS_METHODS.serverDiscoverSourceControl]: (_input) => sourceControlDiscovery.discover,
         [WS_METHODS.serverCheckSecretSource]: (input) => secretCheck.check(input.source),
         [WS_METHODS.serverGetTraceDiagnostics]: (_input) =>

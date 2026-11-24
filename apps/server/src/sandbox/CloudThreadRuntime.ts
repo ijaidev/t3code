@@ -232,7 +232,14 @@ const make = Effect.gen(function* () {
     >(new Map());
     const waitingForTurnStart = yield* Ref.make<Deferred.Deferred<void> | null>(null);
     yield* Effect.addFinalizer(() =>
-      Ref.get(connection).pipe(Effect.flatMap((host) => host?.close ?? Effect.void)),
+      Effect.all([
+        Ref.get(connection).pipe(Effect.flatMap((host) => host?.close ?? Effect.void)),
+        Ref.get(activeTurn).pipe(
+          Effect.flatMap((turn) =>
+            turn === null ? Effect.void : cloudThreads.endTurn(input.threadId),
+          ),
+        ),
+      ]).pipe(Effect.asVoid),
     );
 
     const emit = (event: ProviderAdapter.ProviderAdapterV2Event) =>
@@ -370,6 +377,7 @@ const make = Effect.gen(function* () {
         threadDisposition: "reusable",
       });
       yield* Ref.set(activeTurn, null);
+      yield* cloudThreads.endTurn(input.threadId);
     });
 
     const handleHostMessage = Effect.fn("CloudThreadRuntime.handleHostMessage")(function* (
@@ -601,6 +609,7 @@ const make = Effect.gen(function* () {
             });
           }
           yield* Ref.set(activeTurn, null);
+          yield* cloudThreads.endTurn(input.threadId);
           return;
         }
         case "process_exit": {
@@ -686,6 +695,15 @@ const make = Effect.gen(function* () {
               "Cloud threads need Anthropic credentials. Set ANTHROPIC_API_KEY in this provider's environment, then retry.",
           });
         }
+        // A sleeping sandbox lost its host process; a new host starts after the wake.
+        const before = yield* cloudThreads.getCloudSandboxState(input.threadId);
+        if (Option.isSome(before) && before.value.status === "sleeping") {
+          const existing = yield* Ref.get(connection);
+          if (existing !== null) {
+            yield* existing.close;
+            yield* Ref.set(connection, null);
+          }
+        }
         const host = yield* ensureConnection();
         const startedAt = yield* DateTime.now;
         const started = yield* Deferred.make<void>();
@@ -720,6 +738,7 @@ const make = Effect.gen(function* () {
           },
         });
         const attachments = yield* stageAttachments(threadRecord, turnInput.message.attachments);
+        yield* cloudThreads.beginTurn(input.threadId);
         const approvalMode =
           turnInput.runtimePolicy.runtimeMode === "full-access"
             ? "none"
@@ -746,6 +765,11 @@ const make = Effect.gen(function* () {
                   detail: error.detail,
                   cause: error,
                 }),
+            ),
+            Effect.onError(() =>
+              Effect.all([Ref.set(activeTurn, null), cloudThreads.endTurn(input.threadId)]).pipe(
+                Effect.asVoid,
+              ),
             ),
           );
         yield* Deferred.await(started).pipe(Effect.timeout("20 seconds"), Effect.ignore);

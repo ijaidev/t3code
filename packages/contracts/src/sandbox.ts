@@ -3,6 +3,7 @@ import * as Schema from "effect/Schema";
 
 import {
   IsoDateTime,
+  NonNegativeInt,
   PositiveInt,
   ProjectId,
   ThreadId,
@@ -76,6 +77,10 @@ export const SandboxProviderAccountConfig = Schema.Struct({
   template: TrimmedNonEmptyString.check(Schema.isMaxLength(128)).pipe(
     Schema.withDecodingDefault(Effect.succeed("base")),
   ),
+  /** A provider-declared size id; absent uses the provider's first declared size. */
+  sizeId: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(64))),
+  /** A provider-declared region id; absent uses the provider's first declared region. */
+  regionId: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(64))),
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
 });
 export type SandboxProviderAccountConfig = typeof SandboxProviderAccountConfig.Type;
@@ -179,6 +184,13 @@ export const SandboxTestSandbox = Schema.Struct({
   threadId: Schema.optionalKey(ThreadId),
   status: SandboxInstanceStatus,
   template: TrimmedNonEmptyString,
+  /** Provider-declared size and region snapshots, so a lost sandbox can still be described. */
+  size: Schema.optionalKey(SandboxProviderSize),
+  region: Schema.optionalKey(SandboxProviderRegion),
+  /** Last turn, preview, or lifecycle action; absent on sandboxes created before this field. */
+  lastActivityAt: Schema.optionalKey(IsoDateTime),
+  /** When an idle sweep paused the sandbox; absent while running or provisioning. */
+  sleepingSince: Schema.optionalKey(IsoDateTime),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   lastHealth: Schema.optionalKey(SandboxHealth),
@@ -199,6 +211,82 @@ export const SandboxCreateTestSandboxInput = Schema.Struct({
   ),
 });
 export type SandboxCreateTestSandboxInput = typeof SandboxCreateTestSandboxInput.Type;
+
+export const CloudSandboxStatus = Schema.Literals([
+  "provisioning",
+  "waking",
+  "running",
+  "sleeping",
+  "deleting",
+  "lost",
+  "failed",
+]);
+export type CloudSandboxStatus = typeof CloudSandboxStatus.Type;
+
+export const CloudSandboxSleepDisabledReason = Schema.Literals([
+  "provider-no-sleep",
+  "provider-unavailable",
+  "active-turn",
+  "open-preview",
+  "not-running",
+]);
+export type CloudSandboxSleepDisabledReason = typeof CloudSandboxSleepDisabledReason.Type;
+
+/** What every client shows for one cloud thread's sandbox. */
+export const CloudSandboxState = Schema.Struct({
+  threadId: ThreadId,
+  accountId: SandboxProviderAccountId,
+  providerKind: SandboxProviderKind,
+  providerLabel: TrimmedNonEmptyString,
+  status: CloudSandboxStatus,
+  /** Null once the sandbox is deleted or lost; the thread keeps its record. */
+  sandboxId: Schema.NullOr(SandboxInstanceId),
+  template: TrimmedNonEmptyString,
+  size: Schema.NullOr(SandboxProviderSize),
+  region: Schema.NullOr(SandboxProviderRegion),
+  createdAt: IsoDateTime,
+  lastActiveAt: IsoDateTime,
+  sleepingSince: Schema.NullOr(IsoDateTime),
+  canSleep: Schema.Boolean,
+  canWake: Schema.Boolean,
+  canDelete: Schema.Boolean,
+  /** Why sleep is unavailable even though the sandbox exists. */
+  sleepDisabledReason: Schema.optionalKey(CloudSandboxSleepDisabledReason),
+  lastError: Schema.optionalKey(Schema.String),
+});
+export type CloudSandboxState = typeof CloudSandboxState.Type;
+
+export const CloudSandboxThreadInput = Schema.Struct({
+  threadId: ThreadId,
+});
+export type CloudSandboxThreadInput = typeof CloudSandboxThreadInput.Type;
+
+export const CloudSandboxDeleteRisk = Schema.Struct({
+  hasUnpushedChanges: Schema.Boolean,
+  changedFiles: NonNegativeInt,
+  unpushedCommits: NonNegativeInt,
+});
+export type CloudSandboxDeleteRisk = typeof CloudSandboxDeleteRisk.Type;
+
+export const CloudSandboxDeletePreview = Schema.Struct({
+  state: CloudSandboxState,
+  risk: CloudSandboxDeleteRisk,
+});
+export type CloudSandboxDeletePreview = typeof CloudSandboxDeletePreview.Type;
+
+export const CloudSandboxDeleteInput = Schema.Struct({
+  threadId: ThreadId,
+  /** Required when the delete preview reports unpushed changes. */
+  acknowledgedUnpushedChanges: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
+});
+export type CloudSandboxDeleteInput = typeof CloudSandboxDeleteInput.Type;
+
+export const CloudSandboxStateResult = Schema.Struct({
+  state: CloudSandboxState,
+});
+export type CloudSandboxStateResult = typeof CloudSandboxStateResult.Type;
 
 export const SandboxTestSandboxInput = Schema.Struct({
   sandboxId: SandboxInstanceId,

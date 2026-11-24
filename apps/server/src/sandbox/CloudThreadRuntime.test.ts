@@ -125,6 +125,17 @@ describe("cloud thread runtime", () => {
             close: Effect.void,
           }),
         deleteForThread: () => Effect.void,
+        getCloudSandboxState: () => Effect.succeedNone,
+        subscribeCloudSandbox: () => Stream.empty,
+        sleepCloudSandbox: () => Effect.die("unused"),
+        wakeCloudSandbox: () => Effect.die("unused"),
+        previewCloudSandboxDelete: () => Effect.die("unused"),
+        deleteCloudSandbox: () => Effect.die("unused"),
+        beginTurn: () => Effect.void,
+        endTurn: () => Effect.void,
+        holdPreview: () => Effect.void,
+        releasePreview: () => Effect.void,
+        sweepIdle: Effect.succeed(0),
       });
       return yield* Effect.gen(function* () {
         const runtimeService = yield* CloudThreadRuntime.CloudThreadRuntime;
@@ -263,6 +274,17 @@ describe("cloud thread runtime", () => {
             close: Effect.void,
           }),
         deleteForThread: () => Effect.void,
+        getCloudSandboxState: () => Effect.succeedNone,
+        subscribeCloudSandbox: () => Stream.empty,
+        sleepCloudSandbox: () => Effect.die("unused"),
+        wakeCloudSandbox: () => Effect.die("unused"),
+        previewCloudSandboxDelete: () => Effect.die("unused"),
+        deleteCloudSandbox: () => Effect.die("unused"),
+        beginTurn: () => Effect.void,
+        endTurn: () => Effect.void,
+        holdPreview: () => Effect.void,
+        releasePreview: () => Effect.void,
+        sweepIdle: Effect.succeed(0),
       });
       return yield* Effect.gen(function* () {
         const runtimeService = yield* CloudThreadRuntime.CloudThreadRuntime;

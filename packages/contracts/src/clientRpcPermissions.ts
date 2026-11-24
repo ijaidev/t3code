@@ -33,6 +33,11 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.sandboxResumeTestSandbox]: AuthSettingsWriteScope,
   [WS_METHODS.sandboxDeleteTestSandbox]: AuthSettingsWriteScope,
   [WS_METHODS.sandboxCheckTestSandbox]: AuthSettingsWriteScope,
+  // A cloud sandbox's lifecycle changes billable compute, so it needs thread control.
+  [WS_METHODS.sandboxSleepCloudSandbox]: AuthOrchestrationOperateScope,
+  [WS_METHODS.sandboxWakeCloudSandbox]: AuthOrchestrationOperateScope,
+  [WS_METHODS.sandboxPreviewCloudSandboxDelete]: AuthOrchestrationOperateScope,
+  [WS_METHODS.sandboxDeleteCloudSandbox]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverRunStorageCleanup]: AuthSettingsWriteScope,
   // Restarts the server, as an update does.
   [WS_METHODS.serverReclaimDatabaseSpace]: AuthEnvironmentMaintainScope,

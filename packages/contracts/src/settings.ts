@@ -1613,6 +1613,10 @@ export const ServerSettings = Schema.Struct({
   sandboxProviders: Schema.Record(SandboxProviderAccountId, SandboxProviderAccountConfig).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
+  /** Idle minutes before a cloud sandbox sleeps; active turns and open previews hold it awake. */
+  cloudSandboxIdleMinutes: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 1440 })).pipe(
+    Schema.withDecodingDefault(Effect.succeed(10)),
+  ),
 
   usageHistoryRetentionDays: UsageHistoryRetentionDays.pipe(
     Schema.withDecodingDefault(Effect.succeed(92)),
@@ -2011,6 +2015,9 @@ export const ServerSettingsPatch = Schema.Struct({
   // Merge per account; null disconnects one.
   sandboxProviders: Schema.optionalKey(
     Schema.Record(SandboxProviderAccountId, Schema.NullOr(SandboxProviderAccountConfig)),
+  ),
+  cloudSandboxIdleMinutes: Schema.optionalKey(
+    Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 1440 })),
   ),
 
   usageHistoryRetentionDays: Schema.optionalKey(UsageHistoryRetentionDays),
