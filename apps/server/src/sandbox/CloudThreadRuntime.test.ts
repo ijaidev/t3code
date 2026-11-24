@@ -7,6 +7,7 @@ import {
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -18,6 +19,7 @@ import { HttpClient } from "effect/http";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as ServerConfig from "../config.ts";
+import * as CloudThreadPorts from "./CloudThreadPorts.ts";
 import * as CloudThreadStore from "./CloudThreadStore.ts";
 import * as CloudThreadRuntime from "./CloudThreadRuntime.ts";
 import * as CloudThreads from "./CloudThreads.ts";
@@ -75,9 +77,18 @@ const input = {
   environment: [{ name: "ANTHROPIC_API_KEY", value: "test-key" }],
 };
 
-const testLayer = (cloud: CloudThreads.CloudThreads["Service"]) =>
+const testLayer = (
+  cloud: CloudThreads.CloudThreads["Service"],
+  ports: CloudThreadPorts.CloudThreadPorts["Service"] = {
+    setPorts: () => Effect.void,
+    clear: () => Effect.void,
+    snapshot: Effect.succeed([]),
+    subscribe: () => Effect.void,
+  },
+) =>
   CloudThreadRuntime.layer.pipe(
     Layer.provide(Layer.succeed(CloudThreads.CloudThreads, cloud)),
+    Layer.provide(Layer.succeed(CloudThreadPorts.CloudThreadPorts, ports)),
     Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-cloud-runtime-test-" })),
     Layer.provide(NodeServices.layer),
     Layer.provide(
@@ -244,6 +255,75 @@ describe("cloud thread runtime", () => {
       }).pipe(Effect.provide(testLayer(cloud)));
     });
     return events;
+  });
+
+  it.effect("reports the sandbox host's listening ports to the thread", () => {
+    const result = Effect.gen(function* () {
+      const outbound = yield* Queue.unbounded<CloudThreads.CloudHostMessage>();
+      const ports = yield* Deferred.make<ReadonlyArray<unknown>>();
+      const cloud = CloudThreads.CloudThreads.of({
+        prepare: () => Effect.die("unused"),
+        getSandbox: () => Effect.succeedSome(sandbox),
+        getRecord: () => Effect.succeedSome(record),
+        writeAttachment: () => Effect.succeed(false),
+        openHost: () =>
+          Effect.succeed({
+            sandbox,
+            messages: Stream.fromQueue(outbound),
+            send: () => Effect.void,
+            close: Effect.void,
+          }),
+        deleteForThread: () => Effect.void,
+      });
+      return yield* Effect.gen(function* () {
+        const runtimeService = yield* CloudThreadRuntime.CloudThreadRuntime;
+        const runtime = yield* runtimeService.openSession(input, baseAdapter);
+        const providerThread = yield* runtime.ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy: input.runtimePolicy,
+        });
+        const started = yield* runtime
+          .startTurn({
+            appThread: {} as never,
+            threadId,
+            runId: "run-ports" as never,
+            runOrdinal: 1,
+            providerTurnOrdinal: 1,
+            attemptId: "attempt-ports" as never,
+            rootNodeId: "node-ports" as never,
+            providerThread,
+            message: {
+              messageId: "message-ports" as never,
+              text: "start the dev server",
+              attachments: [],
+              createdBy: "user",
+              creationSource: "web",
+            },
+            modelSelection,
+            runtimePolicy: input.runtimePolicy,
+          })
+          .pipe(Effect.forkChild);
+        yield* Queue.offer(outbound, { type: "turn_started", runId: "run-ports" });
+        yield* Fiber.join(started);
+        yield* Queue.offer(outbound, {
+          type: "ports",
+          ports: [{ port: 5173 }],
+        });
+        expect(yield* Deferred.await(ports)).toEqual([{ port: 5173 }]);
+      }).pipe(
+        Effect.provide(
+          testLayer(cloud, {
+            setPorts: (_threadId, reported) =>
+              Deferred.succeed(ports, reported).pipe(Effect.asVoid),
+            clear: () => Effect.void,
+            snapshot: Effect.succeed([]),
+            subscribe: () => Effect.void,
+          }),
+        ),
+      );
+    });
+    return result;
   });
 
   it.effect("resolves an approval request and tells the host", () => {

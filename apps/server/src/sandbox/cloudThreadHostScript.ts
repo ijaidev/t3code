@@ -14,6 +14,8 @@ import traceback
 
 PROTOCOL_VERSION = "1"
 MAX_TOOL_OUTPUT = 200_000
+PORT_SCAN_INTERVAL = 3
+PORT_SCAN_INTERNAL_PORTS = {49983, 50005}
 _write_lock = threading.Lock()
 
 
@@ -168,6 +170,27 @@ def list_directory(args):
     return "\n".join(entries[:2000])
 
 
+def listening_ports():
+    ports = set()
+    for path in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            with open(path, "r", encoding="ascii", errors="replace") as handle:
+                lines = handle.readlines()[1:]
+        except OSError:
+            continue
+        for line in lines:
+            fields = line.split()
+            if len(fields) < 4 or fields[3] != "0A":
+                continue
+            try:
+                port = int(fields[1].rsplit(":", 1)[1], 16)
+            except (IndexError, ValueError):
+                continue
+            if 0 < port < 65536 and port not in PORT_SCAN_INTERNAL_PORTS:
+                ports.add(port)
+    return sorted(ports)
+
+
 def execute_tool(name, args, process_holder):
     if name == "bash":
         return run_bash(args, process_holder)
@@ -218,6 +241,17 @@ class Host:
 
     def send(self, message):
         emit(message)
+
+    def watch_ports(self):
+        last = None
+        while not self.stop:
+            ports = listening_ports()
+            if ports != last:
+                last = ports
+                self.send(
+                    {"type": "ports", "ports": [{"port": port} for port in ports]}
+                )
+            time.sleep(PORT_SCAN_INTERVAL)
 
     def wait_for(self, kind, request_id, timeout=1800):
         target = self.pending_model if kind == "model" else self.pending_approval
@@ -440,6 +474,7 @@ class Host:
 
     def loop(self):
         self.send({"type": "ready", "protocolVersion": PROTOCOL_VERSION, "pid": os.getpid()})
+        threading.Thread(target=self.watch_ports, daemon=True).start()
         for line in sys.stdin:
             line = line.strip()
             if not line:

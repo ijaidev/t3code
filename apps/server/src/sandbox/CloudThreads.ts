@@ -8,6 +8,7 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
+import * as CloudThreadPorts from "./CloudThreadPorts.ts";
 import * as CloudThreadStore from "./CloudThreadStore.ts";
 import * as SandboxAccounts from "./SandboxAccounts.ts";
 import * as SandboxLifecycle from "./SandboxLifecycle.ts";
@@ -108,6 +109,13 @@ const make = Effect.gen(function* () {
   const lifecycle = yield* SandboxLifecycle.SandboxLifecycle;
   const store = yield* SandboxStore.SandboxStore;
   const cloudThreads = yield* CloudThreadStore.CloudThreadStore;
+  const cloudThreadPorts = yield* Effect.serviceOption(CloudThreadPorts.CloudThreadPorts);
+
+  const clearPorts = (threadId: ThreadId) =>
+    Option.match(cloudThreadPorts, {
+      onNone: () => Effect.void,
+      onSome: (ports) => ports.clear(threadId),
+    });
 
   const getRecord: CloudThreads["Service"]["getRecord"] = Effect.fn("CloudThreads.getRecord")(
     function* (threadId) {
@@ -239,6 +247,7 @@ const make = Effect.gen(function* () {
       ),
     );
     yield* cloudThreads.remove(threadId).pipe(Effect.ignore);
+    yield* clearPorts(threadId);
   });
 
   const prepare: CloudThreads["Service"]["prepare"] = Effect.fn("CloudThreads.prepare")(
@@ -257,6 +266,7 @@ const make = Effect.gen(function* () {
           .deleteThreadSandbox({ sandboxId: stale.value.id })
           .pipe(Effect.orElseSucceed(() => undefined));
         yield* cloudThreads.remove(input.threadId).pipe(Effect.ignore);
+        yield* clearPorts(input.threadId);
       }
       const sandbox = yield* lifecycle
         .createThreadSandbox({

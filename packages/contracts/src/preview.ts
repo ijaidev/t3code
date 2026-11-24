@@ -318,6 +318,8 @@ export const DiscoveredLocalServer = Schema.Struct({
   ),
   /** Started by the thread's agent. Older servers omit it. */
   agent: Schema.optionalKey(Schema.NullOr(Schema.Struct({ threadId: ThreadId }))),
+  /** A port in a cloud thread's sandbox, proxied by this environment rather than on it. */
+  sandboxPort: Schema.optionalKey(Schema.Literal(true)),
 });
 export type DiscoveredLocalServer = typeof DiscoveredLocalServer.Type;
 

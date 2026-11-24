@@ -7,6 +7,7 @@ import {
   type SandboxProviderDriver,
   type SandboxProviderExecInput,
   type SandboxProviderOperation,
+  type SandboxProviderPortAccessInput,
   type SandboxProviderProcess,
   type SandboxProviderStartProcessInput,
   type SandboxProviderWriteFileInput,
@@ -53,6 +54,9 @@ interface E2BCommandHandle {
 }
 
 export interface E2BSandboxHandle {
+  /** The sandbox's traffic token, when its public URLs require authentication. */
+  readonly trafficAccessToken?: string;
+  readonly getHost: (port: number) => string;
   readonly commands: {
     readonly run: {
       (
@@ -92,6 +96,10 @@ export interface E2BClient {
     readonly timeoutMs: number;
     readonly idempotencyKey: string;
     readonly metadata: Readonly<Record<string, string>>;
+    readonly network: {
+      readonly allowPublicTraffic: false;
+      readonly maskRequestHost: string;
+    };
   }) => Promise<{ readonly sandboxId: string }>;
   readonly connect: (input: {
     readonly sandboxId: string;
@@ -189,6 +197,7 @@ const defaultClient: E2BClient = {
       idempotencyKey: input.idempotencyKey,
       metadata: input.metadata,
       requestTimeoutMs: E2B_CREATE_TIMEOUT_MS,
+      network: input.network,
     });
   },
   connect: async (input) => {
@@ -247,6 +256,8 @@ export const makeE2BSandboxProvider = (
         timeoutMs: input.timeoutMs,
         idempotencyKey: input.instanceId,
         metadata: { "t3.instance": input.instanceId },
+        // A preview is only ever reachable through the controlling server, never from this URL.
+        network: { allowPublicTraffic: false, maskRequestHost: "localhost" },
       }),
     ).pipe(Effect.map((created) => ({ providerSandboxId: created.sandboxId }))),
   findCreated: (account, instanceId) =>
@@ -303,6 +314,26 @@ export const makeE2BSandboxProvider = (
       client.connect({ sandboxId: input.providerSandboxId, apiKey: input.account.apiKey }),
     );
     yield* attempt(input.account, "exec", () => sandbox.files.write(input.path, input.data));
+  }),
+  portAccess: Effect.fn("E2BSandboxProvider.portAccess")(function* (
+    input: SandboxProviderPortAccessInput,
+  ) {
+    // Connecting also resumes a paused sandbox, so opening a preview wakes it before the request.
+    const sandbox = yield* attempt(input.account, "exec", () =>
+      client.connect({ sandboxId: input.providerSandboxId, apiKey: input.account.apiKey }),
+    );
+    const token = sandbox.trafficAccessToken;
+    if (token === undefined || token === "") {
+      return yield* new SandboxProviderError({
+        providerKind: E2B_KIND,
+        operation: "exec",
+        detail: "E2B did not return a private preview token for this sandbox.",
+      });
+    }
+    return {
+      url: `https://${sandbox.getHost(input.port)}`,
+      headers: { "e2b-traffic-access-token": token },
+    };
   }),
   startProcess: Effect.fn("E2BSandboxProvider.startProcess")(function* (
     input: SandboxProviderStartProcessInput,

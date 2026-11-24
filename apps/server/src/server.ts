@@ -105,6 +105,8 @@ import * as PeerThreadRelay from "./peer/PeerThreadRelay.ts";
 import * as McpSessionRegistry from "./mcp/McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as DeviceService from "./device/DeviceService.ts";
+import * as CloudPreviewProxy from "./sandbox/CloudPreviewProxy.ts";
+import * as CloudThreadPorts from "./sandbox/CloudThreadPorts.ts";
 import * as CloudThreadRuntime from "./sandbox/CloudThreadRuntime.ts";
 import * as CloudThreadStore from "./sandbox/CloudThreadStore.ts";
 import * as CloudThreads from "./sandbox/CloudThreads.ts";
@@ -574,18 +576,28 @@ const layerSandboxLifecycle = SandboxLifecycle.layer.pipe(
   Layer.provide(layerSandboxAccounts),
   Layer.provide(SandboxStore.layer),
 );
+const layerCloudPreviewProxy = CloudPreviewProxy.layer.pipe(
+  Layer.provide(layerSandboxAccounts),
+  Layer.provide(SandboxStore.layer),
+);
+const layerCloudThreadPorts = CloudThreadPorts.layer.pipe(Layer.provide(layerCloudPreviewProxy));
 const layerCloudThreads = CloudThreads.layer.pipe(
   Layer.provide(layerSandboxAccounts),
   Layer.provide(layerSandboxLifecycle),
   Layer.provide(SandboxStore.layer),
   Layer.provide(CloudThreadStore.layer),
+  Layer.provide(layerCloudThreadPorts),
 );
-const layerCloudThreadRuntime = CloudThreadRuntime.layer.pipe(Layer.provide(layerCloudThreads));
+const layerCloudThreadRuntime = CloudThreadRuntime.layer.pipe(
+  Layer.provide(layerCloudThreads),
+  Layer.provide(layerCloudThreadPorts),
+);
 const layerSandbox = Layer.merge(
   Layer.mergeAll(
     layerSandboxStorage,
     layerSandboxLifecycle,
     layerCloudThreads,
+    layerCloudThreadPorts,
     layerCloudThreadRuntime,
   ),
   Layer.effectDiscard(
