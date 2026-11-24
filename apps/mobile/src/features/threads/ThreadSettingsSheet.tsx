@@ -6,7 +6,12 @@ import { T, useGT, useLocale, useMessages } from "gt-react-native";
 import * as Dialog from "../../components/ui/Dialog";
 import { createV5StackNavigator as createNativeStackNavigator } from "../../native/createV5StackNavigator";
 import { useSheetStackOptions } from "../layout/nested-stacks";
-import { DEFAULT_SERVER_SETTINGS, ProviderInstanceId } from "@t3tools/contracts";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import {
+  AuthPreviewOperateScope,
+  DEFAULT_SERVER_SETTINGS,
+  ProviderInstanceId,
+} from "@t3tools/contracts";
 import {
   modelPreferencesMigrationPatch,
   resolveModelPreferences,
@@ -57,6 +62,7 @@ import Animated, {
 } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { AppText as Text } from "../../components/ui/AppText";
 import { AppBar } from "../../components/ui/AppBar";
@@ -100,6 +106,8 @@ import { threadAllowsProviderSwitch } from "../../state/thread-provider-switchin
 import { environmentServerConfigsAtom, serverEnvironment } from "../../state/server";
 import { mobilePreferencesAtom } from "../../state/preferences";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { previewEnvironment, useThreadDiscoveredPorts } from "../../state/preview";
+import { useEnvironmentScope } from "../../state/session";
 import { useNewTaskFlow } from "./new-task-flow-provider";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import {
@@ -287,6 +295,7 @@ type ThreadSettingsSubmenuPage =
 
 type ThreadSettingsSessionProps = {
   readonly environmentId: EnvironmentId | null;
+  readonly threadId?: ThreadId;
   readonly projectId: ProjectId | null;
   readonly cwd: string | null;
   readonly providerInstanceId?: ProviderInstanceId;
@@ -313,6 +322,7 @@ export type ExistingThreadSettingsRouteParams = {
 
 type ThreadSettingsSessionValue = {
   readonly environmentId: EnvironmentId | null;
+  readonly threadId: ThreadId | null;
   readonly providerInstanceId?: ProviderInstanceId;
   readonly providerGroups: ReadonlyArray<ProviderGroup>;
   readonly favoriteKeys: ReadonlySet<string>;
@@ -638,6 +648,7 @@ function ThreadSettingsSessionProvider(
 
   const value = {
     environmentId,
+    threadId: props.threadId ?? null,
     providerInstanceId: props.providerInstanceId,
     providerGroups,
     manageHidden,
@@ -957,6 +968,70 @@ function buildThreadSettingsCatalogItems(
   });
 }
 
+function ThreadServersSection() {
+  const gt = useGT();
+  const session = useThreadSettingsSession();
+  const navigation = useNavigation();
+  const environmentId = session.environmentId;
+  const canOpen = useEnvironmentScope(environmentId, AuthPreviewOperateScope);
+  const ports = useThreadDiscoveredPorts({
+    environmentId,
+    threadId: session.threadId,
+    enabled: canOpen,
+  });
+  const openPreview = useAtomCommand(previewEnvironment.open, { label: "mobile preview open" });
+  const [opening, setOpening] = useState<number | null>(null);
+  if (environmentId === null || session.threadId === null || !canOpen || ports.length === 0) {
+    return null;
+  }
+  const open = async (port: (typeof ports)[number]) => {
+    if (opening !== null) return;
+    setOpening(port.port);
+    const result = await openPreview({
+      environmentId,
+      input: {
+        threadId: session.threadId!,
+        url: port.url,
+        runtime: "server",
+        reveal: true,
+      },
+    });
+    setOpening(null);
+    if (result._tag === "Failure") {
+      Dialog.alert(gt("Could not open preview"), String(squashAtomCommandFailure(result)));
+      return;
+    }
+    navigation.goBack();
+  };
+  return (
+    <>
+      <Text className="px-5 pb-2 pt-7 text-sm font-t3-medium text-foreground-muted">
+        {gt("Servers")}
+      </Text>
+      <View className="mx-4 overflow-hidden rounded-2xl bg-grouped-card">
+        {ports.map((port, index) => (
+          <Pressable
+            key={`${port.url}:${port.port}`}
+            accessibilityRole="button"
+            accessibilityLabel={gt("Open in browser")}
+            disabled={opening !== null}
+            onPress={() => void open(port)}
+            className={cn(
+              "flex flex-row items-center gap-3 px-4",
+              index < ports.length - 1 && "border-b border-separator",
+            )}
+            style={{ minHeight: ROW_MIN_HEIGHT.item }}
+          >
+            <SymbolView name="globe" size={16} tintColor="secondary" type="monochrome" />
+            <Text className="flex-1 text-base text-foreground">{`localhost:${port.port}`}</Text>
+            {opening === port.port ? <AppActivityIndicator /> : null}
+          </Pressable>
+        ))}
+      </View>
+    </>
+  );
+}
+
 function ThreadSettingsOptionsItem(props: {
   readonly animationsReady: boolean;
   readonly bottomInset: number;
@@ -1040,6 +1115,8 @@ function ThreadSettingsOptionsItem(props: {
           />
         </Animated.View>
       </Animated.View>
+
+      <ThreadServersSection />
 
       <Text className="px-5 pb-2 pt-7 text-sm font-t3-medium text-foreground-muted">
         {gt("Catalog", { $context: "section heading for the model catalog" })}
@@ -1541,6 +1618,7 @@ export function ExistingThreadSettingsRouteScreen({
   return (
     <ThreadSettingsPickerScreen
       environmentId={selectedThread.environmentId}
+      threadId={selectedThread.id}
       projectId={selectedThread.projectId}
       cwd={selectedThreadCwd}
       providerInstanceId={modelSelection.instanceId}

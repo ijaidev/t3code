@@ -4,6 +4,7 @@ import { PREVIEW_STREAM_BASE_PATH } from "@t3tools/client-runtime/preview/server
 import { createPreviewEnvironmentAtoms } from "@t3tools/client-runtime/state/preview";
 import { resolveDeviceHubAccess } from "@t3tools/client-runtime/state/deviceHubAccess";
 import type {
+  DiscoveredLocalServer,
   EnvironmentId,
   PreviewEvent,
   PreviewListResult,
@@ -34,6 +35,7 @@ const EMPTY_TABS: ThreadPreviewTabs = {
   sessions: [],
   listed: false,
 };
+const EMPTY_SERVERS: ReadonlyArray<DiscoveredLocalServer> = Object.freeze([]);
 const emptyTabsAtom = Atom.make(EMPTY_TABS).pipe(Atom.withLabel("mobile-preview-tabs:empty"));
 
 const MAX_REPLAY_EVENTS = 200;
@@ -137,6 +139,27 @@ export function useThreadServerBrowserTabs(input: {
   );
   const sessions = tabs.sessions.filter((session) => session.runtime === "server");
   return { tabs: sessions, loaded: tabs.listed };
+}
+
+export function useThreadDiscoveredPorts(input: {
+  readonly environmentId: EnvironmentId | null;
+  readonly threadId: ThreadId | null;
+  readonly enabled: boolean;
+}) {
+  const query = useEnvironmentQuery(
+    input.enabled && input.environmentId !== null
+      ? previewEnvironment.discoveredServers({
+          environmentId: input.environmentId,
+          input: {},
+        })
+      : null,
+  );
+  const servers = query.data?.servers ?? EMPTY_SERVERS;
+  if (input.threadId === null) return EMPTY_SERVERS;
+  return servers.filter(
+    (server) =>
+      server.terminal?.threadId === input.threadId || server.agent?.threadId === input.threadId,
+  );
 }
 
 // The earliest time the next access request may go out.
