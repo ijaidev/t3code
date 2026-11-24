@@ -180,9 +180,11 @@ function ThreadServersList(props: ThreadServersPanelProps) {
       <ul className="m-0 list-none p-0">
         {servers.slice(0, visibleCount).map((server, index) => {
           const key = serverKey(server);
-          const stoppable = canStop && supportsStop && server.pid !== null;
+          const stoppable =
+            canStop && supportsStop && server.pid !== null && server.sandboxPort !== true;
           const forward = findPortForward(forwards, props.environmentId, server.port);
-          const actionCount = Number(stoppable) + Number(canForward);
+          const forwardableServer = canForward && server.sandboxPort !== true;
+          const actionCount = Number(stoppable) + Number(forwardableServer);
           return (
             <li
               key={key}
@@ -250,7 +252,7 @@ function ThreadServersList(props: ThreadServersPanelProps) {
                       "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100 [@media(hover:none)]:pointer-events-auto [@media(hover:none)]:opacity-100",
                   )}
                 >
-                  {canForward ? (
+                  {forwardableServer ? (
                     <Tooltip>
                       <TooltipTrigger
                         render={

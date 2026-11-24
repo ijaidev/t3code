@@ -31,7 +31,9 @@ export function PreviewEmptyState({
   const servers = useDiscoveredLocalServers({
     environmentId,
     configuredUrls,
-  });
+  }).filter(
+    (server) => server.sandboxPort !== true || server.agent?.threadId === threadRef.threadId,
+  );
   const recents = recentEntries.filter((entry) => parseUrl(entry.url) !== null).slice(0, 8);
 
   if (servers.length === 0 && recents.length === 0) {
@@ -88,7 +90,7 @@ export function PreviewEmptyState({
             <DiscoveryList>
               {servers.map((server) => (
                 <PreviewLocalServerCard
-                  key={`${server.host}:${server.port}`}
+                  key={`${server.host}:${server.port}:${server.url}`}
                   threadRef={threadRef}
                   server={server}
                   onOpen={() => onOpenUrl(server.requestedUrl)}
