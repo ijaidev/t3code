@@ -17,16 +17,23 @@ export function publicCloneUrl(remoteUrl: string): PublicCloneUrl {
   const trimmed = remoteUrl.trim();
   const parsed = URL.parse(trimmed);
   if (parsed !== null) {
-    if (parsed.username !== "" || parsed.password !== "") return { type: "credentials" };
+    const publicUser =
+      parsed.username === "" || parsed.username === "git" || parsed.username === "hg";
     if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      if (parsed.username !== "" || parsed.password !== "") return { type: "credentials" };
       parsed.username = "";
       parsed.password = "";
       parsed.search = "";
       parsed.hash = "";
       return { type: "url", url: parsed.toString() };
     }
-    if (parsed.protocol === "ssh:" || parsed.protocol === "git+ssh:") {
-      return { type: "url", url: `https://${parsed.host}${parsed.pathname}` };
+    if (
+      parsed.protocol === "ssh:" ||
+      parsed.protocol === "git+ssh:" ||
+      parsed.protocol === "git:"
+    ) {
+      if (!publicUser || parsed.password !== "") return { type: "credentials" };
+      return { type: "url", url: `https://${parsed.hostname}${parsed.pathname}` };
     }
     return { type: "credentials" };
   }

@@ -21,10 +21,25 @@ describe("cloud repository remotes", () => {
       type: "url",
       url: "https://github.com/acme/public.git",
     });
+    expect(publicCloneUrl("ssh://git@github.com/acme/public.git")).toEqual({
+      type: "url",
+      url: "https://github.com/acme/public.git",
+    });
+    expect(publicCloneUrl("git+ssh://git@github.com/acme/public.git")).toEqual({
+      type: "url",
+      url: "https://github.com/acme/public.git",
+    });
+    expect(publicCloneUrl("git://github.com/acme/public.git")).toEqual({
+      type: "url",
+      url: "https://github.com/acme/public.git",
+    });
   });
 
   it("rejects a non-git SSH user", () => {
     expect(publicCloneUrl("x-access-token@github.com:acme/private.git")).toEqual({
+      type: "credentials",
+    });
+    expect(publicCloneUrl("ssh://x-access-token@github.com/acme/private.git")).toEqual({
       type: "credentials",
     });
   });
