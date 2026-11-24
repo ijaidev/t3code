@@ -5,6 +5,7 @@ import * as Schema from "effect/Schema";
 export const SandboxProviderOperation = Schema.Literals([
   "validate-credential",
   "create",
+  "find-created",
   "get",
   "pause",
   "resume",
@@ -58,6 +59,11 @@ export interface SandboxProviderExecResult {
   readonly stderr: string;
 }
 
+export interface SandboxProviderFoundSandbox {
+  readonly providerSandboxId: string;
+  readonly status: "running" | "paused";
+}
+
 export interface SandboxProviderDriver {
   readonly kind: SandboxProviderKind;
   readonly label: string;
@@ -68,6 +74,11 @@ export interface SandboxProviderDriver {
   readonly create: (
     input: SandboxProviderCreateInput,
   ) => Effect.Effect<{ readonly providerSandboxId: string }, SandboxProviderError>;
+  /** Finds sandboxes a create may have made despite failing; metadata is the durable key. */
+  readonly findCreated: (
+    account: SandboxProviderAccount,
+    instanceId: string,
+  ) => Effect.Effect<ReadonlyArray<SandboxProviderFoundSandbox>, SandboxProviderError>;
   readonly get: (
     account: SandboxProviderAccount,
     providerSandboxId: string,

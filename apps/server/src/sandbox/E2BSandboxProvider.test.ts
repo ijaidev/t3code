@@ -90,6 +90,25 @@ describe("E2B sandbox provider", () => {
       }),
   );
 
+  it.effect("finds a create the provider accepted using its instance metadata", () =>
+    Effect.gen(function* () {
+      const seen: Array<Record<string, unknown>> = [];
+      const driver = makeE2BSandboxProvider(
+        client({
+          list: async (input) => {
+            seen.push(input);
+            return [{ sandboxId: "e2b-sandbox-1", state: "paused" }];
+          },
+        }),
+      );
+      const found = yield* driver.findCreated(account, "instance-1");
+      expect(seen).toEqual([
+        { apiKey: "e2b_secret_key", metadata: { "t3.instance": "instance-1" } },
+      ]);
+      expect(found).toEqual([{ providerSandboxId: "e2b-sandbox-1", status: "paused" }]);
+    }),
+  );
+
   it.effect("turns a rejected key into an actionable error without echoing the key", () =>
     Effect.gen(function* () {
       const driver = makeE2BSandboxProvider(

@@ -78,7 +78,15 @@ export interface E2BClient {
     readonly sandboxId: string;
     readonly apiKey: string;
   }) => Promise<boolean>;
-  readonly list: (input: { readonly apiKey: string }) => Promise<unknown>;
+  readonly list: (input: {
+    readonly apiKey: string;
+    readonly metadata?: Readonly<Record<string, string>>;
+  }) => Promise<
+    ReadonlyArray<{
+      readonly sandboxId: string;
+      readonly state: "running" | "paused";
+    }>
+  >;
 }
 
 const statusCodeOf = (cause: unknown): number | undefined => {
@@ -185,6 +193,7 @@ const defaultClient: E2BClient = {
     return Sandbox.list({
       apiKey: input.apiKey,
       domain: E2B_DEFAULT_API_DOMAIN,
+      ...(input.metadata === undefined ? {} : { query: { metadata: input.metadata } }),
     }).nextItems();
   },
 };
@@ -209,6 +218,20 @@ export const makeE2BSandboxProvider = (
         metadata: { "t3.instance": input.instanceId },
       }),
     ).pipe(Effect.map((created) => ({ providerSandboxId: created.sandboxId }))),
+  findCreated: (account, instanceId) =>
+    attempt(account, "find-created", () =>
+      client.list({
+        apiKey: account.apiKey,
+        metadata: { "t3.instance": instanceId },
+      }),
+    ).pipe(
+      Effect.map((sandboxes) =>
+        sandboxes.map((sandbox) => ({
+          providerSandboxId: sandbox.sandboxId,
+          status: sandbox.state,
+        })),
+      ),
+    ),
   get: (account, providerSandboxId) =>
     attempt(account, "get", () =>
       client.getInfo({ sandboxId: providerSandboxId, apiKey: account.apiKey }),

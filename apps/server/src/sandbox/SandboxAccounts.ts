@@ -21,7 +21,7 @@ import { requireSettingsSecret } from "../secrets/settingsSecretValue.ts";
 import type { SandboxProviderAccount, SandboxProviderDriver } from "./SandboxProvider.ts";
 import * as SandboxProviderRegistry from "./SandboxProviderRegistry.ts";
 
-type ResolvedSandboxAccount = {
+export type ResolvedSandboxAccount = {
   readonly account: SandboxProviderAccount;
   readonly driver: SandboxProviderDriver;
 };

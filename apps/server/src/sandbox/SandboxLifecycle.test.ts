@@ -1,7 +1,9 @@
 import {
+  SandboxInstanceId,
   SandboxProviderAccountId,
   SandboxProviderKind,
   type SandboxProviderCapabilities,
+  type SandboxTestSandbox,
 } from "@t3tools/contracts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -34,12 +36,32 @@ const capabilities = (
   ...overrides,
 });
 
+interface FakeSandbox {
+  readonly instanceId: string;
+  readonly providerSandboxId: string;
+  readonly status: "running" | "paused";
+}
+
 interface FakeDriverState {
   readonly calls: Ref.Ref<ReadonlyArray<string>>;
+  readonly created: Ref.Ref<ReadonlyArray<FakeSandbox>>;
   readonly validKey: string;
-  readonly failCreate: boolean;
+  failCreate: boolean;
+  failCreateAfterAccept: boolean;
+  failFindCreated: boolean;
+  failDelete: boolean;
   readonly handshake: string;
 }
+
+const failure = (kind: SandboxProviderKind, operation: "create" | "find-created" | "delete") =>
+  new SandboxProviderError({
+    providerKind: kind,
+    operation,
+    detail:
+      operation === "create"
+        ? "The provider has no capacity right now."
+        : `The provider failed to ${operation}.`,
+  });
 
 const fakeDriver = (
   kind: SandboxProviderKind,
@@ -60,22 +82,39 @@ const fakeDriver = (
             statusCode: 401,
           }),
         ),
-  create: (_input) =>
+  create: (input) =>
     Effect.gen(function* () {
       yield* Ref.update(state.calls, (calls) => [...calls, "create"]);
-      if (state.failCreate) {
-        return yield* new SandboxProviderError({
-          providerKind: kind,
-          operation: "create",
-          detail: "The provider has no capacity right now.",
-        });
-      }
-      return { providerSandboxId: `${kind}-sandbox-1` };
+      if (state.failCreate) return yield* failure(kind, "create");
+      const sandbox: FakeSandbox = {
+        instanceId: input.instanceId,
+        providerSandboxId: `${kind}-${input.instanceId}`,
+        status: "running",
+      };
+      yield* Ref.update(state.created, (created) => [...created, sandbox]);
+      if (state.failCreateAfterAccept) return yield* failure(kind, "create");
+      return { providerSandboxId: sandbox.providerSandboxId };
+    }),
+  findCreated: (_account, instanceId) =>
+    Effect.gen(function* () {
+      yield* Ref.update(state.calls, (calls) => [...calls, "find-created"]);
+      if (state.failFindCreated) return yield* failure(kind, "find-created");
+      const created = yield* Ref.get(state.created);
+      return created
+        .filter((sandbox) => sandbox.instanceId === instanceId)
+        .map(({ instanceId: _instanceId, ...sandbox }) => sandbox);
     }),
   get: () => Effect.succeed({ status: "running" as const }),
   pause: () => Ref.update(state.calls, (calls) => [...calls, "pause"]).pipe(Effect.asVoid),
   resume: () => Ref.update(state.calls, (calls) => [...calls, "resume"]).pipe(Effect.asVoid),
-  delete: () => Ref.update(state.calls, (calls) => [...calls, "delete"]).pipe(Effect.asVoid),
+  delete: (_account, providerSandboxId) =>
+    Effect.gen(function* () {
+      yield* Ref.update(state.calls, (calls) => [...calls, "delete"]);
+      if (state.failDelete) return yield* failure(kind, "delete");
+      yield* Ref.update(state.created, (created) =>
+        created.filter((sandbox) => sandbox.providerSandboxId !== providerSandboxId),
+      );
+    }),
   exec: () =>
     Ref.update(state.calls, (calls) => [...calls, "exec"]).pipe(
       Effect.as({
@@ -86,14 +125,40 @@ const fakeDriver = (
     ),
 });
 
+const failingStoreLayer = (path: string) =>
+  Layer.effect(
+    SandboxStore.SandboxStore,
+    Effect.gen(function* () {
+      const real = yield* SandboxStore.SandboxStore;
+      const upserts = yield* Ref.make(0);
+      return SandboxStore.SandboxStore.of({
+        ...real,
+        upsert: (record) =>
+          Ref.updateAndGet(upserts, (count) => count + 1).pipe(
+            Effect.flatMap((count) =>
+              count === 2
+                ? Effect.fail(
+                    new SandboxStore.SandboxStoreError({
+                      operation: "write",
+                      path,
+                      cause: new Error("forced settings write failure"),
+                    }),
+                  )
+                : real.upsert(record),
+            ),
+          ),
+      });
+    }),
+  ).pipe(Layer.provide(SandboxStore.layer));
+
 const testLayer = (
   drivers: ReadonlyArray<SandboxProviderDriver>,
   settings: Parameters<typeof ServerSettingsModule.layerTest>[0] = {},
+  storeLayer: typeof SandboxStore.layer | ReturnType<typeof failingStoreLayer> = SandboxStore.layer,
 ) => {
   const accountsLayer = SandboxAccounts.layerFromDrivers(drivers);
-  const storeLayer = SandboxStore.layer;
   return Layer.merge(
-    Layer.mergeAll(accountsLayer, storeLayer),
+    Layer.mergeAll(accountsLayer, SandboxStore.layer),
     SandboxLifecycle.layer.pipe(Layer.provide(accountsLayer), Layer.provide(storeLayer)),
   ).pipe(
     Layer.provideMerge(ServerSettingsModule.layerTest(settings)),
@@ -126,8 +191,12 @@ const state = (overrides: Partial<FakeDriverState> = {}) =>
   Effect.gen(function* () {
     return {
       calls: yield* Ref.make<ReadonlyArray<string>>([]),
+      created: yield* Ref.make<ReadonlyArray<FakeSandbox>>([]),
       validKey: "valid-key",
       failCreate: false,
+      failCreateAfterAccept: false,
+      failFindCreated: false,
+      failDelete: false,
       handshake: JSON.stringify({
         kind: "t3-thread-host",
         protocolVersion: "1",
@@ -136,6 +205,17 @@ const state = (overrides: Partial<FakeDriverState> = {}) =>
       ...overrides,
     };
   });
+
+const provisioningRecord = (id: string, account = accountId): SandboxTestSandbox => ({
+  id: SandboxInstanceId.make(id),
+  accountId: account,
+  providerKind: E2B,
+  providerSandboxId: null,
+  status: "provisioning",
+  template: "base",
+  createdAt: "2026-11-24T00:00:00.000Z",
+  updatedAt: "2026-11-24T00:00:00.000Z",
+});
 
 describe("sandbox accounts", () => {
   it.effect("rejects an invalid key without saving the account", () =>
@@ -195,7 +275,7 @@ describe("sandbox lifecycle", () => {
         const store = yield* SandboxStore.SandboxStore;
         const created = yield* lifecycle.createTestSandbox({ accountId });
         expect(created.sandbox.status).toBe("running");
-        expect(created.sandbox.providerSandboxId).toBe("e2b-sandbox-1");
+        expect(created.sandbox.providerSandboxId).toBe(`e2b-${created.sandbox.id}`);
 
         const paused = yield* lifecycle.pauseTestSandbox({ sandboxId: created.sandbox.id });
         expect(paused.sandbox.status).toBe("paused");
@@ -218,7 +298,7 @@ describe("sandbox lifecycle", () => {
     }),
   );
 
-  it.effect("leaves no record when a create fails", () =>
+  it.effect("leaves no record when a create fails before the provider accepts it", () =>
     Effect.gen(function* () {
       const fake = yield* state({ failCreate: true });
       yield* Effect.gen(function* () {
@@ -228,9 +308,126 @@ describe("sandbox lifecycle", () => {
         const failure = yield* Effect.flip(lifecycle.createTestSandbox({ accountId }));
         expect(failure.detail).toBe("The provider has no capacity right now.");
         expect(yield* store.list).toEqual([]);
-        expect(yield* Ref.get(fake.calls)).toEqual(["create"]);
+        expect(yield* Ref.get(fake.calls)).toEqual(["create", "find-created"]);
       }).pipe(Effect.provide(testLayer([fakeDriver(E2B, fake)])));
     }),
+  );
+
+  it.effect("deletes a sandbox the provider accepted before the create failed", () =>
+    Effect.gen(function* () {
+      const fake = yield* state({ failCreateAfterAccept: true });
+      yield* Effect.gen(function* () {
+        yield* connect();
+        const lifecycle = yield* SandboxLifecycle.SandboxLifecycle;
+        const store = yield* SandboxStore.SandboxStore;
+        const failure = yield* Effect.flip(lifecycle.createTestSandbox({ accountId }));
+        expect(failure.detail).toBe("The provider has no capacity right now.");
+        expect(yield* store.list).toEqual([]);
+        expect(yield* Ref.get(fake.created)).toEqual([]);
+        expect(yield* Ref.get(fake.calls)).toEqual(["create", "find-created", "delete"]);
+      }).pipe(Effect.provide(testLayer([fakeDriver(E2B, fake)])));
+    }),
+  );
+
+  it.effect("keeps a recoverable record when cleanup after a failed create cannot finish", () =>
+    Effect.gen(function* () {
+      const fake = yield* state({ failCreateAfterAccept: true, failDelete: true });
+      yield* Effect.gen(function* () {
+        yield* connect();
+        const lifecycle = yield* SandboxLifecycle.SandboxLifecycle;
+        const store = yield* SandboxStore.SandboxStore;
+        const failure = yield* Effect.flip(lifecycle.createTestSandbox({ accountId }));
+        expect(failure.detail).toContain("could not be cleaned up");
+        const kept = yield* store.list;
+        expect(kept.length).toBe(1);
+        expect(kept[0]?.providerSandboxId).not.toBeNull();
+        expect(kept[0]?.lastError).toContain("could not be cleaned up");
+
+        fake.failDelete = false;
+        yield* lifecycle.deleteTestSandbox({ sandboxId: kept[0]!.id });
+        expect(yield* store.list).toEqual([]);
+        expect(yield* Ref.get(fake.created)).toEqual([]);
+      }).pipe(Effect.provide(testLayer([fakeDriver(E2B, fake)])));
+    }),
+  );
+
+  it.effect("reconciles provisioning records on restart, adopting or dropping provider state", () =>
+    Effect.gen(function* () {
+      const fake = yield* state();
+      yield* Effect.gen(function* () {
+        yield* connect();
+        const lifecycle = yield* SandboxLifecycle.SandboxLifecycle;
+        const store = yield* SandboxStore.SandboxStore;
+        const adopted = provisioningRecord("adopted");
+        const missing = provisioningRecord("missing");
+        yield* store.upsert(adopted);
+        yield* store.upsert(missing);
+        yield* Ref.update(fake.created, (created) => [
+          ...created,
+          {
+            instanceId: adopted.id,
+            providerSandboxId: "e2b-adopted",
+            status: "paused" as const,
+          },
+        ]);
+
+        yield* lifecycle.reconcile;
+
+        const records = yield* store.list;
+        expect(records.length).toBe(1);
+        expect(records[0]?.id).toBe(adopted.id);
+        expect(records[0]?.providerSandboxId).toBe("e2b-adopted");
+        expect(records[0]?.status).toBe("paused");
+        expect(yield* Ref.get(fake.calls)).toEqual(["find-created", "find-created"]);
+      }).pipe(Effect.provide(testLayer([fakeDriver(E2B, fake)])));
+    }),
+  );
+
+  it.effect("asks the provider before deleting a record with no saved sandbox id", () =>
+    Effect.gen(function* () {
+      const fake = yield* state();
+      yield* Effect.gen(function* () {
+        yield* connect();
+        const lifecycle = yield* SandboxLifecycle.SandboxLifecycle;
+        const store = yield* SandboxStore.SandboxStore;
+        const record = provisioningRecord("unconfirmed");
+        yield* store.upsert(record);
+        yield* Ref.update(fake.created, (created) => [
+          ...created,
+          {
+            instanceId: record.id,
+            providerSandboxId: "e2b-unconfirmed",
+            status: "running" as const,
+          },
+        ]);
+
+        yield* lifecycle.deleteTestSandbox({ sandboxId: record.id });
+
+        expect(yield* store.list).toEqual([]);
+        expect(yield* Ref.get(fake.calls)).toEqual(["find-created", "delete"]);
+        expect(yield* Ref.get(fake.created)).toEqual([]);
+      }).pipe(Effect.provide(testLayer([fakeDriver(E2B, fake)])));
+    }),
+  );
+
+  it.effect(
+    "reports a cleanup failure when a created sandbox cannot be deleted after save failure",
+    () =>
+      Effect.gen(function* () {
+        const fake = yield* state({ failDelete: true });
+        yield* Effect.gen(function* () {
+          yield* connect();
+          const lifecycle = yield* SandboxLifecycle.SandboxLifecycle;
+          const store = yield* SandboxStore.SandboxStore;
+          const failure = yield* Effect.flip(lifecycle.createTestSandbox({ accountId }));
+          expect(failure.detail).toContain("could not be deleted");
+          const kept = yield* store.list;
+          expect(kept.length).toBe(1);
+          expect(kept[0]?.providerSandboxId).not.toBeNull();
+        }).pipe(
+          Effect.provide(testLayer([fakeDriver(E2B, fake)], {}, failingStoreLayer(process.cwd()))),
+        );
+      }),
   );
 
   it.effect("runs the same lifecycle through a second provider's declared capabilities", () =>

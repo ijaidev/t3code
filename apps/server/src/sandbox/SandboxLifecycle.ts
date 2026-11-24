@@ -17,11 +17,16 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Result from "effect/Result";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Semaphore from "effect/Semaphore";
 
 import * as SandboxAccounts from "./SandboxAccounts.ts";
-import type { SandboxProviderError } from "./SandboxProvider.ts";
+import type {
+  SandboxProviderDriver,
+  SandboxProviderError,
+  SandboxProviderFoundSandbox,
+} from "./SandboxProvider.ts";
 import * as SandboxStore from "./SandboxStore.ts";
 import {
   parseThreadHostHandshake,
@@ -44,6 +49,9 @@ const withoutLastError = (record: SandboxTestSandbox) => {
   return rest;
 };
 
+const runningStatus = (record: SandboxTestSandbox): "running" | "paused" =>
+  record.status === "paused" ? "paused" : "running";
+
 export class SandboxLifecycle extends Context.Service<
   SandboxLifecycle,
   {
@@ -64,6 +72,7 @@ export class SandboxLifecycle extends Context.Service<
       input: SandboxTestSandboxInput,
     ) => Effect.Effect<SandboxHealthCheckResult, SandboxError>;
     readonly disconnectAccount: (input: SandboxAccountInput) => Effect.Effect<void, SandboxError>;
+    readonly reconcile: Effect.Effect<void>;
   }
 >()("t3/sandbox/SandboxLifecycle") {}
 
@@ -111,7 +120,112 @@ const make = Effect.gen(function* () {
     yield* store.upsert(failed).pipe(Effect.ignore);
   });
 
-  const listTestSandboxes = store.list.pipe(
+  const adopt = Effect.fnUntraced(function* (
+    record: SandboxTestSandbox,
+    found: SandboxProviderFoundSandbox,
+  ) {
+    return {
+      ...withoutLastError(record),
+      providerSandboxId: found.providerSandboxId,
+      status: found.status,
+      updatedAt: DateTime.formatIso(yield* DateTime.now),
+    } satisfies SandboxTestSandbox;
+  });
+
+  const deleteFound = (
+    driver: SandboxProviderDriver,
+    account: SandboxAccounts.ResolvedSandboxAccount["account"],
+    found: ReadonlyArray<SandboxProviderFoundSandbox>,
+  ) =>
+    Effect.forEach(
+      found,
+      (sandbox) =>
+        driver.delete(account, sandbox.providerSandboxId).pipe(
+          Effect.catchIf(isNotFound, () => Effect.void),
+          Effect.result,
+        ),
+      { concurrency: 1 },
+    );
+
+  const deleteAllOrFail = Effect.fnUntraced(function* (
+    operation: SandboxOperation,
+    driver: SandboxProviderDriver,
+    account: SandboxAccounts.ResolvedSandboxAccount["account"],
+    found: ReadonlyArray<SandboxProviderFoundSandbox>,
+    record: SandboxTestSandbox,
+  ) {
+    const outcomes = yield* deleteFound(driver, account, found);
+    const failure = outcomes.find(Result.isFailure);
+    if (failure === undefined) {
+      yield* store.remove(record.id).pipe(Effect.ignore);
+      return;
+    }
+    const detail = `The sandbox could not be deleted: ${failure.failure.detail}`;
+    yield* store
+      .upsert({ ...record, status: runningStatus(record), lastError: detail })
+      .pipe(Effect.ignore);
+    return yield* new SandboxError({ operation, detail });
+  });
+
+  const handleCreateFailure = Effect.fnUntraced(function* (
+    record: SandboxTestSandbox,
+    account: SandboxAccounts.ResolvedSandboxAccount["account"],
+    driver: SandboxProviderDriver,
+    createError: SandboxError,
+  ) {
+    const found = yield* driver.findCreated(account, record.id).pipe(Effect.result);
+    if (found._tag === "Failure") {
+      const detail = `The sandbox could not be confirmed after its create failed: ${found.failure.detail} Check the provider before retrying.`;
+      yield* markFailed(record, detail);
+      return yield* new SandboxError({ operation: "create-sandbox", detail });
+    }
+    if (found.success.length === 0) {
+      yield* store.remove(record.id).pipe(Effect.ignore);
+      return yield* createError;
+    }
+    const adopted = yield* adopt(record, found.success[0]!);
+    yield* store.upsert(adopted).pipe(Effect.ignore);
+    const outcomes = yield* deleteFound(driver, account, found.success);
+    const failure = outcomes.find(Result.isFailure);
+    if (failure === undefined) {
+      yield* store.remove(record.id).pipe(Effect.ignore);
+      return yield* createError;
+    }
+    const detail = `The sandbox was created but could not be cleaned up: ${failure.failure.detail} It is listed so it can be deleted.`;
+    yield* store.upsert({ ...adopted, lastError: detail }).pipe(Effect.ignore);
+    return yield* new SandboxError({ operation: "create-sandbox", detail });
+  });
+
+  const reconcile = Effect.fn("SandboxLifecycle.reconcile")(function* () {
+    const records = (yield* store.list).filter((record) => record.providerSandboxId === null);
+    for (const record of records) {
+      const resolved = yield* accounts.resolve(record.accountId).pipe(Effect.result);
+      if (resolved._tag === "Failure") {
+        yield* markFailed(
+          record,
+          "The connected account is unavailable, so the provider could not be checked.",
+        );
+        continue;
+      }
+      const found = yield* resolved.success.driver
+        .findCreated(resolved.success.account, record.id)
+        .pipe(Effect.result);
+      if (found._tag === "Failure") {
+        yield* markFailed(record, `The provider could not be checked: ${found.failure.detail}`);
+        continue;
+      }
+      const first = found.success[0];
+      if (first === undefined) {
+        yield* store.remove(record.id).pipe(Effect.ignore);
+        continue;
+      }
+      const adopted = yield* adopt(record, first);
+      yield* store.upsert(adopted).pipe(Effect.ignore);
+    }
+  });
+
+  const listTestSandboxes = reconcile().pipe(
+    Effect.andThen(store.list),
     Effect.map((sandboxes) => ({
       sandboxes: [...sandboxes].sort((left, right) =>
         right.createdAt.localeCompare(left.createdAt),
@@ -146,26 +260,45 @@ const make = Effect.gen(function* () {
             template: account.template,
             timeoutMs: (input.timeoutMinutes ?? DEFAULT_TEST_TIMEOUT_MINUTES) * 60_000,
           })
-          .pipe(
-            Effect.mapError((error) => toSandboxError("create-sandbox", error)),
-            Effect.tapError(() => store.remove(id).pipe(Effect.ignore)),
+          .pipe(Effect.result);
+        if (created._tag === "Failure") {
+          return yield* handleCreateFailure(
+            record,
+            account,
+            driver,
+            new SandboxError({ operation: "create-sandbox", detail: created.failure.detail }),
           );
+        }
 
         const running: SandboxTestSandbox = {
           ...record,
-          providerSandboxId: created.providerSandboxId,
+          providerSandboxId: created.success.providerSandboxId,
           status: "running",
           updatedAt: DateTime.formatIso(yield* DateTime.now),
         };
         const persisted = yield* store.upsert(running).pipe(Effect.result);
         if (persisted._tag === "Failure") {
-          yield* driver.delete(account, created.providerSandboxId).pipe(Effect.ignore);
-          yield* store.remove(id).pipe(Effect.ignore);
-          return yield* new SandboxError({
-            operation: "create-sandbox",
-            detail:
-              "The sandbox was created but its state could not be saved, so it was deleted. Try again.",
-          });
+          const deleted = yield* driver.delete(account, created.success.providerSandboxId).pipe(
+            Effect.catchIf(isNotFound, () => Effect.void),
+            Effect.result,
+          );
+          if (deleted._tag === "Success") {
+            yield* store.remove(id).pipe(Effect.ignore);
+            return yield* new SandboxError({
+              operation: "create-sandbox",
+              detail:
+                "The sandbox was created but its state could not be saved, so it was deleted. Try again.",
+            });
+          }
+          const detail = `The sandbox was created but its state could not be saved, and it could not be deleted: ${deleted.failure.detail} It is listed so it can be deleted.`;
+          yield* store
+            .upsert({
+              ...running,
+              lastError: detail,
+              updatedAt: DateTime.formatIso(yield* DateTime.now),
+            })
+            .pipe(Effect.ignore);
+          return yield* new SandboxError({ operation: "create-sandbox", detail });
         }
         return { sandbox: running };
       }),
@@ -234,23 +367,26 @@ const make = Effect.gen(function* () {
     return yield* lifecycleLock.withPermits(1)(
       Effect.gen(function* () {
         const record = yield* getRecord(input.sandboxId);
-        if (record.providerSandboxId === null) {
-          yield* store.remove(record.id).pipe(Effect.ignore);
-          return;
-        }
         const { account, driver } = yield* accounts.resolve(record.accountId);
+        const found =
+          record.providerSandboxId === null
+            ? yield* driver
+                .findCreated(account, record.id)
+                .pipe(Effect.mapError((error) => toSandboxError("delete-sandbox", error)))
+            : [
+                {
+                  providerSandboxId: record.providerSandboxId,
+                  status: runningStatus(record),
+                },
+              ];
         const deleting: SandboxTestSandbox = {
           ...record,
+          providerSandboxId: found[0]?.providerSandboxId ?? record.providerSandboxId,
           status: "deleting",
           updatedAt: DateTime.formatIso(yield* DateTime.now),
         };
         yield* store.upsert(deleting).pipe(Effect.ignore);
-        yield* driver.delete(account, record.providerSandboxId).pipe(
-          Effect.catchIf(isNotFound, () => Effect.void),
-          Effect.mapError((error) => toSandboxError("delete-sandbox", error)),
-          Effect.tapError((error) => markFailed(deleting, error.detail)),
-        );
-        yield* store.remove(record.id).pipe(Effect.ignore);
+        yield* deleteAllOrFail("delete-sandbox", driver, account, found, deleting);
       }),
     );
   });
@@ -312,10 +448,6 @@ const make = Effect.gen(function* () {
           (record) => record.accountId === input.accountId,
         );
         for (const record of records) {
-          if (record.providerSandboxId === null) {
-            yield* store.remove(record.id).pipe(Effect.ignore);
-            continue;
-          }
           const resolved = yield* accounts.resolve(record.accountId).pipe(
             Effect.catchTags({
               SandboxError: (error) =>
@@ -325,16 +457,31 @@ const make = Effect.gen(function* () {
                 }),
             }),
           );
-          yield* resolved.driver.delete(resolved.account, record.providerSandboxId).pipe(
-            Effect.catchIf(isNotFound, () => Effect.void),
-            Effect.mapError(
-              (error) =>
-                new SandboxError({
-                  operation: "disconnect-account",
-                  detail: `Delete the ${record.providerKind} test sandbox before disconnecting. ${error.detail}`,
-                }),
-            ),
-          );
+          const found =
+            record.providerSandboxId === null
+              ? yield* resolved.driver.findCreated(resolved.account, record.id).pipe(
+                  Effect.mapError(
+                    (error) =>
+                      new SandboxError({
+                        operation: "disconnect-account",
+                        detail: `Check the ${record.providerKind} test sandbox before disconnecting. ${error.detail}`,
+                      }),
+                  ),
+                )
+              : [
+                  {
+                    providerSandboxId: record.providerSandboxId,
+                    status: runningStatus(record),
+                  },
+                ];
+          const outcomes = yield* deleteFound(resolved.driver, resolved.account, found);
+          const failure = outcomes.find(Result.isFailure);
+          if (failure !== undefined) {
+            return yield* new SandboxError({
+              operation: "disconnect-account",
+              detail: `Delete the ${record.providerKind} test sandbox before disconnecting. ${failure.failure.detail}`,
+            });
+          }
           yield* store.remove(record.id).pipe(Effect.ignore);
         }
         yield* accounts.disconnect(input.accountId);
@@ -350,6 +497,7 @@ const make = Effect.gen(function* () {
     deleteTestSandbox,
     checkTestSandbox,
     disconnectAccount,
+    reconcile: reconcile(),
   });
 });
 

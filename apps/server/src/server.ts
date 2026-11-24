@@ -563,12 +563,22 @@ const layerDevice = DeviceService.layer.pipe(
 
 const layerSandboxAccounts = SandboxAccounts.layer.pipe(Layer.provide(SecretResolver.layer));
 const layerSandboxStorage = Layer.mergeAll(layerSandboxAccounts, SandboxStore.layer);
+const layerSandboxLifecycle = SandboxLifecycle.layer.pipe(
+  Layer.provide(layerSandboxAccounts),
+  Layer.provide(SandboxStore.layer),
+);
 const layerSandbox = Layer.merge(
-  layerSandboxStorage,
-  SandboxLifecycle.layer.pipe(
-    Layer.provide(layerSandboxAccounts),
-    Layer.provide(SandboxStore.layer),
-  ),
+  Layer.mergeAll(layerSandboxStorage, layerSandboxLifecycle),
+  Layer.effectDiscard(
+    Effect.gen(function* () {
+      const lifecycle = yield* SandboxLifecycle.SandboxLifecycle;
+      yield* lifecycle.reconcile.pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("failed to reconcile sandbox state", { cause }),
+        ),
+      );
+    }),
+  ).pipe(Layer.provide(layerSandboxLifecycle)),
 );
 
 const layerWorkspaceEntries = WorkspaceEntries.layer.pipe(Layer.provide(WorkspacePaths.layer));

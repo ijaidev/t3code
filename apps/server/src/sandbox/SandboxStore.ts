@@ -79,12 +79,10 @@ const make = Effect.gen(function* () {
           (cause) => new SandboxStoreError({ operation: "read", path: storePath, cause }),
         ),
       );
+    // Never replace an unreadable file with empty state: it may be the only list of billable sandboxes.
     return yield* decodeStore(contents).pipe(
-      Effect.catchCause((cause) =>
-        Effect.logWarning("failed to read sandboxes.json; starting with no sandbox records", {
-          path: storePath,
-          cause,
-        }).pipe(Effect.as(emptyState)),
+      Effect.mapError(
+        (cause) => new SandboxStoreError({ operation: "read", path: storePath, cause }),
       ),
     );
   });
