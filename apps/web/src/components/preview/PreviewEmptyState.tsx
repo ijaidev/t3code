@@ -1,4 +1,4 @@
-import { T } from "gt-react";
+import { T, useGT } from "gt-react";
 import type { EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
 import { parseUrl } from "@t3tools/shared/url";
 import { Globe, History, RadioTower } from "lucide-react";
@@ -9,6 +9,7 @@ import { DiscoveryList } from "../ui/discovery-list";
 
 import { PreviewLocalServerCard } from "./PreviewLocalServerCard";
 import { PreviewRecentUrlCard } from "./PreviewRecentUrlCard";
+import { useThreadSandboxPreviewUnavailable } from "~/portDiscoveryState";
 import { useDiscoveredLocalServers } from "./useDiscoveredLocalServers";
 
 interface Props {
@@ -28,15 +29,28 @@ export function PreviewEmptyState({
   onRemoveRecent,
   onOpenUrl,
 }: Props) {
+  const gt = useGT();
   const servers = useDiscoveredLocalServers({
     environmentId,
     configuredUrls,
   }).filter(
     (server) => server.sandboxPort !== true || server.agent?.threadId === threadRef.threadId,
   );
+  const previewUnavailable = useThreadSandboxPreviewUnavailable({
+    environmentId,
+    threadId: threadRef.threadId,
+  });
+  const previewUnavailableMessage =
+    previewUnavailable === "provider-no-private-ports"
+      ? gt("This sandbox provider does not support private ports.")
+      : previewUnavailable === "sandbox-unavailable"
+        ? gt("The sandbox is not ready for previews.")
+        : previewUnavailable === "listener-failed"
+          ? gt("The sandbox preview could not start.")
+          : null;
   const recents = recentEntries.filter((entry) => parseUrl(entry.url) !== null).slice(0, 8);
 
-  if (servers.length === 0 && recents.length === 0) {
+  if (servers.length === 0 && recents.length === 0 && previewUnavailableMessage === null) {
     return (
       <Empty>
         <EmptyMedia variant="icon">
@@ -79,6 +93,9 @@ export function PreviewEmptyState({
             </DiscoveryList>
           </div>
         ) : null}
+        {previewUnavailableMessage === null ? null : (
+          <p className="px-1 text-xs text-muted-foreground">{previewUnavailableMessage}</p>
+        )}
         {servers.length > 0 ? (
           <div className="flex flex-col gap-3">
             <div className="flex items-center gap-2 text-sm text-muted-foreground">

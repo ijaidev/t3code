@@ -1,5 +1,10 @@
 // @effect-diagnostics nodeBuiltinImport:off - a byte-stream preview proxy needs Node's HTTP transports.
-import type { DiscoveredLocalServer, SandboxTestSandbox, ThreadId } from "@t3tools/contracts";
+import type {
+  DiscoveredLocalServer,
+  SandboxPreviewUnavailableReason,
+  SandboxTestSandbox,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -7,6 +12,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Semaphore from "effect/Semaphore";
 import * as NodeHttp from "node:http";
 import * as NodeHttps from "node:https";
@@ -19,6 +25,8 @@ import * as SandboxStore from "./SandboxStore.ts";
 
 const PORT_ACCESS_TTL_MS = 60_000;
 const UPSTREAM_IDLE_TIMEOUT_MS = 60_000;
+const PREVIEW_TOKEN_PARAM = "t3-preview";
+const PREVIEW_UNAVAILABLE_BODY = "The sandbox preview is unavailable.";
 const HOP_BY_HOP_HEADERS = new Set([
   "connection",
   "keep-alive",
@@ -49,6 +57,11 @@ interface PortAccess {
   readonly expiresAt: number;
 }
 
+interface ProxySocket {
+  readonly client: WebSocket;
+  readonly upstream: WebSocket;
+}
+
 interface ProxyEntry {
   readonly key: string;
   readonly threadId: ThreadId;
@@ -56,9 +69,20 @@ interface ProxyEntry {
   readonly resolved: ResolvedSandbox;
   readonly server: NodeHttp.Server;
   readonly webSocketServer: WebSocketServer;
+  readonly token: string;
+  readonly cookieName: string;
+  readonly sockets: Set<ProxySocket>;
   url: string;
+  previewUrl: string;
   access: PortAccess | null;
 }
+
+export type CloudPreviewEnsureResult =
+  | { readonly _tag: "ready"; readonly server: DiscoveredLocalServer }
+  | {
+      readonly _tag: "unavailable";
+      readonly reason: SandboxPreviewUnavailableReason;
+    };
 
 export class CloudPreviewProxyError extends Schema.TaggedError<
   CloudPreviewProxyError,
@@ -79,16 +103,45 @@ export class CloudPreviewProxy extends Context.Service<
     readonly ensure: (input: {
       readonly threadId: ThreadId;
       readonly port: number;
-    }) => Effect.Effect<Option.Option<DiscoveredLocalServer>>;
+    }) => Effect.Effect<CloudPreviewEnsureResult>;
     readonly release: (input: {
       readonly threadId: ThreadId;
       readonly port: number;
     }) => Effect.Effect<void>;
     readonly releaseThread: (threadId: ThreadId) => Effect.Effect<void>;
+    /** Provider control-plane ports that are not app previews. */
+    readonly reservedPorts: (threadId: ThreadId) => Effect.Effect<ReadonlyArray<number>>;
   }
 >()("t3/sandbox/CloudPreviewProxy") {}
 
 const entryKey = (threadId: ThreadId, port: number) => `${threadId}\u0000${port}`;
+
+const previewRequestUrl = (request: NodeHttp.IncomingMessage): URL =>
+  new URL(request.url ?? "/", "http://localhost");
+
+const previewToken = (request: NodeHttp.IncomingMessage): string | null =>
+  previewRequestUrl(request).searchParams.get(PREVIEW_TOKEN_PARAM);
+
+const cookieValue = (header: string | undefined, name: string): string | null => {
+  if (header === undefined) return null;
+  for (const part of header.split(";")) {
+    const separator = part.indexOf("=");
+    if (separator < 0) continue;
+    if (part.slice(0, separator).trim() === name) return part.slice(separator + 1).trim();
+  }
+  return null;
+};
+
+const authorization = (entry: ProxyEntry, request: NodeHttp.IncomingMessage) => {
+  if (cookieValue(request.headers.cookie, entry.cookieName) === entry.token) return "ok" as const;
+  return previewToken(request) === entry.token ? ("bootstrap" as const) : ("denied" as const);
+};
+
+const cleanPreviewPath = (request: NodeHttp.IncomingMessage): string => {
+  const url = previewRequestUrl(request);
+  url.searchParams.delete(PREVIEW_TOKEN_PARAM);
+  return `${url.pathname}${url.search}`;
+};
 
 const forwardedRequestHeaders = (
   request: NodeHttp.IncomingMessage,
@@ -128,7 +181,8 @@ const responseHeaders = (
       if (
         location.origin === upstreamOrigin ||
         location.origin === sandboxOrigin ||
-        (location.hostname === "localhost" && Number(location.port) === entry.port)
+        (location.hostname === "localhost" &&
+          (location.port === "" || Number(location.port) === entry.port))
       ) {
         return `${localOrigin}${location.pathname}${location.search}${location.hash}`;
       }
@@ -152,7 +206,12 @@ const webSocketProtocols = (header: string | undefined): ReadonlyArray<string> =
 
 const writeError = (response: NodeHttp.ServerResponse, status: number, detail: string) => {
   if (response.headersSent) return;
-  response.writeHead(status, { "content-type": "text/plain; charset=utf-8" });
+  response.writeHead(status, {
+    "content-type": "text/plain; charset=utf-8",
+    "cache-control": "private, no-store",
+    "referrer-policy": "no-referrer",
+    "x-content-type-options": "nosniff",
+  });
   response.end(detail);
 };
 
@@ -161,12 +220,13 @@ const proxyHttpRequest = (
   access: PortAccess,
   request: NodeHttp.IncomingMessage,
   response: NodeHttp.ServerResponse,
+  onUpstreamError: (error: unknown) => void,
 ) =>
   new Promise<void>((resolve) => {
     const upstream = new URL(access.url);
     const transport = upstream.protocol === "https:" ? NodeHttps : NodeHttp;
     const target = new URL(
-      `${upstream.pathname.replace(/\/$/, "")}${request.url ?? "/"}`,
+      `${upstream.pathname.replace(/\/$/, "")}${cleanPreviewPath(request)}`,
       upstream,
     );
     const outgoing = transport.request(
@@ -195,7 +255,8 @@ const proxyHttpRequest = (
       outgoing.destroy(new Error("The sandbox preview request timed out.")),
     );
     outgoing.on("error", (error) => {
-      writeError(response, 502, `The sandbox preview could not be reached: ${error.message}`);
+      onUpstreamError(error);
+      writeError(response, 502, PREVIEW_UNAVAILABLE_BODY);
       resolve();
     });
     response.on("close", () => outgoing.destroy());
@@ -210,7 +271,10 @@ const proxyWebSocket = (
   head: Buffer,
 ) => {
   const upstream = new URL(access.url);
-  const target = new URL(`${upstream.pathname.replace(/\/$/, "")}${request.url ?? "/"}`, upstream);
+  const target = new URL(
+    `${upstream.pathname.replace(/\/$/, "")}${cleanPreviewPath(request)}`,
+    upstream,
+  );
   target.protocol = upstream.protocol === "https:" ? "wss:" : "ws:";
   const protocols = webSocketProtocols(request.headers["sec-websocket-protocol"]);
   const headers = forwardedRequestHeaders(request, entry, access);
@@ -226,10 +290,19 @@ const proxyWebSocket = (
   upstreamSocket.once("error", () => socket.destroy());
   upstreamSocket.once("open", () => {
     entry.webSocketServer.handleUpgrade(request, socket, head, (client) => {
+      const pair: ProxySocket = { client, upstream: upstreamSocket };
+      entry.sockets.add(pair);
+      const forget = () => entry.sockets.delete(pair);
       client.on("message", (data, isBinary) => upstreamSocket.send(data, { binary: isBinary }));
       upstreamSocket.on("message", (data, isBinary) => client.send(data, { binary: isBinary }));
-      client.on("close", () => upstreamSocket.close());
-      upstreamSocket.on("close", () => client.close());
+      client.on("close", () => {
+        forget();
+        upstreamSocket.close();
+      });
+      upstreamSocket.on("close", () => {
+        forget();
+        client.close();
+      });
       client.on("error", () => upstreamSocket.terminate());
       upstreamSocket.on("error", () => client.terminate());
     });
@@ -240,20 +313,30 @@ const proxyWebSocket = (
 export const make = Effect.gen(function* CloudPreviewProxyMake() {
   const store = yield* SandboxStore.SandboxStore;
   const accounts = yield* SandboxAccounts.SandboxAccounts;
+  const random = yield* SecureRandom.SecureRandom;
   const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
   const entries = yield* Ref.make<ReadonlyMap<string, ProxyEntry>>(new Map());
   const lock = yield* Semaphore.make(1);
 
   const closeEntry = (entry: ProxyEntry) =>
     Effect.sync(() => {
+      for (const pair of entry.sockets) {
+        pair.client.terminate();
+        pair.upstream.terminate();
+      }
+      entry.sockets.clear();
       entry.webSocketServer.close();
       entry.server.close();
       entry.server.closeAllConnections();
     });
 
-  const resolveSandbox = Effect.fn("CloudPreviewProxy.resolveSandbox")(function* (
-    threadId: ThreadId,
-  ) {
+  const resolveSandbox: (threadId: ThreadId) => Effect.Effect<
+    | { readonly _tag: "ready"; readonly resolved: ResolvedSandbox }
+    | {
+        readonly _tag: "unavailable";
+        readonly reason: SandboxPreviewUnavailableReason;
+      }
+  > = Effect.fn("CloudPreviewProxy.resolveSandbox")(function* (threadId) {
     const sandboxes = yield* store.list.pipe(Effect.orElseSucceed(() => []));
     const sandbox = sandboxes.find((candidate) => candidate.threadId === threadId);
     if (
@@ -262,21 +345,26 @@ export const make = Effect.gen(function* CloudPreviewProxyMake() {
       sandbox.status === "deleting" ||
       sandbox.status === "provisioning"
     ) {
-      return Option.none<ResolvedSandbox>();
+      return { _tag: "unavailable" as const, reason: "sandbox-unavailable" as const };
     }
     const resolved = yield* accounts.resolve(sandbox.accountId).pipe(Effect.option);
-    if (Option.isNone(resolved)) return Option.none<ResolvedSandbox>();
+    if (Option.isNone(resolved)) {
+      return { _tag: "unavailable" as const, reason: "sandbox-unavailable" as const };
+    }
     if (
       !resolved.value.driver.capabilities.privatePorts ||
       resolved.value.driver.portAccess === undefined
     ) {
-      return Option.none<ResolvedSandbox>();
+      return { _tag: "unavailable" as const, reason: "provider-no-private-ports" as const };
     }
-    return Option.some({
-      sandbox,
-      account: resolved.value.account,
-      driver: resolved.value.driver,
-    });
+    return {
+      _tag: "ready" as const,
+      resolved: {
+        sandbox,
+        account: resolved.value.account,
+        driver: resolved.value.driver,
+      },
+    };
   });
 
   const readAccess = Effect.fn("CloudPreviewProxy.readAccess")(function* (
@@ -310,17 +398,49 @@ export const make = Effect.gen(function* CloudPreviewProxyMake() {
     request: NodeHttp.IncomingMessage,
     response: NodeHttp.ServerResponse,
   ) => {
+    const authorized = authorization(entry, request);
+    if (authorized === "denied") {
+      writeError(response, 401, "Preview access denied.");
+      return;
+    }
+    if (authorized === "bootstrap") {
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        writeError(response, 401, "Preview access denied.");
+        return;
+      }
+      response.writeHead(302, {
+        location: cleanPreviewPath(request) || "/",
+        "set-cookie": `${entry.cookieName}=${entry.token}; Path=/; HttpOnly; SameSite=Lax`,
+        "cache-control": "private, no-store",
+        "referrer-policy": "no-referrer",
+      });
+      response.end();
+      return;
+    }
     void runPromise(
       Effect.gen(function* () {
         const access = yield* readAccess(entry, false).pipe(
           Effect.catch(() => readAccess(entry, true)),
         );
-        yield* Effect.promise(() => proxyHttpRequest(entry, access, request, response));
+        yield* Effect.promise(() =>
+          proxyHttpRequest(entry, access, request, response, (cause) => {
+            void runPromise(
+              Effect.logWarning("Sandbox preview request failed", {
+                threadId: entry.threadId,
+                port: entry.port,
+                cause,
+              }),
+            );
+          }),
+        );
       }).pipe(
         Effect.catch((error) => {
-          const message = error instanceof Error ? error.message : String(error);
-          writeError(response, 502, message);
-          return Effect.void;
+          writeError(response, 502, PREVIEW_UNAVAILABLE_BODY);
+          return Effect.logWarning("Sandbox preview proxy failed", {
+            threadId: entry.threadId,
+            port: entry.port,
+            cause: error,
+          });
         }),
       ),
     );
@@ -332,6 +452,10 @@ export const make = Effect.gen(function* CloudPreviewProxyMake() {
     socket: NodeStream.Duplex,
     head: Buffer,
   ) => {
+    if (authorization(entry, request) === "denied") {
+      socket.end("HTTP/1.1 401 Unauthorized\r\ncontent-type: text/plain\r\n\r\n");
+      return;
+    }
     void runPromise(
       Effect.gen(function* () {
         const access = yield* readAccess(entry, false).pipe(
@@ -340,19 +464,30 @@ export const make = Effect.gen(function* CloudPreviewProxyMake() {
         yield* Effect.sync(() => proxyWebSocket(entry, access, request, socket, head));
       }).pipe(
         Effect.catch((error) => {
-          const message = error instanceof Error ? error.message : String(error);
-          socket.end(`HTTP/1.1 502 Bad Gateway\r\ncontent-type: text/plain\r\n\r\n${message}`);
-          return Effect.void;
+          socket.end("HTTP/1.1 502 Bad Gateway\r\ncontent-type: text/plain\r\n\r\n");
+          return Effect.logWarning("Sandbox preview WebSocket failed", {
+            threadId: entry.threadId,
+            port: entry.port,
+            cause: error,
+          });
         }),
       ),
     );
   };
 
-  const listen = (entryWithoutServer: Omit<ProxyEntry, "server" | "webSocketServer" | "url">) =>
+  const listen = (
+    entryWithoutServer: Omit<ProxyEntry, "server" | "webSocketServer" | "url" | "previewUrl">,
+  ) =>
     Effect.callback<ProxyEntry, CloudPreviewProxyError>((resume) => {
       const webSocketServer = new WebSocketServer({ noServer: true });
       const server = NodeHttp.createServer();
-      const entry: ProxyEntry = { ...entryWithoutServer, server, webSocketServer, url: "" };
+      const entry: ProxyEntry = {
+        ...entryWithoutServer,
+        server,
+        webSocketServer,
+        url: "",
+        previewUrl: "",
+      };
       server.on("request", (request, response) => handleRequest(entry, request, response));
       server.on("upgrade", (request, socket, head) => handleUpgrade(entry, request, socket, head));
       const failed = (cause: unknown) => {
@@ -376,6 +511,7 @@ export const make = Effect.gen(function* CloudPreviewProxyMake() {
           return;
         }
         entry.url = `http://localhost:${address.port}`;
+        entry.previewUrl = `${entry.url}/?${PREVIEW_TOKEN_PARAM}=${entry.token}`;
         resume(Effect.succeed(entry));
       });
       return Effect.sync(() => {
@@ -393,24 +529,36 @@ export const make = Effect.gen(function* CloudPreviewProxyMake() {
           const current = yield* Ref.get(entries);
           const existing = current.get(key);
           if (existing !== undefined) {
-            return Option.some({
-              host: "localhost",
-              port: input.port,
-              url: existing.url,
-              processName: null,
-              pid: null,
-              terminal: null,
-              agent: { threadId: input.threadId },
-              sandboxPort: true,
-            } satisfies DiscoveredLocalServer);
+            return {
+              _tag: "ready" as const,
+              server: {
+                host: "localhost",
+                port: input.port,
+                url: existing.previewUrl,
+                processName: null,
+                pid: null,
+                terminal: null,
+                agent: { threadId: input.threadId },
+                sandboxPort: true,
+              } satisfies DiscoveredLocalServer,
+            };
           }
           const resolved = yield* resolveSandbox(input.threadId);
-          if (Option.isNone(resolved)) return Option.none();
+          if (resolved._tag === "unavailable") {
+            return { _tag: "unavailable" as const, reason: resolved.reason };
+          }
+          const token = yield* random.uuidV4();
+          const cookieName = `t3_cloud_preview_${(yield* random.uuidV4())
+            .replaceAll("-", "")
+            .slice(0, 12)}`;
           const created = yield* listen({
             key,
             threadId: input.threadId,
             port: input.port,
-            resolved: resolved.value,
+            resolved: resolved.resolved,
+            token,
+            cookieName,
+            sockets: new Set(),
             access: null,
           }).pipe(
             Effect.catch((error) =>
@@ -419,18 +567,23 @@ export const make = Effect.gen(function* CloudPreviewProxyMake() {
               ),
             ),
           );
-          if (created === null) return Option.none();
+          if (created === null) {
+            return { _tag: "unavailable" as const, reason: "listener-failed" as const };
+          }
           yield* Ref.update(entries, (all) => new Map(all).set(key, created));
-          return Option.some({
-            host: "localhost",
-            port: input.port,
-            url: created.url,
-            processName: null,
-            pid: null,
-            terminal: null,
-            agent: { threadId: input.threadId },
-            sandboxPort: true,
-          } satisfies DiscoveredLocalServer);
+          return {
+            _tag: "ready" as const,
+            server: {
+              host: "localhost",
+              port: input.port,
+              url: created.previewUrl,
+              processName: null,
+              pid: null,
+              terminal: null,
+              agent: { threadId: input.threadId },
+              sandboxPort: true,
+            } satisfies DiscoveredLocalServer,
+          };
         }),
       );
     },
@@ -467,7 +620,16 @@ export const make = Effect.gen(function* CloudPreviewProxyMake() {
       }),
     );
 
-  return CloudPreviewProxy.of({ ensure, release, releaseThread });
+  const reservedPorts: CloudPreviewProxy["Service"]["reservedPorts"] = Effect.fn(
+    "CloudPreviewProxy.reservedPorts",
+  )(function* (threadId) {
+    const resolved = yield* resolveSandbox(threadId);
+    return resolved._tag === "ready"
+      ? (resolved.resolved.driver.capabilities.reservedPorts ?? [])
+      : [];
+  });
+
+  return CloudPreviewProxy.of({ ensure, release, releaseThread, reservedPorts });
 });
 
 export const layer = Layer.effect(CloudPreviewProxy, make);

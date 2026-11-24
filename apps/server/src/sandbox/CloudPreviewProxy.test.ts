@@ -1,4 +1,4 @@
-// @effect-diagnostics globalFetchInEffect:off - the test drives the loopback proxy exactly as a browser does.
+// @effect-diagnostics globalFetch:off globalFetchInEffect:off - the test drives the loopback proxy exactly as a browser does.
 // @effect-diagnostics nodeBuiltinImport:off - the test stands up a real upstream HTTP server.
 import {
   SandboxInstanceId,
@@ -12,7 +12,7 @@ import * as NodeHttp from "node:http";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import { WebSocket, WebSocketServer } from "ws";
 
 import * as SandboxAccounts from "./SandboxAccounts.ts";
@@ -99,7 +99,16 @@ const accountsLayer = (driver: SandboxProviderDriver) =>
   );
 
 const testLayer = (driver: SandboxProviderDriver) =>
-  CloudPreviewProxy.layer.pipe(Layer.provide(storeLayer), Layer.provide(accountsLayer(driver)));
+  CloudPreviewProxy.layer.pipe(
+    Layer.provide(storeLayer),
+    Layer.provide(accountsLayer(driver)),
+    Layer.provide(
+      Layer.succeed(
+        SecureRandom.SecureRandom,
+        SecureRandom.make((size) => new Uint8Array(size).fill(7)),
+      ),
+    ),
+  );
 
 const startUpstream = async (
   handler: (request: NodeHttp.IncomingMessage, response: NodeHttp.ServerResponse) => void,
@@ -118,8 +127,29 @@ const startUpstream = async (
   };
 };
 
+const bootstrapPreview = async (
+  serverUrl: string,
+): Promise<{ readonly origin: string; readonly cookie: string; readonly response: Response }> => {
+  const response = await fetch(serverUrl, { redirect: "manual" });
+  const cookie = response.headers.getSetCookie()[0]?.split(";")[0] ?? "";
+  const origin = new URL(serverUrl).origin;
+  return { origin, cookie, response };
+};
+
+const authorizedFetch = (
+  origin: string,
+  path: string,
+  cookie: string,
+  init: RequestInit = {},
+): Promise<Response> => {
+  const headers = new Headers(init.headers);
+  headers.set("cookie", cookie);
+  headers.set("origin", origin);
+  return fetch(`${origin}${path}`, { ...init, headers });
+};
+
 describe("cloud preview proxy", () => {
-  it.effect("proxies a sandbox port without exposing the provider URL or its token", () => {
+  it.effect("requires the preview ticket and keeps provider details out of the client", () => {
     const seen: Array<{
       readonly url: string | undefined;
       readonly token: string | undefined;
@@ -144,7 +174,7 @@ describe("cloud preview proxy", () => {
               origin: request.headers.origin,
             });
             if (request.url === "/redirect") {
-              response.writeHead(302, { location: "http://localhost:5173/next" });
+              response.writeHead(302, { location: "http://localhost/next" });
               response.end();
               return;
             }
@@ -157,21 +187,27 @@ describe("cloud preview proxy", () => {
       upstreamUrl = remote.url;
       const proxy = yield* CloudPreviewProxy.CloudPreviewProxy;
       const ensured = yield* proxy.ensure({ threadId, port: 5173 });
-      expect(Option.isSome(ensured)).toBe(true);
-      if (Option.isNone(ensured)) throw new Error("preview proxy was not created");
-      const entry = ensured.value;
+      expect(ensured._tag).toBe("ready");
+      if (ensured._tag !== "ready") throw new Error("preview proxy was not created");
+      const entry = ensured.server;
       expect(entry.sandboxPort).toBe(true);
       expect(entry.agent?.threadId).toBe(threadId);
       expect(entry.url).not.toContain("127.0.0.1");
       expect(entry.url).not.toContain("e2b");
       expect(entry.url).toContain("localhost");
+      expect(entry.url).toContain("t3-preview=");
 
-      const local = new URL(entry.url);
-      local.hostname = "127.0.0.1";
+      const boot = yield* Effect.promise(() => bootstrapPreview(entry.url));
+      expect(boot.response.status).toBe(302);
+      expect(boot.cookie.length).toBeGreaterThan(0);
+      expect(boot.response.headers.get("location")).toBe("/");
+
+      const denied = yield* Effect.promise(() => fetch(`${boot.origin}/hello`));
+      expect(denied.status).toBe(401);
+      expect(seen).toEqual([]);
+
       const response = yield* Effect.promise(() =>
-        fetch(`${local.origin}/hello?x=1`, {
-          headers: { cookie: "t3_session=secret", origin: entry.url },
-        }),
+        authorizedFetch(boot.origin, "/hello?x=1", boot.cookie),
       );
       expect(response.status).toBe(200);
       expect(yield* Effect.promise(() => response.text())).toBe("sandbox page");
@@ -181,14 +217,14 @@ describe("cloud preview proxy", () => {
       expect(seen[0]?.origin).toBe("http://localhost:5173");
 
       const redirect = yield* Effect.promise(() =>
-        fetch(`${local.origin}/redirect`, { redirect: "manual" }),
+        authorizedFetch(boot.origin, "/redirect", boot.cookie, { redirect: "manual" }),
       );
       expect(redirect.status).toBe(302);
-      expect(redirect.headers.get("location")).toBe(`${entry.url}/next`);
+      expect(redirect.headers.get("location")).toBe(`${boot.origin}/next`);
 
       yield* proxy.release({ threadId, port: 5173 });
       const refused = yield* Effect.promise(() =>
-        fetch(`${local.origin}/hello`).then(
+        fetch(`${boot.origin}/hello`).then(
           () => false,
           () => true,
         ),
@@ -197,7 +233,22 @@ describe("cloud preview proxy", () => {
     }).pipe(Effect.provide(testLayer(driver)));
   });
 
-  it.effect("carries a preview WebSocket through the same private endpoint", () => {
+  it.effect("returns a generic 502 without the provider host", () => {
+    const driver = fakeDriver(() => Effect.succeed({ url: "http://127.0.0.1:1", headers: {} }));
+    return Effect.gen(function* () {
+      const proxy = yield* CloudPreviewProxy.CloudPreviewProxy;
+      const ensured = yield* proxy.ensure({ threadId, port: 5173 });
+      if (ensured._tag !== "ready") throw new Error("preview proxy was not created");
+      const boot = yield* Effect.promise(() => bootstrapPreview(ensured.server.url));
+      const response = yield* Effect.promise(() => authorizedFetch(boot.origin, "/", boot.cookie));
+      expect(response.status).toBe(502);
+      const body = yield* Effect.promise(() => response.text());
+      expect(body).toBe("The sandbox preview is unavailable.");
+      expect(body).not.toContain("127.0.0.1");
+    }).pipe(Effect.provide(testLayer(driver)));
+  });
+
+  it.effect("carries and closes preview WebSockets with the preview", () => {
     let upstreamUrl = "";
     let token: string | undefined;
     const driver = fakeDriver(() =>
@@ -230,23 +281,27 @@ describe("cloud preview proxy", () => {
       upstreamUrl = `http://127.0.0.1:${address.port}`;
       const proxy = yield* CloudPreviewProxy.CloudPreviewProxy;
       const ensured = yield* proxy.ensure({ threadId, port: 5173 });
-      if (Option.isNone(ensured)) throw new Error("preview proxy was not created");
-      const local = new URL(ensured.value.url);
+      if (ensured._tag !== "ready") throw new Error("preview proxy was not created");
+      const boot = yield* Effect.promise(() => bootstrapPreview(ensured.server.url));
+      const local = new URL(boot.origin);
       local.hostname = "127.0.0.1";
-      const echo = yield* Effect.promise(
+      const socket = new WebSocket(local.href.replace("http:", "ws:") + "ws", {
+        headers: { cookie: boot.cookie },
+      });
+      const echoed = yield* Effect.promise(
         () =>
           new Promise<string>((resolve, reject) => {
-            const socket = new WebSocket(local);
             socket.once("open", () => socket.send("hello"));
-            socket.once("message", (data) => {
-              socket.close();
-              resolve(String(data));
-            });
+            socket.once("message", (data) => resolve(String(data)));
             socket.once("error", reject);
           }),
       );
-      expect(echo).toBe("hello");
+      expect(echoed).toBe("hello");
       expect(token).toBe("traffic-token");
+      const closed = new Promise<void>((resolve) => socket.once("close", () => resolve()));
+      yield* proxy.release({ threadId, port: 5173 });
+      yield* Effect.promise(() => closed);
+      expect(socket.readyState).toBe(WebSocket.CLOSED);
     }).pipe(Effect.provide(testLayer(driver)));
   });
 
@@ -254,7 +309,7 @@ describe("cloud preview proxy", () => {
     Effect.gen(function* () {
       const proxy = yield* CloudPreviewProxy.CloudPreviewProxy;
       const ensured = yield* proxy.ensure({ threadId, port: 5173 });
-      expect(Option.isNone(ensured)).toBe(true);
+      expect(ensured).toEqual({ _tag: "unavailable", reason: "provider-no-private-ports" });
     }).pipe(Effect.provide(testLayer(fakeDriver(undefined)))),
   );
 });

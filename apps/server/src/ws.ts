@@ -3503,14 +3503,19 @@ export const layerWsRpc = (
             Effect.gen(function* () {
               const configuredUrls = input.configuredUrls ?? [];
               yield* portDiscovery.retain;
+              const initialSandbox = yield* cloudThreadPorts.snapshot;
               let localServers = yield* portDiscovery.scan(configuredUrls);
-              let sandboxServers = yield* cloudThreadPorts.snapshot;
+              let sandboxServers = initialSandbox.servers;
+              let sandboxUnavailable = initialSandbox.unavailable;
               const offer = Effect.fn("subscribeDiscoveredLocalServers.offer")(function* () {
                 const scannedAt = DateTime.formatIso(yield* DateTime.now);
                 yield* Queue.offer(queue, {
                   servers: [...localServers, ...sandboxServers],
                   scannedAt,
                   configuredUrlProbing: true,
+                  ...(sandboxUnavailable.length === 0
+                    ? {}
+                    : { sandboxPreviewUnavailable: sandboxUnavailable }),
                 });
               });
               yield* offer();
@@ -3524,9 +3529,10 @@ export const layerWsRpc = (
               );
               yield* cloudThreadPorts.subscribe(() =>
                 cloudThreadPorts.snapshot.pipe(
-                  Effect.flatMap((servers) =>
+                  Effect.flatMap((snapshot) =>
                     Effect.gen(function* () {
-                      sandboxServers = servers;
+                      sandboxServers = snapshot.servers;
+                      sandboxUnavailable = snapshot.unavailable;
                       yield* offer();
                     }),
                   ),

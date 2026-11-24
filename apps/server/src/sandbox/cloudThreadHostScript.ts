@@ -15,7 +15,6 @@ import traceback
 PROTOCOL_VERSION = "1"
 MAX_TOOL_OUTPUT = 200_000
 PORT_SCAN_INTERVAL = 3
-PORT_SCAN_INTERNAL_PORTS = {49983, 50005}
 _write_lock = threading.Lock()
 
 
@@ -186,7 +185,7 @@ def listening_ports():
                 port = int(fields[1].rsplit(":", 1)[1], 16)
             except (IndexError, ValueError):
                 continue
-            if 0 < port < 65536 and port not in PORT_SCAN_INTERNAL_PORTS:
+            if 0 < port < 65536:
                 ports.add(port)
     return sorted(ports)
 

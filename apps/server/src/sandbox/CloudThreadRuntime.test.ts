@@ -82,7 +82,7 @@ const testLayer = (
   ports: CloudThreadPorts.CloudThreadPorts["Service"] = {
     setPorts: () => Effect.void,
     clear: () => Effect.void,
-    snapshot: Effect.succeed([]),
+    snapshot: Effect.succeed({ servers: [], unavailable: [] }),
     subscribe: () => Effect.void,
   },
 ) =>
@@ -317,7 +317,7 @@ describe("cloud thread runtime", () => {
             setPorts: (_threadId, reported) =>
               Deferred.succeed(ports, reported).pipe(Effect.asVoid),
             clear: () => Effect.void,
-            snapshot: Effect.succeed([]),
+            snapshot: Effect.succeed({ servers: [], unavailable: [] }),
             subscribe: () => Effect.void,
           }),
         ),

@@ -27,6 +27,7 @@ const capabilities: SandboxProviderCapabilities = {
   delete: true,
   snapshots: true,
   privatePorts: true,
+  reservedPorts: [49983, 50005],
   sizes: [
     { id: "small", label: "2 vCPU · 1 GiB", cpuCount: 2, memoryMB: 1024 },
     { id: "medium", label: "4 vCPU · 2 GiB", cpuCount: 4, memoryMB: 2048 },
@@ -257,7 +258,11 @@ export const makeE2BSandboxProvider = (
         idempotencyKey: input.instanceId,
         metadata: { "t3.instance": input.instanceId },
         // A preview is only ever reachable through the controlling server, never from this URL.
-        network: { allowPublicTraffic: false, maskRequestHost: "localhost" },
+        network: {
+          allowPublicTraffic: false,
+          // The port makes the app-visible Host agree with the preview's rewritten Origin.
+          maskRequestHost: "localhost:${PORT}",
+        },
       }),
     ).pipe(Effect.map((created) => ({ providerSandboxId: created.sandboxId }))),
   findCreated: (account, instanceId) =>

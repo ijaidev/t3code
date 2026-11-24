@@ -893,7 +893,7 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(SandboxAccounts.SandboxAccounts)({}),
   Layer.mock(SandboxLifecycle.SandboxLifecycle)({}),
   Layer.mock(CloudThreadPorts.CloudThreadPorts)({
-    snapshot: Effect.succeed([]),
+    snapshot: Effect.succeed({ servers: [], unavailable: [] }),
     subscribe: () => Effect.void,
   }),
   Layer.mock(ScheduledTasks.ScheduledTaskService)({}),

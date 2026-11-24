@@ -24,7 +24,10 @@ import {
 } from "../../browser/browserTargetResolver";
 import { readLocalApi } from "../../localApi";
 import { cn, isMacPlatform } from "../../lib/utils";
-import { useThreadDiscoveredPorts } from "../../portDiscoveryState";
+import {
+  useThreadDiscoveredPorts,
+  useThreadSandboxPreviewUnavailable,
+} from "../../portDiscoveryState";
 import { useEnvironment } from "../../state/environments";
 import {
   canForwardPorts,
@@ -63,6 +66,7 @@ export function ThreadServersPanel(props: ThreadServersPanelProps) {
 function ThreadServersList(props: ThreadServersPanelProps) {
   const gt = useGT();
   const servers = useThreadDiscoveredPorts(props);
+  const previewUnavailable = useThreadSandboxPreviewUnavailable(props);
   const canOpen = useEnvironmentScope(props.environmentId, AuthPreviewOperateScope);
   const canStop = useAtomValue(
     previewEnvironment.stopLocalServer.permissionAtom(props.environmentId),
@@ -84,7 +88,7 @@ function ThreadServersList(props: ThreadServersPanelProps) {
   const [forwardingPort, setForwardingPort] = useState<number | null>(null);
   const [visibleCount, setVisibleCount] = useState(SERVER_PAGE_COUNT);
 
-  if (servers.length === 0) return null;
+  if (servers.length === 0 && previewUnavailable === null) return null;
   const externalClickLabel = isMacPlatform(navigator.platform) ? "⌘-click" : "Ctrl-click";
   const threadRef = scopeThreadRef(props.environmentId, props.threadId);
   const hiddenCount = Math.max(0, servers.length - visibleCount);
@@ -102,7 +106,7 @@ function ThreadServersList(props: ThreadServersPanelProps) {
   const open = async (server: DiscoveredLocalServer, event: MouseEvent<HTMLElement>) => {
     if (event.button > 1) return;
     // Like links: modified and middle clicks go to the system browser.
-    if (event.metaKey || event.ctrlKey || event.button === 1) {
+    if (server.sandboxPort !== true && (event.metaKey || event.ctrlKey || event.button === 1)) {
       event.preventDefault();
       // This machine's browser reaches another environment's loopback only through a forward.
       // Starting a forward runs the probe; only a confirmed local environment opens directly.
@@ -158,6 +162,15 @@ function ThreadServersList(props: ThreadServersPanelProps) {
       reportFailure(gt("Could not stop server"), squashAtomCommandFailure(result));
     }
   };
+
+  const previewUnavailableMessage =
+    previewUnavailable === "provider-no-private-ports"
+      ? gt("This sandbox provider does not support private ports.")
+      : previewUnavailable === "sandbox-unavailable"
+        ? gt("The sandbox is not ready for previews.")
+        : previewUnavailable === "listener-failed"
+          ? gt("The sandbox preview could not start.")
+          : null;
 
   const toggleForward = async (server: DiscoveredLocalServer, forwarded: boolean) => {
     if (forwardingPort !== null) return;
@@ -326,6 +339,11 @@ function ThreadServersList(props: ThreadServersPanelProps) {
           );
         })}
       </ul>
+      {previewUnavailableMessage === null ? null : (
+        <p className="px-2 py-1.5 text-2xs leading-4 text-muted-foreground">
+          {previewUnavailableMessage}
+        </p>
+      )}
       {servers.length > SERVER_PAGE_COUNT ? (
         <ThreadDetailsControl
           variant="ghost"

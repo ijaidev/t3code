@@ -45,6 +45,7 @@ describe("E2B sandbox provider", () => {
       delete: true,
       snapshots: true,
       privatePorts: true,
+      reservedPorts: [49983, 50005],
     });
     expect(driver.capabilities.sizes.length).toBeGreaterThan(0);
     expect(driver.capabilities.regions.length).toBeGreaterThan(0);
@@ -90,7 +91,7 @@ describe("E2B sandbox provider", () => {
               timeoutMs: 30_000,
               idempotencyKey: "instance-1",
               metadata: { "t3.instance": "instance-1" },
-              network: { allowPublicTraffic: false, maskRequestHost: "localhost" },
+              network: { allowPublicTraffic: false, maskRequestHost: "localhost:${PORT}" },
             },
           },
           { getInfo: { sandboxId: "e2b-sandbox-1", apiKey: "e2b_secret_key" } },

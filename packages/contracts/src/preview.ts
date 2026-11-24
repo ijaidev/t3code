@@ -350,10 +350,25 @@ export class PreviewStopLocalServerError extends Schema.TaggedError<PreviewStopL
   }
 }
 
+export const SandboxPreviewUnavailableReason = Schema.Literals([
+  "provider-no-private-ports",
+  "sandbox-unavailable",
+  "listener-failed",
+]);
+export type SandboxPreviewUnavailableReason = typeof SandboxPreviewUnavailableReason.Type;
+
+export const SandboxPreviewUnavailable = Schema.Struct({
+  threadId: ThreadId,
+  reason: SandboxPreviewUnavailableReason,
+});
+export type SandboxPreviewUnavailable = typeof SandboxPreviewUnavailable.Type;
+
 export const DiscoveredLocalServerList = Schema.Struct({
   servers: Schema.Array(DiscoveredLocalServer),
   scannedAt: Schema.String,
   configuredUrlProbing: Schema.optional(Schema.Literal(true)),
+  /** A sandbox reported ports but none can be proxied; the reason tells the client why. */
+  sandboxPreviewUnavailable: Schema.optionalKey(Schema.Array(SandboxPreviewUnavailable)),
 });
 export type DiscoveredLocalServerList = typeof DiscoveredLocalServerList.Type;
 

@@ -106,7 +106,11 @@ import { threadAllowsProviderSwitch } from "../../state/thread-provider-switchin
 import { environmentServerConfigsAtom, serverEnvironment } from "../../state/server";
 import { mobilePreferencesAtom } from "../../state/preferences";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { previewEnvironment, useThreadDiscoveredPorts } from "../../state/preview";
+import {
+  previewEnvironment,
+  useThreadDiscoveredPorts,
+  useThreadSandboxPreviewUnavailable,
+} from "../../state/preview";
 import { useEnvironmentScope } from "../../state/session";
 import { useNewTaskFlow } from "./new-task-flow-provider";
 import { ScreenContent } from "../../components/ui/ScreenContent";
@@ -979,11 +983,25 @@ function ThreadServersSection() {
     threadId: session.threadId,
     enabled: canOpen,
   });
+  const previewUnavailable = useThreadSandboxPreviewUnavailable({
+    environmentId,
+    threadId: session.threadId,
+    enabled: canOpen,
+  });
+  const previewUnavailableMessage =
+    previewUnavailable === "provider-no-private-ports"
+      ? gt("This sandbox provider does not support private ports.")
+      : previewUnavailable === "sandbox-unavailable"
+        ? gt("The sandbox is not ready for previews.")
+        : previewUnavailable === "listener-failed"
+          ? gt("The sandbox preview could not start.")
+          : null;
   const openPreview = useAtomCommand(previewEnvironment.open, { label: "mobile preview open" });
   const [opening, setOpening] = useState<number | null>(null);
-  if (environmentId === null || session.threadId === null || !canOpen || ports.length === 0) {
+  if (environmentId === null || session.threadId === null || !canOpen) {
     return null;
   }
+  if (ports.length === 0 && previewUnavailableMessage === null) return null;
   const open = async (port: (typeof ports)[number]) => {
     if (opening !== null) return;
     setOpening(port.port);
@@ -1009,6 +1027,11 @@ function ThreadServersSection() {
         {gt("Servers")}
       </Text>
       <View className="mx-4 overflow-hidden rounded-2xl bg-grouped-card">
+        {previewUnavailableMessage === null ? null : (
+          <Text className="px-4 py-3 text-sm text-foreground-muted">
+            {previewUnavailableMessage}
+          </Text>
+        )}
         {ports.map((port, index) => (
           <Pressable
             key={`${port.url}:${port.port}`}

@@ -9,6 +9,7 @@ import type {
   PreviewEvent,
   PreviewListResult,
   PreviewSessionSnapshot,
+  SandboxPreviewUnavailableReason,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -159,6 +160,25 @@ export function useThreadDiscoveredPorts(input: {
   return servers.filter(
     (server) =>
       server.terminal?.threadId === input.threadId || server.agent?.threadId === input.threadId,
+  );
+}
+
+export function useThreadSandboxPreviewUnavailable(input: {
+  readonly environmentId: EnvironmentId | null;
+  readonly threadId: ThreadId | null;
+  readonly enabled: boolean;
+}): SandboxPreviewUnavailableReason | null {
+  const query = useEnvironmentQuery(
+    input.enabled && input.environmentId !== null
+      ? previewEnvironment.discoveredServers({
+          environmentId: input.environmentId,
+          input: {},
+        })
+      : null,
+  );
+  return (
+    query.data?.sandboxPreviewUnavailable?.find((entry) => entry.threadId === input.threadId)
+      ?.reason ?? null
   );
 }
 
