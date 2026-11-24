@@ -130,6 +130,7 @@ export const SandboxCloudTarget = Schema.Struct({
   disabledReason: Schema.optionalKey(
     Schema.Literals([
       "no-remote",
+      "unsafe-remote",
       "account-disabled",
       "provider-unavailable",
       "no-create",
@@ -145,8 +146,6 @@ export const SandboxListCloudTargetsInput = Schema.Struct({
 export type SandboxListCloudTargetsInput = typeof SandboxListCloudTargetsInput.Type;
 
 export const SandboxListCloudTargetsResult = Schema.Struct({
-  /** The project's primary remote URL, or null when cloud threads cannot start here. */
-  remoteUrl: Schema.NullOr(TrimmedNonEmptyString),
   targets: Schema.Array(SandboxCloudTarget),
 });
 export type SandboxListCloudTargetsResult = typeof SandboxListCloudTargetsResult.Type;

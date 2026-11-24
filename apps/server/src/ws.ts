@@ -1620,28 +1620,29 @@ export const layerWsRpc = (
         const remote = yield* projectPublicRemote(projectService, gitWorkflow, input.projectId);
         const providers = yield* sandboxAccounts.list;
         return {
-          remoteUrl: remote?.remoteUrl ?? null,
           targets: providers.accounts.map((account) => {
             const provider = providers.providers.find(
               (candidate) => candidate.kind === account.kind,
             );
             const enabled =
-              remote !== null &&
+              remote?.type === "url" &&
               account.enabled &&
               provider?.capabilities.create === true &&
               provider.capabilities.exec === true;
             const disabledReason =
               remote === null
                 ? ("no-remote" as const)
-                : !account.enabled
-                  ? ("account-disabled" as const)
-                  : provider === undefined
-                    ? ("provider-unavailable" as const)
-                    : provider.capabilities.create !== true
-                      ? ("no-create" as const)
-                      : provider.capabilities.exec !== true
-                        ? ("no-exec" as const)
-                        : undefined;
+                : remote.type === "credentials"
+                  ? ("unsafe-remote" as const)
+                  : !account.enabled
+                    ? ("account-disabled" as const)
+                    : provider === undefined
+                      ? ("provider-unavailable" as const)
+                      : provider.capabilities.create !== true
+                        ? ("no-create" as const)
+                        : provider.capabilities.exec !== true
+                          ? ("no-exec" as const)
+                          : undefined;
             return {
               accountId: account.id,
               providerKind: account.kind,

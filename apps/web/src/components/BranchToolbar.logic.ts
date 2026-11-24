@@ -126,6 +126,10 @@ export function resolveCloudTargetDisabledReason(
   switch (reason) {
     case "no-remote":
       return resolve(msg("Add a Git remote to this project to start a cloud thread."));
+    case "unsafe-remote":
+      return resolve(
+        msg("Remove credentials from this project's Git remote to start a cloud thread."),
+      );
     case "account-disabled":
       return resolve(msg("Enable this provider account in Settings to start a cloud thread."));
     case "provider-unavailable":

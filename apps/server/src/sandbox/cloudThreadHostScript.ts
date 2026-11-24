@@ -192,7 +192,29 @@ class Host:
         self.process_holder = {}
         self.turn_thread = None
         self.stop = False
-        self.messages = []
+        self.history_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "history.json"
+        )
+        self.messages = self.load_messages()
+
+    def load_messages(self):
+        try:
+            with open(self.history_path, "r", encoding="utf-8") as handle:
+                loaded = json.load(handle)
+            return loaded if isinstance(loaded, list) else []
+        except Exception:  # noqa: BLE001
+            return []
+
+    def save_messages(self):
+        try:
+            directory = os.path.dirname(self.history_path)
+            os.makedirs(directory, exist_ok=True)
+            temporary = self.history_path + ".tmp"
+            with open(temporary, "w", encoding="utf-8") as handle:
+                json.dump(self.messages, handle, ensure_ascii=False)
+            os.replace(temporary, self.history_path)
+        except Exception:  # noqa: BLE001
+            traceback.print_exc(file=sys.stderr)
 
     def send(self, message):
         emit(message)
@@ -274,6 +296,7 @@ class Host:
         if attachment_lines:
             user_text = user_text + "\n\n" + "\n".join(attachment_lines)
         messages.append({"role": "user", "content": user_text})
+        self.save_messages()
         self.send({"type": "turn_started", "runId": run_id})
         try:
             while True:
@@ -302,6 +325,7 @@ class Host:
                     return
                 content = response.get("content", [])
                 messages.append({"role": "assistant", "content": content})
+                self.save_messages()
                 text = "".join(block.get("text", "") for block in content if block.get("type") == "text")
                 if text:
                     self.send({"type": "text", "runId": run_id, "text": text})
@@ -342,6 +366,8 @@ class Host:
                                     "type": "tool_end",
                                     "runId": run_id,
                                     "id": tool_id,
+                                    "name": name,
+                                    "input": args,
                                     "output": "The user declined this tool call.",
                                     "exitCode": None,
                                     "isError": True,
@@ -359,6 +385,8 @@ class Host:
                             "type": "tool_end",
                             "runId": run_id,
                             "id": tool_id,
+                            "name": name,
+                            "input": args,
                             "output": output,
                             "exitCode": exit_code,
                             "isError": is_error,
@@ -373,6 +401,7 @@ class Host:
                         }
                     )
                 messages.append({"role": "user", "content": results})
+                self.save_messages()
         except Exception as error:  # noqa: BLE001
             traceback.print_exc(file=sys.stderr)
             self.send(

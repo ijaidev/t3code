@@ -14,6 +14,7 @@ import * as SandboxLifecycle from "./SandboxLifecycle.ts";
 import type { SandboxProviderDriver } from "./SandboxProvider.ts";
 import * as SandboxStore from "./SandboxStore.ts";
 import { CLOUD_THREAD_HOST_SCRIPT } from "./cloudThreadHostScript.ts";
+import { THREAD_HOST_PROTOCOL_VERSION } from "./ThreadHost.ts";
 
 const HOST_SCRIPT_PATH = ".t3/thread-host/thread-host.py";
 const THREADS_DIR = ".t3/threads";
@@ -372,15 +373,15 @@ const make = Effect.gen(function* () {
       Effect.orElseSucceed(() => null),
     );
     if (resolved === null || resolved.driver.writeFile === undefined) return false;
-    yield* resolved.driver
+    const written = yield* resolved.driver
       .writeFile({
         account: resolved.account,
         providerSandboxId: sandbox.value.providerSandboxId,
         path,
         data,
       })
-      .pipe(Effect.orElseSucceed(() => undefined));
-    return true;
+      .pipe(Effect.result);
+    return written._tag === "Success";
   });
 
   const openHost: CloudThreads["Service"]["openHost"] = Effect.fn("CloudThreads.openHost")(
@@ -425,6 +426,30 @@ const make = Effect.gen(function* () {
       }
       const home = yield* run(sandbox, driver, account, 'printf %s "$HOME"', "start-host");
       const hostPath = `${home.stdout.trim()}/${HOST_SCRIPT_PATH}`;
+      const writeFile = driver.writeFile;
+      if (writeFile === undefined) {
+        return yield* new CloudThreadError({
+          operation: "start-host",
+          threadId,
+          detail: "This sandbox provider cannot upload the thread host.",
+        });
+      }
+      // Re-upload on every start: the agent can edit anything it can read.
+      yield* writeFile({
+        account,
+        providerSandboxId: sandbox.providerSandboxId,
+        path: hostPath,
+        data: CLOUD_THREAD_HOST_SCRIPT,
+      }).pipe(
+        Effect.mapError(
+          (error) =>
+            new CloudThreadError({
+              operation: "start-host",
+              threadId,
+              detail: error.detail,
+            }),
+        ),
+      );
       const messages = yield* Queue.unbounded<CloudHostMessage>();
       let pending = "";
       const onOutput = (data: string) => {
@@ -500,6 +525,14 @@ const make = Effect.gen(function* () {
           operation: "start-host",
           threadId,
           detail: "The sandbox thread host did not start.",
+        });
+      }
+      if (handshake.value["protocolVersion"] !== THREAD_HOST_PROTOCOL_VERSION) {
+        yield* connection.close;
+        return yield* new CloudThreadError({
+          operation: "start-host",
+          threadId,
+          detail: `The sandbox thread host speaks protocol ${String(handshake.value["protocolVersion"] ?? "unknown")}; this server needs ${THREAD_HOST_PROTOCOL_VERSION}.`,
         });
       }
       return connection;

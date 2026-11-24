@@ -1675,6 +1675,7 @@
   "24f207ab3dee1a15": "Start from remote",
   "4cc01e8063a057e9": "Uses the latest commit of the base branch’s tracked remote branch, even if its name differs. Otherwise uses the same-named branch on origin. Uses your local branch if that remote branch is missing.",
   "2fb026bef4816813": "Add a Git remote to this project to start a cloud thread.",
+  "b77fee390f8dbc7b": "Remove credentials from this project's Git remote to start a cloud thread.",
   "2fa2a053a178b397": "Enable this provider account in Settings to start a cloud thread.",
   "ef1c59e6734708eb": "This sandbox provider is not available.",
   "b2f0f72cdd62a74b": "This sandbox provider cannot create sandboxes.",

@@ -3302,13 +3302,6 @@ export const layerWithOptions = (
                   Option.isSome(cloudRuntime) &&
                   (yield* cloudRuntime.value.hasThread(input.threadId))
                 ) {
-                  if (adapter.driver !== "claudeAgent") {
-                    return yield* new ProviderAdapter.ProviderAdapterProtocolError({
-                      driver: adapter.driver,
-                      detail:
-                        "Cloud threads currently run only the Claude provider. Switch this thread to Claude to continue.",
-                    });
-                  }
                   const environment =
                     registry.getResolvedEnvironment === undefined
                       ? []

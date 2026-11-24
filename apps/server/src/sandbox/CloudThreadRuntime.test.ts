@@ -88,6 +88,25 @@ const testLayer = (cloud: CloudThreads.CloudThreads["Service"]) =>
     ),
   );
 
+describe("cloud thread model requests", () => {
+  it("keeps the selected model and a fixed token ceiling", () => {
+    expect(
+      CloudThreadRuntime.boundModelRequest(
+        { model: "attacker-model", max_tokens: 999_999, messages: [] },
+        "claude-sonnet-4-5",
+      ),
+    ).toEqual({
+      model: "claude-sonnet-4-5",
+      max_tokens: 8192,
+      messages: [],
+    });
+    expect(CloudThreadRuntime.boundModelRequest({ max_tokens: -1 }, "claude-sonnet-4-5")).toEqual({
+      model: "claude-sonnet-4-5",
+      max_tokens: 8192,
+    });
+  });
+});
+
 describe("cloud thread runtime", () => {
   it.effect("turns host messages into persisted provider events", () => {
     const events = Effect.gen(function* () {
@@ -158,6 +177,8 @@ describe("cloud thread runtime", () => {
           type: "tool_end",
           runId: "run-1",
           id: "tool-1",
+          name: "bash",
+          input: { command: "pwd" },
           output: "/home/t3/.t3/threads/thread-cloud-runtime\n",
           exitCode: 0,
           isError: false,
@@ -175,19 +196,45 @@ describe("cloud thread runtime", () => {
           ),
         ).toBe(true);
         const toolStart = eventList.find(
-          (event) => event.type === "turn_item.updated" && event.turnItem.status === "running",
+          (event) =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.type === "command_execution" &&
+            event.turnItem.status === "running",
         );
         const toolEnd = eventList.find(
-          (event) => event.type === "turn_item.updated" && event.turnItem.status === "completed",
+          (event) =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.type === "command_execution" &&
+            event.turnItem.status === "completed",
         );
         expect(toolStart?.type).toBe("turn_item.updated");
         expect(toolEnd?.type).toBe("turn_item.updated");
+        if (
+          toolEnd?.type === "turn_item.updated" &&
+          toolEnd.turnItem.type === "command_execution"
+        ) {
+          expect(toolEnd.turnItem.input).toBe("pwd");
+          expect(toolEnd.turnItem.exitCode).toBe(0);
+        }
         expect(
           eventList.some(
             (event) =>
               event.type === "runtime_request.updated" && event.runtimeRequest.id === "approval-1",
           ),
         ).toBe(true);
+        const approvalCard = eventList.find(
+          (event) =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.type === "approval_request" &&
+            event.turnItem.requestId === "approval-1",
+        );
+        expect(approvalCard?.type).toBe("turn_item.updated");
+        if (
+          approvalCard?.type === "turn_item.updated" &&
+          approvalCard.turnItem.type === "approval_request"
+        ) {
+          expect(approvalCard.turnItem.prompt).toBe("pwd");
+        }
         const terminal = eventList.at(-1);
         expect(terminal?.type).toBe("turn.terminal");
         if (terminal?.type === "turn.terminal") {

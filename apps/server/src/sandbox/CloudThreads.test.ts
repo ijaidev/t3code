@@ -41,6 +41,8 @@ interface FakeState {
   readonly execs: Ref.Ref<ReadonlyArray<string>>;
   readonly writes: Ref.Ref<ReadonlyArray<string>>;
   failClone: boolean;
+  failWrite: boolean;
+  hostProtocolVersion: string;
   created: number;
 }
 
@@ -77,13 +79,34 @@ const fakeDriver = (state: FakeState): SandboxProviderDriver => ({
       return { exitCode: 0, stdout: "", stderr: "" };
     }),
   writeFile: (input) =>
-    Ref.update(state.writes, (writes) => [...writes, String(input.path)]).pipe(Effect.asVoid),
-  startProcess: () =>
-    Effect.succeed({
-      pid: 1,
-      sendStdin: () => Effect.void,
-      kill: Effect.void,
-      wait: Effect.succeed({ exitCode: 0 }),
+    Ref.update(state.writes, (writes) => [...writes, String(input.path)]).pipe(
+      Effect.andThen(
+        state.failWrite
+          ? Effect.fail(
+              new SandboxProviderError({
+                providerKind: E2B,
+                operation: "exec",
+                detail: "The sandbox filesystem rejected the write.",
+              }),
+            )
+          : Effect.void,
+      ),
+    ),
+  startProcess: (input) =>
+    Effect.sync(() => {
+      input.onStdout(
+        `${JSON.stringify({
+          type: "ready",
+          protocolVersion: state.hostProtocolVersion,
+          pid: 1,
+        })}\n`,
+      );
+      return {
+        pid: 1,
+        sendStdin: () => Effect.void,
+        kill: Effect.void,
+        wait: Effect.succeed({ exitCode: 0 }),
+      };
     }),
 });
 
@@ -129,6 +152,8 @@ const makeState = (overrides: Partial<FakeState> = {}) =>
       execs: yield* Ref.make<ReadonlyArray<string>>([]),
       writes: yield* Ref.make<ReadonlyArray<string>>([]),
       failClone: false,
+      failWrite: false,
+      hostProtocolVersion: "1",
       created: 0,
       ...overrides,
     } satisfies FakeState;
@@ -222,6 +247,56 @@ describe("cloud threads", () => {
         expect(record._tag).toBe("None");
         const sandbox = yield* cloud.getSandbox(threadId);
         expect(sandbox._tag).toBe("None");
+      }).pipe(Effect.provide(testLayer(driver)));
+    });
+    return state;
+  });
+
+  it.effect("reports a failed attachment write instead of claiming it was staged", () => {
+    const state = Effect.gen(function* () {
+      const fake = yield* makeState();
+      const driver = fakeDriver(fake);
+      return yield* Effect.gen(function* () {
+        yield* connect;
+        const cloud = yield* CloudThreads.CloudThreads;
+        const sandbox = yield* cloud.prepare({
+          threadId,
+          accountId,
+          cloneUrl: "https://github.com/example/public.git",
+          baseRef: "main",
+          branch: "main",
+        });
+        fake.failWrite = true;
+        const written = yield* cloud.writeAttachment(
+          threadId,
+          `${sandbox.threadId}/attachment.txt`,
+          new TextEncoder().encode("hello"),
+        );
+        expect(written).toBe(false);
+      }).pipe(Effect.provide(testLayer(driver)));
+    });
+    return state;
+  });
+
+  it.effect("fails closed when the sandbox host speaks another protocol", () => {
+    const state = Effect.gen(function* () {
+      const fake = yield* makeState({ hostProtocolVersion: "999" });
+      const driver = fakeDriver(fake);
+      return yield* Effect.gen(function* () {
+        yield* connect;
+        const cloud = yield* CloudThreads.CloudThreads;
+        yield* cloud.prepare({
+          threadId,
+          accountId,
+          cloneUrl: "https://github.com/example/public.git",
+          baseRef: "main",
+          branch: "main",
+        });
+        const opened = yield* Effect.result(cloud.openHost(threadId));
+        expect(opened._tag).toBe("Failure");
+        if (opened._tag === "Failure") {
+          expect(opened.failure.detail).toContain("999");
+        }
       }).pipe(Effect.provide(testLayer(driver)));
     });
     return state;

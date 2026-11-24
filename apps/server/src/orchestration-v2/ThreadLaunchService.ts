@@ -596,6 +596,15 @@ const make = Effect.gen(function* () {
           threadId,
         )("This project has no Git remote, so it cannot start a cloud thread.");
       }
+      if (remote.type === "credentials") {
+        return yield* mapError(
+          input,
+          "provision-worktree",
+          threadId,
+        )(
+          "This project's Git remote embeds credentials. Use a public remote; private repository credentials land in a later ticket.",
+        );
+      }
       yield* setupTracker.stageStatus(threadId, "fetch", "done");
       if (runId !== null) {
         yield* threads
@@ -629,7 +638,7 @@ const make = Effect.gen(function* () {
         .prepare({
           threadId,
           accountId: strategy.accountId,
-          cloneUrl: remote.cloneUrl,
+          cloneUrl: remote.url,
           baseRef: strategy.baseRef,
           branch: branch ?? strategy.baseRef,
         })

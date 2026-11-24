@@ -5,18 +5,40 @@ import * as Option from "effect/Option";
 import type * as GitWorkflow from "../git/GitWorkflowService.ts";
 import type * as ProjectService from "../project/ProjectService.ts";
 
-/** A public clone URL for a remote; SSH remotes still clone over HTTPS without keys. */
-function publicCloneUrl(remoteUrl: string): string {
+export type PublicCloneUrl =
+  | { readonly type: "url"; readonly url: string }
+  | { readonly type: "credentials" };
+
+/**
+ * A public clone URL for a remote. SSH remotes still clone over HTTPS without keys, and a
+ * remote that embeds a credential is refused so the secret never reaches a client or sandbox.
+ */
+export function publicCloneUrl(remoteUrl: string): PublicCloneUrl {
   const trimmed = remoteUrl.trim();
-  const scp = /^(?:[^@/]+@)?([^:/]+):(.+)$/.exec(trimmed);
-  if (scp !== null && !trimmed.includes("://")) {
-    return `https://${scp[1]}/${scp[2]}`;
+  const parsed = URL.parse(trimmed);
+  if (parsed !== null) {
+    if (parsed.username !== "" || parsed.password !== "") return { type: "credentials" };
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      parsed.username = "";
+      parsed.password = "";
+      parsed.search = "";
+      parsed.hash = "";
+      return { type: "url", url: parsed.toString() };
+    }
+    if (parsed.protocol === "ssh:" || parsed.protocol === "git+ssh:") {
+      return { type: "url", url: `https://${parsed.host}${parsed.pathname}` };
+    }
+    return { type: "credentials" };
   }
-  const ssh = /^ssh:\/\/(?:[^@/]+@)?([^/]+)\/(.+)$/.exec(trimmed);
-  if (ssh !== null) {
-    return `https://${ssh[1]}/${ssh[2]}`;
-  }
-  return trimmed;
+  const scp = /^(?:(?<user>[^@/]+)@)?(?<host>[^:/]+):(?<path>.+)$/.exec(trimmed);
+  if (scp?.groups === undefined) return { type: "credentials" };
+  const user = scp.groups["user"];
+  // `git@host:path` and a bare `host:path` are public clone forms; any other user is a credential.
+  if (user !== undefined && user !== "git" && user !== "hg") return { type: "credentials" };
+  return {
+    type: "url",
+    url: `https://${scp.groups["host"]}/${scp.groups["path"]}`,
+  };
 }
 
 export const projectPublicRemote = Effect.fn("cloudThreads.projectPublicRemote")(function* (
@@ -36,5 +58,5 @@ export const projectPublicRemote = Effect.fn("cloudThreads.projectPublicRemote")
     remotes.remotes.find((candidate) => candidate.name === "origin") ??
     remotes.remotes[0];
   if (remote === undefined) return null;
-  return { remoteUrl: remote.url, cloneUrl: publicCloneUrl(remote.url) };
+  return publicCloneUrl(remote.url);
 });

@@ -42,7 +42,26 @@ import * as CloudThreadStore from "./CloudThreadStore.ts";
 import * as CloudThreads from "./CloudThreads.ts";
 
 const MODEL_REQUEST_TIMEOUT_MS = 5 * 60_000;
+const MAX_MODEL_REQUEST_TOKENS = 8192;
+const CLOUD_THREAD_DRIVERS: ReadonlySet<string> = new Set(["claudeAgent"]);
 const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
+
+/** The sandbox may ask, but the thread's selection and a fixed ceiling decide. */
+export function boundModelRequest(
+  request: unknown,
+  model: string,
+): Readonly<Record<string, unknown>> {
+  const source =
+    typeof request === "object" && request !== null
+      ? (request as Readonly<Record<string, unknown>>)
+      : {};
+  const requested = Number(source["max_tokens"]);
+  const maxTokens =
+    Number.isFinite(requested) && requested > 0
+      ? Math.min(Math.trunc(requested), MAX_MODEL_REQUEST_TOKENS)
+      : MAX_MODEL_REQUEST_TOKENS;
+  return { ...source, model, max_tokens: maxTokens };
+}
 
 interface AnthropicAccess {
   readonly apiKey?: string;
@@ -182,6 +201,13 @@ const make = Effect.gen(function* () {
   const openSession: CloudThreadRuntime["Service"]["openSession"] = Effect.fn(
     "CloudThreadRuntime.openSession",
   )(function* (input, base) {
+    if (!CLOUD_THREAD_DRIVERS.has(base.driver)) {
+      return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+        driver: base.driver,
+        detail:
+          "Cloud threads currently run only the Claude provider. Switch this thread to Claude to continue.",
+      });
+    }
     const record = yield* cloudThreads.getRecord(input.threadId);
     if (Option.isNone(record)) {
       return yield* new ProviderAdapter.ProviderAdapterProtocolError({
@@ -195,9 +221,15 @@ const make = Effect.gen(function* () {
     const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
     const connection = yield* Ref.make<CloudThreads.CloudHostConnection | null>(null);
     const activeTurn = yield* Ref.make<ActiveTurn | null>(null);
-    const pendingApprovals = yield* Ref.make<ReadonlyMap<string, OrchestrationV2RuntimeRequest>>(
-      new Map(),
-    );
+    const pendingApprovals = yield* Ref.make<
+      ReadonlyMap<
+        string,
+        {
+          readonly request: OrchestrationV2RuntimeRequest;
+          readonly item: Extract<OrchestrationV2TurnItem, { readonly type: "approval_request" }>;
+        }
+      >
+    >(new Map());
     const waitingForTurnStart = yield* Ref.make<Deferred.Deferred<void> | null>(null);
     yield* Effect.addFinalizer(() =>
       Ref.get(connection).pipe(Effect.flatMap((host) => host?.close ?? Effect.void)),
@@ -258,7 +290,9 @@ const make = Effect.gen(function* () {
       if (access.authToken !== undefined) headers.authorization = `Bearer ${access.authToken}`;
       const request = HttpClientRequest.post(`${access.baseUrl}/v1/messages`).pipe(
         HttpClientRequest.setHeaders(headers),
-        HttpClientRequest.bodyJsonUnsafe(message["request"]),
+        HttpClientRequest.bodyJsonUnsafe(
+          boundModelRequest(message["request"], input.modelSelection.model),
+        ),
       );
       const response = yield* http
         .execute(request)
@@ -482,14 +516,35 @@ const make = Effect.gen(function* () {
             createdAt,
             resolvedAt: null,
           };
+          const item: Extract<OrchestrationV2TurnItem, { readonly type: "approval_request" }> = {
+            id: TurnItemId.make(randomId()),
+            threadId: input.threadId,
+            runId: turn.runId,
+            nodeId: turn.nodeId,
+            providerThreadId: turn.providerThreadId,
+            providerTurnId: turn.providerTurnId,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: yield* allocateOrdinal(turn),
+            status: "waiting",
+            title: typeof message["title"] === "string" ? message["title"] : null,
+            startedAt: createdAt,
+            completedAt: null,
+            updatedAt: createdAt,
+            type: "approval_request",
+            requestId: request.id,
+            requestKind: kind,
+            ...(typeof message["prompt"] === "string" ? { prompt: message["prompt"] } : {}),
+          };
           yield* Ref.update(pendingApprovals, (current) =>
-            new Map(current).set(requestId, request),
+            new Map(current).set(requestId, { request, item }),
           );
           yield* emit({
             type: "runtime_request.updated",
             driver: base.driver,
             runtimeRequest: request,
           });
+          yield* emit({ type: "turn_item.updated", driver: base.driver, turnItem: item });
           return;
         }
         case "turn_end": {
@@ -710,8 +765,8 @@ const make = Effect.gen(function* () {
         function* (response) {
           const pending = yield* Ref.get(pendingApprovals);
           const key = String(response.requestId);
-          const request = pending.get(key);
-          if (request === undefined) return;
+          const pendingApproval = pending.get(key);
+          if (pendingApproval === undefined) return;
           const host = yield* Ref.get(connection);
           if (host !== null) {
             yield* host
@@ -724,10 +779,16 @@ const make = Effect.gen(function* () {
           }
           const resolvedAt = yield* DateTime.now;
           const resolved: OrchestrationV2RuntimeRequest = {
-            ...request,
+            ...pendingApproval.request,
             status: response.decision === "cancel" ? "cancelled" : "resolved",
             resolvedAt,
             ...(response.decision === undefined ? {} : { decision: response.decision }),
+          };
+          const resolvedItem: OrchestrationV2TurnItem = {
+            ...pendingApproval.item,
+            status: response.decision === "cancel" ? "cancelled" : "completed",
+            completedAt: resolvedAt,
+            updatedAt: resolvedAt,
           };
           yield* Ref.update(pendingApprovals, (current) => {
             const next = new Map(current);
@@ -739,6 +800,7 @@ const make = Effect.gen(function* () {
             driver: base.driver,
             runtimeRequest: resolved,
           });
+          yield* emit({ type: "turn_item.updated", driver: base.driver, turnItem: resolvedItem });
         },
       ),
       readThreadSnapshot: ({ providerThread }) =>
