@@ -968,7 +968,12 @@ export function createServerEnvironmentAtoms<R, E>(
 ) {
   const configScheduler = createAtomCommandScheduler();
   const updateScheduler = createAtomCommandScheduler();
+  const sandboxScheduler = createAtomCommandScheduler();
   const configConcurrency = {
+    mode: "serial" as const,
+    key: ({ environmentId }: { readonly environmentId: string }) => environmentId,
+  };
+  const sandboxConcurrency = {
     mode: "serial" as const,
     key: ({ environmentId }: { readonly environmentId: string }) => environmentId,
   };
@@ -1505,6 +1510,64 @@ export function createServerEnvironmentAtoms<R, E>(
 
   return {
     configValueAtom,
+    sandboxProviders: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:sandbox:providers",
+      tag: WS_METHODS.sandboxListProviders,
+      staleTimeMs: 60_000,
+    }),
+    sandboxTestSandboxes: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:sandbox:test-sandboxes",
+      tag: WS_METHODS.sandboxListTestSandboxes,
+      staleTimeMs: 0,
+    }),
+    sandboxConnectAccount: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:sandbox:connect-account",
+      tag: WS_METHODS.sandboxConnectAccount,
+      scheduler: sandboxScheduler,
+      concurrency: sandboxConcurrency,
+    }),
+    sandboxTestAccount: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:sandbox:test-account",
+      tag: WS_METHODS.sandboxTestAccount,
+      scheduler: sandboxScheduler,
+      concurrency: sandboxConcurrency,
+    }),
+    sandboxDisconnectAccount: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:sandbox:disconnect-account",
+      tag: WS_METHODS.sandboxDisconnectAccount,
+      scheduler: sandboxScheduler,
+      concurrency: sandboxConcurrency,
+    }),
+    sandboxCreateTestSandbox: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:sandbox:create-test-sandbox",
+      tag: WS_METHODS.sandboxCreateTestSandbox,
+      scheduler: sandboxScheduler,
+      concurrency: sandboxConcurrency,
+    }),
+    sandboxPauseTestSandbox: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:sandbox:pause-test-sandbox",
+      tag: WS_METHODS.sandboxPauseTestSandbox,
+      scheduler: sandboxScheduler,
+      concurrency: sandboxConcurrency,
+    }),
+    sandboxResumeTestSandbox: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:sandbox:resume-test-sandbox",
+      tag: WS_METHODS.sandboxResumeTestSandbox,
+      scheduler: sandboxScheduler,
+      concurrency: sandboxConcurrency,
+    }),
+    sandboxDeleteTestSandbox: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:sandbox:delete-test-sandbox",
+      tag: WS_METHODS.sandboxDeleteTestSandbox,
+      scheduler: sandboxScheduler,
+      concurrency: sandboxConcurrency,
+    }),
+    sandboxCheckTestSandbox: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:sandbox:check-test-sandbox",
+      tag: WS_METHODS.sandboxCheckTestSandbox,
+      scheduler: sandboxScheduler,
+      concurrency: sandboxConcurrency,
+    }),
     runStorageCleanup: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:run-storage-cleanup",
       tag: WS_METHODS.serverRunStorageCleanup,

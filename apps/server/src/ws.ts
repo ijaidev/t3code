@@ -132,6 +132,8 @@ import * as ThreadLaunchService from "./orchestration-v2/ThreadLaunchService.ts"
 import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts";
 import * as DocumentText from "./provider/DocumentText.ts";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
+import * as SandboxAccounts from "./sandbox/SandboxAccounts.ts";
+import * as SandboxLifecycle from "./sandbox/SandboxLifecycle.ts";
 import * as Workflows from "./workflows/Workflows.ts";
 import * as WorkflowRuntime from "./workflows/WorkflowRuntime.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
@@ -1609,6 +1611,8 @@ export const layerWsRpc = (
       const secretCheck = yield* SecretCheck.SecretCheck;
       const otlpEndpointCheck = yield* OtlpEndpointCheck.OtlpEndpointCheck;
       const textGenerators = yield* TextGenerators.TextGenerators;
+      const sandboxAccounts = yield* SandboxAccounts.SandboxAccounts;
+      const sandboxLifecycle = yield* SandboxLifecycle.SandboxLifecycle;
       const sourceControlRepositories =
         yield* SourceControlRepositoryService.SourceControlRepositoryService;
       const sourceControlSignIn = yield* SourceControlSignIn.SourceControlSignIn;
@@ -1932,6 +1936,7 @@ export const layerWsRpc = (
           threadFind: true,
           threadFindProgressive: true,
           secretProviderSettings: true,
+          sandboxProviders: true,
           secretReferences: true,
           secretRequestReferences: true,
           featureFlags: {
@@ -2801,6 +2806,16 @@ export const layerWsRpc = (
               : serverSettings.updateProviderInstance(providerInstanceMutation, nextPatch);
             return ServerSettings.redactServerSettingsForClient(settings, settingsClient);
           }),
+        [WS_METHODS.sandboxListProviders]: (_input) => sandboxAccounts.list,
+        [WS_METHODS.sandboxConnectAccount]: (input) => sandboxAccounts.connect(input),
+        [WS_METHODS.sandboxTestAccount]: (input) => sandboxAccounts.test(input.accountId),
+        [WS_METHODS.sandboxDisconnectAccount]: (input) => sandboxLifecycle.disconnectAccount(input),
+        [WS_METHODS.sandboxListTestSandboxes]: (_input) => sandboxLifecycle.listTestSandboxes,
+        [WS_METHODS.sandboxCreateTestSandbox]: (input) => sandboxLifecycle.createTestSandbox(input),
+        [WS_METHODS.sandboxPauseTestSandbox]: (input) => sandboxLifecycle.pauseTestSandbox(input),
+        [WS_METHODS.sandboxResumeTestSandbox]: (input) => sandboxLifecycle.resumeTestSandbox(input),
+        [WS_METHODS.sandboxDeleteTestSandbox]: (input) => sandboxLifecycle.deleteTestSandbox(input),
+        [WS_METHODS.sandboxCheckTestSandbox]: (input) => sandboxLifecycle.checkTestSandbox(input),
         [WS_METHODS.serverDiscoverSourceControl]: (_input) => sourceControlDiscovery.discover,
         [WS_METHODS.serverCheckSecretSource]: (input) => secretCheck.check(input.source),
         [WS_METHODS.serverGetTraceDiagnostics]: (_input) =>

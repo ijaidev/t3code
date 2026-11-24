@@ -1,5 +1,11 @@
 import { assert, it } from "@effect/vitest";
-import { DeviceHostId, SecretProviderId, UsageLimitSourceId } from "@t3tools/contracts";
+import {
+  DeviceHostId,
+  SandboxProviderAccountId,
+  SandboxProviderKind,
+  SecretProviderId,
+  UsageLimitSourceId,
+} from "@t3tools/contracts";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import * as Effect from "effect/Effect";
 
@@ -167,6 +173,7 @@ it.effect("reads a collected reference again once it is invalidated", () =>
     cache.set("voice#key", "stale");
     cache.set("expo#token", "stale");
     cache.set("simlock#token", "stale");
+    cache.set("sandbox#key", "stale");
     assert.deepEqual((yield* read()).bitbucket, {
       email: "me@example.test",
       accessToken: "stale",
@@ -179,6 +186,15 @@ it.effect("reads a collected reference again once it is invalidated", () =>
         cloudSpeechCredentials: { openai: source("voice#key"), xai: "", openrouter: "" },
         usageLimitSources,
         textGenerators: {},
+        sandboxProviders: {
+          [SandboxProviderAccountId.make("e2b-test")]: {
+            kind: SandboxProviderKind.make("e2b"),
+            label: "E2B",
+            apiKey: source("sandbox#key"),
+            template: "base",
+            enabled: true,
+          },
+        },
         easDeviceHosts,
         simlockDeviceHosts,
       }),
@@ -187,6 +203,7 @@ it.effect("reads a collected reference again once it is invalidated", () =>
     assert.isFalse(cache.has("voice#key"));
     assert.isFalse(cache.has("expo#token"));
     assert.isFalse(cache.has("simlock#token"));
+    assert.isFalse(cache.has("sandbox#key"));
     assert.deepEqual((yield* read()).bitbucket, {
       email: "me@example.test",
       accessToken: "rotated",

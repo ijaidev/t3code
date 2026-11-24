@@ -71,6 +71,7 @@
   "cd03eb1b84271c02": "智能体",
   "bfe1a60f3f9c60fb": "第 {turn} 轮 · {what}",
   "dfdaa6255a416140": "{turns, plural, one {最近 {turns} 轮的概要} other {最近 {turns} 轮的概要}}，{textTurns, plural, =0 {不含消息文本} one {包含最后一轮的消息文本} other {包含最近 {textTurns} 轮的消息文本}}{truncated, select, yes {，已缩短以符合长度限制} other {}}",
+  "260c6b45f52d2f27": "添加你在最近 {textTurns} 轮中的消息和智能体回复的文本。",
   "afac52a5cc2dc801": "无法发送你的回答。请重试。",
   "79d776428f4d0650": "无法加载文件。请重新连接后重试。",
   "3ea34cbb1ca5ba9b": "预览已取消。",
@@ -2737,9 +2738,9 @@
   "db7b3a938c45e56c": "更新 {version} 已可下载",
   "9a951140b69ba740": "正在下载更新（{percent}%）",
   "7fdece033260e9fb": "正在下载更新",
+  "52e1d4a487c0cf4b": "安装 {version} 失败。点击重试。",
   "09ef51903e99e876": "更新已下载。点击重启并安装。",
   "d62631cab06d2b80": "更新 {version} 已下载。点击重启并安装。",
-  "52e1d4a487c0cf4b": "安装 {version} 失败。点击重试。",
   "78a04e0e625c0990": "更新失败",
   "c24de5eb69373a55": "此 {build} 版本会忽略 {track} 版本。请在设置中检查更新通道以完成切换。",
   "b02ae45a6109c93b": "已是最新版本",
@@ -3643,7 +3644,6 @@
   "4e0710d19dfc2e7e": "将这份报告发送给 T3 团队？",
   "87d0ae0723ba75d1": "只有这些内容会从你的机器发送出去。点击“发送”前，不会发送任何内容。",
   "bf19826f81484328": "包含对话",
-  "260c6b45f52d2f27": "添加你在最近 {textTurns} 轮中的消息和智能体回复的文本。",
   "ddb7e6f8ce99e657": "只有能在这台机器上运行智能体的人，才能发送或拒绝这份报告。",
   "03c1eb603c112f47": "不发送",
   "653405e4ed498d9f": "发送",
@@ -8772,9 +8772,13 @@
   "ed83b25c71c98a20": "为每个项目选择一个或多个 {tracker} {scope}。它们的 issue 会列在仓库自身的 issue 旁；除非另有指定，智能体会在第一个中创建新 issue。",
   "19c2d5e81ff8f89a": "{project} 的 {tracker} {scope}",
   "68e061510b765772": "未绑定",
+  "99d51127f573296b": "其他账号",
+  "8ec2c57414669b79": "连接第二个 {tracker} 工作区或用户。",
+  "99963c0142e17f00": "用于新的 {tracker} 账号。",
   "a2d95d39d3398bda": "凭据被拒绝",
   "9eae463720500113": "存储在服务器上。",
   "b6e27ab2537ef874": "创建一个",
+  "6d8e4ebc889bace9": "添加账号",
   "13ef526271b0f5d4": "清除所有条件",
   "d1938a629f039515": "移除条件",
   "84a605b241ce65b7": "移除条件组及其条件",
@@ -9723,6 +9727,74 @@
   "e3349eb2353ee27c": "新设备审批未开启，因此已撤销但仍登录你的 T3 Connect 账号的设备可以自行重新连接。",
   "080160002915c666": "新设备连接需要审批",
   "73dd0f86f5363431": "设备必须在此获批后才能重新连接。",
+  "4591f72298d54b74": "Provisioning",
+  "7342bfc328008926": "Running",
+  "0a1ab3194d17d5de": "已暂停",
+  "1cfa281c89acb8cf": "create",
+  "1bb3b215faff361f": "exec",
+  "0fc72238a6a8b322": "pause/resume",
+  "613e5bbdc2f28499": "snapshots",
+  "cd1a676a0db6faad": "private ports",
+  "90b0898c65450ab5": "The sandbox request failed",
+  "a11b4a122417d474": "{provider} sandboxes for cloud work. The API key stays on {environment}.",
+  "c719b6bd1fc31802": "Accounts",
+  "25d8c75ca1d8d543": "{count} connected",
+  "2e2e317f384591ac": "No sandbox accounts",
+  "1da04833edb272cb": "Connect a provider to create a test sandbox.",
+  "fda3b35ac189eeb8": "{kind} · template {template}",
+  "36aba052800e73b3": "{label} connection works.",
+  "554ce5e1e5fc5746": "Test sandbox created on {account}.",
+  "f46d453590a749f0": "Disconnect {label}",
+  "85c8e0aa98b72363": "Test sandboxes",
+  "7394ac7b26342b71": "Provisioning the sandbox on {account}…",
+  "4404dbc78d702d97": "No test sandboxes",
+  "008858b18320f954": "Create one from an account to check the provider and the sandbox thread host.",
+  "a2fb61e9f0c2c6ba": "Thread host ready · protocol {version}",
+  "53441e443a82b298": "{kind} sandbox · {status}",
+  "35f5d9e1eec1b0f9": "Thread host ready.",
+  "9d6b667dbd3100a3": "Sandbox paused.",
+  "9d9bf996a3d3da5a": "Sandbox resumed.",
+  "a1f1265dc549e1f0": "Delete test sandbox",
+  "d9e3b431b5f24f6b": "{label} connected.",
+  "49b913bd55d9709a": "Sandbox account disconnected.",
+  "19d42d35ed05209c": "Test sandbox deleted.",
+  "01f6fcf72d5b4b28": "Enter a name for this account.",
+  "edcd8068ede60680": "Enter the provider API key.",
+  "1d34a5a6b083807e": "Enter the template to start from.",
+  "e76f6e3eece6c512": "Connect {provider}",
+  "54a1289a6a70cd55": "Connect an environment to manage the sandbox providers it can use.",
+  "7643a9e5c767f804": [
+    "Update T3 Code on ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " to manage its sandbox providers."
+  ],
+  "7328c1b786388f10": "Loading sandbox providers…",
+  "f7c3ae7a79ede728": "测试",
+  "c01b449f80dd554c": "Create test sandbox",
+  "a541e817c465ecf6": "Health check",
+  "6848686ec40ee487": "Pause",
+  "3d9761e81798fcd8": "继续",
+  "4d43147ffc74e3e0": "Disconnect this sandbox account?",
+  "46e9bc5e3a1b539d": "Its saved API key and test sandboxes are deleted. Any future cloud thread target from it disappears.",
+  "479e704fc4ce2a42": "Delete this test sandbox?",
+  "debc94e5051e7971": "This stops provider billing for it. The thread host and everything in the sandbox are removed.",
+  "aba29e77e52bca46": "Delete",
+  "35238c3fc86ee92a": [
+    "The API key is stored on ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " and never sent to a sandbox or a client."
+  ],
+  "b0900f4938210634": "API key",
+  "8be13b1a9a730870": "Template",
+  "0aa32eb61803bfb7": "The provider's project image or template to start a sandbox from.",
   "6c7762bd72cea808": "正在重新连接：{error}",
   "6cced6a88a19f1f2": "正在重新连接",
   "8cbb63fdff9fde72": "连接失败：{error}",
@@ -9825,7 +9897,6 @@
   "3dd2df6f4840a9cc": "删除“{title}”？",
   "0462d816f2982a92": "此操作无法撤销。",
   "41284a027261e081": "无法更新定时任务",
-  "0a1ab3194d17d5de": "已暂停",
   "854186eb538620c4": "正在监听",
   "4be6feb63e301484": "启用 {title}",
   "34fb848f079bdf69": "{title} 的操作",
@@ -11177,7 +11248,6 @@
   "5b928a84a624e831": "运行中：{url}",
   "b07718fe86a16cc6": "运行：已停用",
   "6d0831556a517821": "将追踪、指标和日志发送到 OTLP HTTP 接收端。重启服务器后生效。环境变量会覆盖这些设置。",
-  "f7c3ae7a79ede728": "测试",
   "b93d2ec53e944576": [
     "运行中：",
     {
@@ -11814,6 +11884,7 @@
   "afda415d2d75a5d3": "聊天",
   "4beeab8d1814b251": "差异与 PR",
   "3b958faa12d54484": "快捷键",
+  "8e3318309143e36b": "Sandbox providers",
   "2ab325baee3ec9a3": "定时任务",
   "0a59e086514a62a9": "版本控制与 issue",
   "1de0df2b8a4fb96e": "共享与访问",
@@ -12020,6 +12091,7 @@
   "fd4ec272764a2405": "1password 保管库 凭据 api 密钥",
   "ff679e74f97044e6": "添加凭据提供方",
   "ddd5990f613aebb4": "新建 1password 保管库 op cli 账户",
+  "da8b2b162166e6ca": "e2b sandbox cloud test sandbox compute api key",
   "b9b1dccabd2ed00d": "已归档会话",
   "f505371f6f6fd624": "恢复 重新打开 已删除 历史 项目",
   "2ed592dc3ae2e382": "请填写主机名称。",
@@ -12590,7 +12662,6 @@
     },
     " 上的会话"
   ],
-  "3d9761e81798fcd8": "继续",
   "8cebd63fc4c967d5": "只会重新运行失败的步骤；此前已完成的内容会保留。",
   "bc1e0a2a0f1e9552": "等你处理",
   "a812f51e970740f1": [
@@ -12622,6 +12693,15 @@
   "156ff7b625287a1e": "隐藏已跳过",
   "69b985b97ab45e6b": "显示 {count} 个已跳过",
   "2400254d362de84d": "正在加载工作流运行…",
+  "cae5c3205c01d062": [
+    {
+      "t": "span",
+      "i": 1,
+      "c": "有工作流文件存在问题。"
+    },
+    "上一个可加载的版本会继续运行。"
+  ],
+  "ed8ce6ebc73dc12d": "打开文件",
   "145e1f7503ba3b2c": [
     "此环境中没有该链接对应的运行。",
     " ",
@@ -12648,15 +12728,6 @@
       "c": "阅读指南"
     }
   ],
-  "cae5c3205c01d062": [
-    {
-      "t": "span",
-      "i": 1,
-      "c": "有工作流文件存在问题。"
-    },
-    "上一个可加载的版本会继续运行。"
-  ],
-  "ed8ce6ebc73dc12d": "打开文件",
   "5d8d278ff828102d": "全部工作流",
   "39459da07479f482": "智能体",
   "7741243632056b81": "{step} · 记录",
@@ -12801,9 +12872,5 @@
   "27d76249d09eb69f": "审查导览已就绪",
   "faa3bb26abb39c93": "审查导览生成失败",
   "b7df38b7d8792d78": "打开导览",
-  "9e91e9a77b664e4e": "无法开始生成审查导览",
-  "99d51127f573296b": "其他账号",
-  "8ec2c57414669b79": "连接第二个 {tracker} 工作区或用户。",
-  "99963c0142e17f00": "用于新的 {tracker} 账号。",
-  "6d8e4ebc889bace9": "添加账号"
+  "9e91e9a77b664e4e": "无法开始生成审查导览"
 }
