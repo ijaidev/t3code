@@ -105,6 +105,9 @@ import * as PeerThreadRelay from "./peer/PeerThreadRelay.ts";
 import * as McpSessionRegistry from "./mcp/McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as DeviceService from "./device/DeviceService.ts";
+import * as CloudThreadRuntime from "./sandbox/CloudThreadRuntime.ts";
+import * as CloudThreadStore from "./sandbox/CloudThreadStore.ts";
+import * as CloudThreads from "./sandbox/CloudThreads.ts";
 import * as SandboxAccounts from "./sandbox/SandboxAccounts.ts";
 import * as SandboxLifecycle from "./sandbox/SandboxLifecycle.ts";
 import * as SandboxStore from "./sandbox/SandboxStore.ts";
@@ -562,13 +565,29 @@ const layerDevice = DeviceService.layer.pipe(
 );
 
 const layerSandboxAccounts = SandboxAccounts.layer.pipe(Layer.provide(SecretResolver.layer));
-const layerSandboxStorage = Layer.mergeAll(layerSandboxAccounts, SandboxStore.layer);
+const layerSandboxStorage = Layer.mergeAll(
+  layerSandboxAccounts,
+  SandboxStore.layer,
+  CloudThreadStore.layer,
+);
 const layerSandboxLifecycle = SandboxLifecycle.layer.pipe(
   Layer.provide(layerSandboxAccounts),
   Layer.provide(SandboxStore.layer),
 );
+const layerCloudThreads = CloudThreads.layer.pipe(
+  Layer.provide(layerSandboxAccounts),
+  Layer.provide(layerSandboxLifecycle),
+  Layer.provide(SandboxStore.layer),
+  Layer.provide(CloudThreadStore.layer),
+);
+const layerCloudThreadRuntime = CloudThreadRuntime.layer.pipe(Layer.provide(layerCloudThreads));
 const layerSandbox = Layer.merge(
-  Layer.mergeAll(layerSandboxStorage, layerSandboxLifecycle),
+  Layer.mergeAll(
+    layerSandboxStorage,
+    layerSandboxLifecycle,
+    layerCloudThreads,
+    layerCloudThreadRuntime,
+  ),
   Layer.effectDiscard(
     Effect.gen(function* () {
       const lifecycle = yield* SandboxLifecycle.SandboxLifecycle;

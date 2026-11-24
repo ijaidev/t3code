@@ -38,6 +38,10 @@ export class ProviderInstanceRegistry extends Context.Service<
       instanceId: ProviderInstanceId,
     ) => Effect.Effect<ProviderInstance | undefined>;
     readonly listInstances: Effect.Effect<ReadonlyArray<ProviderInstance>>;
+    /** Resolved environment variables for an instance, including secret values it owns. */
+    readonly getResolvedEnvironment?: (
+      instanceId: ProviderInstanceId,
+    ) => Effect.Effect<ResolvedProviderInstanceEnvironment | undefined>;
     readonly listUnavailable: Effect.Effect<ReadonlyArray<ServerProvider>>;
     /** streamChanges subscribes on consumption; use subscribeChanges before forking to avoid missing the next publish. */
     readonly streamChanges: Stream.Stream<void>;
@@ -740,6 +744,8 @@ export const makeProviderInstanceRegistry = Effect.fn(
 
   const registry: ProviderInstanceRegistry["Service"] = {
     getInstance: (id) => Ref.get(entries).pipe(Effect.map((map) => map.get(id)?.instance)),
+    getResolvedEnvironment: (id) =>
+      Ref.get(entries).pipe(Effect.map((map) => map.get(id)?.secrets.environment)),
     listInstances: Ref.get(entries).pipe(
       Effect.map(
         (map) =>

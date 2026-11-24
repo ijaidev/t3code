@@ -12,6 +12,8 @@ import { isScratchProject } from "@t3tools/client-runtime/state/projects";
 
 import type { ComposerThreadTarget, DraftId } from "../../composerDraftStore";
 import { useT3ProjectFileScripts } from "../../hooks/useT3ProjectFileScripts";
+import type { SandboxCloudTarget } from "@t3tools/contracts";
+
 import { type EnvMode, type EnvironmentOption } from "../BranchToolbar.logic";
 import { BranchToolbar } from "../BranchToolbar";
 import GitActionsControl from "../GitActionsControl";
@@ -79,6 +81,9 @@ interface ThreadDetailsPanelProps extends Pick<
   onAutoEnvironment?: (() => void) | undefined;
   onEnvironmentChange?: (environmentId: EnvironmentId) => void;
   onEnvModeChange: (mode: EnvMode) => void;
+  cloudTargets?: ReadonlyArray<SandboxCloudTarget>;
+  cloudAccountId?: string | null;
+  onCloudTargetChange?: (accountId: string) => void;
   envMode: EnvMode;
   activeThreadBranchOverride?: string | null;
   onActiveThreadBranchOverrideChange?: (branch: string | null) => void;
@@ -138,6 +143,11 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
     isServerThread: props.isServerThread,
     ...(props.draftId ? { draftId: props.draftId } : {}),
     onEnvModeChange: props.onEnvModeChange,
+    ...(props.cloudTargets === undefined ? {} : { cloudTargets: props.cloudTargets }),
+    ...(props.cloudAccountId === undefined ? {} : { cloudAccountId: props.cloudAccountId }),
+    ...(props.onCloudTargetChange === undefined
+      ? {}
+      : { onCloudTargetChange: props.onCloudTargetChange }),
     startFromOrigin: props.startFromOrigin,
     onStartFromOriginChange: props.onStartFromOriginChange,
     envMode: props.envMode,

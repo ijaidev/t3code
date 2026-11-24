@@ -1,7 +1,13 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
-import { IsoDateTime, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import {
+  IsoDateTime,
+  PositiveInt,
+  ProjectId,
+  ThreadId,
+  TrimmedNonEmptyString,
+} from "./baseSchemas.ts";
 import { SettingsSecretValue } from "./settingsSecretValue.ts";
 
 export const SandboxProviderKind = TrimmedNonEmptyString.check(
@@ -114,6 +120,37 @@ export const SandboxAccountTestResult = Schema.Struct({
 });
 export type SandboxAccountTestResult = typeof SandboxAccountTestResult.Type;
 
+/** One cloud target the target picker can offer for a project. */
+export const SandboxCloudTarget = Schema.Struct({
+  accountId: SandboxProviderAccountId,
+  providerKind: SandboxProviderKind,
+  label: TrimmedNonEmptyString,
+  enabled: Schema.Boolean,
+  /** Why an unavailable target is disabled; clients translate this code. */
+  disabledReason: Schema.optionalKey(
+    Schema.Literals([
+      "no-remote",
+      "account-disabled",
+      "provider-unavailable",
+      "no-create",
+      "no-exec",
+    ]),
+  ),
+});
+export type SandboxCloudTarget = typeof SandboxCloudTarget.Type;
+
+export const SandboxListCloudTargetsInput = Schema.Struct({
+  projectId: ProjectId,
+});
+export type SandboxListCloudTargetsInput = typeof SandboxListCloudTargetsInput.Type;
+
+export const SandboxListCloudTargetsResult = Schema.Struct({
+  /** The project's primary remote URL, or null when cloud threads cannot start here. */
+  remoteUrl: Schema.NullOr(TrimmedNonEmptyString),
+  targets: Schema.Array(SandboxCloudTarget),
+});
+export type SandboxListCloudTargetsResult = typeof SandboxListCloudTargetsResult.Type;
+
 export const SandboxInstanceStatus = Schema.Literals([
   "provisioning",
   "running",
@@ -139,6 +176,8 @@ export const SandboxTestSandbox = Schema.Struct({
   accountId: SandboxProviderAccountId,
   providerKind: SandboxProviderKind,
   providerSandboxId: Schema.NullOr(TrimmedNonEmptyString),
+  /** Set on a cloud thread's sandbox; absent on sandboxes created for the settings test. */
+  threadId: Schema.optionalKey(ThreadId),
   status: SandboxInstanceStatus,
   template: TrimmedNonEmptyString,
   createdAt: IsoDateTime,

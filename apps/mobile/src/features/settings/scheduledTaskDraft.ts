@@ -320,7 +320,7 @@ export function editDraft(task: ScheduledTask): ScheduledTaskDraft {
     modelSelectionIsExplicit: true,
     schedule: scheduleDraftForTask(task),
     threadMode: scheduledTaskThreadMode(task),
-    workspace: task.workspaceStrategy.type,
+    workspace: task.workspaceStrategy.type === "cloud" ? "root" : task.workspaceStrategy.type,
     baseRef: task.workspaceStrategy.type === "worktree" ? task.workspaceStrategy.baseRef : "",
     checkoutPath:
       task.workspaceStrategy.type === "existing_worktree"

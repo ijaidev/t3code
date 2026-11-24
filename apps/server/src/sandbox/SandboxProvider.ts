@@ -59,6 +59,30 @@ export interface SandboxProviderExecResult {
   readonly stderr: string;
 }
 
+export interface SandboxProviderWriteFileInput {
+  readonly account: SandboxProviderAccount;
+  readonly providerSandboxId: string;
+  readonly path: string;
+  readonly data: string | Uint8Array;
+}
+
+export interface SandboxProviderStartProcessInput {
+  readonly account: SandboxProviderAccount;
+  readonly providerSandboxId: string;
+  readonly command: string;
+  readonly cwd?: string;
+  readonly envs?: Readonly<Record<string, string>>;
+  readonly onStdout: (data: string) => void;
+  readonly onStderr: (data: string) => void;
+}
+
+export interface SandboxProviderProcess {
+  readonly pid: number;
+  readonly sendStdin: (data: string) => Effect.Effect<void, SandboxProviderError>;
+  readonly kill: Effect.Effect<void, SandboxProviderError>;
+  readonly wait: Effect.Effect<{ readonly exitCode: number }, SandboxProviderError>;
+}
+
 export interface SandboxProviderFoundSandbox {
   readonly providerSandboxId: string;
   readonly status: "running" | "paused";
@@ -98,4 +122,12 @@ export interface SandboxProviderDriver {
   readonly exec: (
     input: SandboxProviderExecInput,
   ) => Effect.Effect<SandboxProviderExecResult, SandboxProviderError>;
+  /** Uploads bytes; cloud threads use it for the host script and attachments. */
+  readonly writeFile?: (
+    input: SandboxProviderWriteFileInput,
+  ) => Effect.Effect<void, SandboxProviderError>;
+  /** Starts a long-lived stdio process; only drivers that support interactive work expose it. */
+  readonly startProcess?: (
+    input: SandboxProviderStartProcessInput,
+  ) => Effect.Effect<SandboxProviderProcess, SandboxProviderError>;
 }

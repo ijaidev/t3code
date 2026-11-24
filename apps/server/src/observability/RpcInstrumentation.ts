@@ -267,6 +267,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.deviceAction]: "device",
   [WS_METHODS.subscribeDeviceState]: "device",
   [WS_METHODS.sandboxListProviders]: "sandbox",
+  [WS_METHODS.sandboxListCloudTargets]: "sandbox",
   [WS_METHODS.sandboxConnectAccount]: "sandbox",
   [WS_METHODS.sandboxTestAccount]: "sandbox",
   [WS_METHODS.sandboxDisconnectAccount]: "sandbox",

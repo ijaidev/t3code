@@ -1515,6 +1515,11 @@ export function createServerEnvironmentAtoms<R, E>(
       tag: WS_METHODS.sandboxListProviders,
       staleTimeMs: 60_000,
     }),
+    sandboxCloudTargets: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:sandbox:cloud-targets",
+      tag: WS_METHODS.sandboxListCloudTargets,
+      staleTimeMs: 30_000,
+    }),
     sandboxTestSandboxes: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:sandbox:test-sandboxes",
       tag: WS_METHODS.sandboxListTestSandboxes,

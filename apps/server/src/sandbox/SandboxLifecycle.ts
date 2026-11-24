@@ -6,11 +6,13 @@ import {
   type SandboxCreateTestSandboxResult,
   type SandboxHealth,
   type SandboxHealthCheckResult,
+  type SandboxInstanceStatus,
   type SandboxOperation,
   type SandboxTestSandbox,
   type SandboxTestSandboxInput,
   type SandboxTestSandboxListResult,
   type SandboxTestSandboxResult,
+  type ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -59,6 +61,18 @@ export class SandboxLifecycle extends Context.Service<
     readonly createTestSandbox: (
       input: SandboxCreateTestSandboxInput,
     ) => Effect.Effect<SandboxCreateTestSandboxResult, SandboxError>;
+    /** A cloud thread's sandbox, kept out of the settings test list. */
+    readonly createThreadSandbox: (input: {
+      readonly threadId: ThreadId;
+      readonly accountId: SandboxCreateTestSandboxInput["accountId"];
+      readonly timeoutMinutes?: number;
+    }) => Effect.Effect<SandboxTestSandbox, SandboxError>;
+    readonly deleteThreadSandbox: (
+      input: SandboxTestSandboxInput,
+    ) => Effect.Effect<void, SandboxError>;
+    readonly getSandbox: (
+      sandboxId: SandboxInstanceId,
+    ) => Effect.Effect<Option.Option<SandboxTestSandbox>>;
     readonly pauseTestSandbox: (
       input: SandboxTestSandboxInput,
     ) => Effect.Effect<SandboxTestSandboxResult, SandboxError>;
@@ -227,14 +241,17 @@ const make = Effect.gen(function* () {
   const listTestSandboxes = reconcile().pipe(
     Effect.andThen(store.list),
     Effect.map((sandboxes) => ({
-      sandboxes: [...sandboxes].sort((left, right) =>
-        right.createdAt.localeCompare(left.createdAt),
-      ),
+      sandboxes: sandboxes
+        .filter((sandbox) => sandbox.threadId === undefined)
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
     })),
   );
 
-  const createTestSandbox = Effect.fn("SandboxLifecycle.createTestSandbox")(function* (
-    input: SandboxCreateTestSandboxInput,
+  const createSandbox = Effect.fn("SandboxLifecycle.createSandbox")(function* (
+    input: SandboxCreateTestSandboxInput & {
+      readonly threadId?: ThreadId;
+      readonly initialStatus?: SandboxInstanceStatus;
+    },
   ) {
     return yield* lifecycleLock.withPermits(1)(
       Effect.gen(function* () {
@@ -246,7 +263,8 @@ const make = Effect.gen(function* () {
           accountId: input.accountId,
           providerKind: account.kind,
           providerSandboxId: null,
-          status: "provisioning",
+          ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
+          status: input.initialStatus ?? "provisioning",
           template: account.template,
           createdAt,
           updatedAt: createdAt,
@@ -273,7 +291,7 @@ const make = Effect.gen(function* () {
         const running: SandboxTestSandbox = {
           ...record,
           providerSandboxId: created.success.providerSandboxId,
-          status: "running",
+          status: record.status === "provisioning" ? "running" : record.status,
           updatedAt: DateTime.formatIso(yield* DateTime.now),
         };
         const persisted = yield* store.upsert(running).pipe(Effect.result);
@@ -300,9 +318,27 @@ const make = Effect.gen(function* () {
             .pipe(Effect.ignore);
           return yield* new SandboxError({ operation: "create-sandbox", detail });
         }
-        return { sandbox: running };
+        return running;
       }),
     );
+  });
+
+  const createTestSandbox = Effect.fn("SandboxLifecycle.createTestSandbox")(function* (
+    input: SandboxCreateTestSandboxInput,
+  ) {
+    return { sandbox: yield* createSandbox(input) };
+  });
+
+  const createThreadSandbox: SandboxLifecycle["Service"]["createThreadSandbox"] = Effect.fn(
+    "SandboxLifecycle.createThreadSandbox",
+  )(function* (input) {
+    return yield* createSandbox({
+      accountId: input.accountId,
+      ...(input.timeoutMinutes === undefined ? {} : { timeoutMinutes: input.timeoutMinutes }),
+      threadId: input.threadId,
+      // The lifecycle owns the record from the first write; the thread's clone stage follows.
+      initialStatus: "provisioning",
+    });
   });
 
   const pauseTestSandbox = Effect.fn("SandboxLifecycle.pauseTestSandbox")(function* (
@@ -389,6 +425,19 @@ const make = Effect.gen(function* () {
         yield* deleteAllOrFail("delete-sandbox", driver, account, found, deleting);
       }),
     );
+  });
+
+  const deleteThreadSandbox: SandboxLifecycle["Service"]["deleteThreadSandbox"] = Effect.fn(
+    "SandboxLifecycle.deleteThreadSandbox",
+  )(function* (input) {
+    yield* deleteTestSandbox(input);
+  });
+
+  const getSandbox: SandboxLifecycle["Service"]["getSandbox"] = Effect.fn(
+    "SandboxLifecycle.getSandbox",
+  )(function* (sandboxId) {
+    yield* reconcile();
+    return yield* store.get(sandboxId);
   });
 
   const checkTestSandbox = Effect.fn("SandboxLifecycle.checkTestSandbox")(function* (
@@ -492,6 +541,9 @@ const make = Effect.gen(function* () {
   return SandboxLifecycle.of({
     listTestSandboxes,
     createTestSandbox,
+    createThreadSandbox,
+    deleteThreadSandbox,
+    getSandbox,
     pauseTestSandbox,
     resumeTestSandbox,
     deleteTestSandbox,

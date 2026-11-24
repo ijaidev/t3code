@@ -63,6 +63,7 @@ import {
   OrchestrationGetTurnDiffResult,
 } from "./checkpointDiff.ts";
 import { ModelSelection } from "./modelSelection.ts";
+import { SandboxProviderAccountId } from "./sandbox.ts";
 import { ThreadIssueKey, ThreadIssueLink, ThreadIssueLinkSource } from "./issue.ts";
 import {
   ThreadLinkedPullRequest,
@@ -801,6 +802,12 @@ export const OrchestrationV2ThreadLaunchWorkspaceStrategy = Schema.Union([
           description: "Tracked Git folders to give a worktree. Default: all, or none above 8.",
         }),
     ),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("cloud"),
+    accountId: SandboxProviderAccountId,
+    baseRef: GitRefName,
+    branch: Schema.optional(GitRefName),
   }),
 ]);
 export type OrchestrationV2ThreadLaunchWorkspaceStrategy =

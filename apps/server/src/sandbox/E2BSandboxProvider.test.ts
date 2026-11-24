@@ -2,7 +2,11 @@ import { SandboxProviderKind } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 
-import { makeE2BSandboxProvider, type E2BClient } from "./E2BSandboxProvider.ts";
+import {
+  makeE2BSandboxProvider,
+  type E2BClient,
+  type E2BSandboxHandle,
+} from "./E2BSandboxProvider.ts";
 import type { SandboxProviderAccount } from "./SandboxProvider.ts";
 
 const account: SandboxProviderAccount = {
@@ -15,11 +19,13 @@ const account: SandboxProviderAccount = {
 
 const client = (overrides: Partial<E2BClient> = {}): E2BClient => ({
   create: async () => ({ sandboxId: "e2b-sandbox-1" }),
-  connect: async () => ({
-    commands: {
-      run: async () => ({ exitCode: 0, stdout: "ok", stderr: "" }),
-    },
-  }),
+  connect: async () =>
+    ({
+      commands: {
+        run: async () => ({ exitCode: 0, stdout: "ok", stderr: "" }),
+      },
+      files: { write: async () => ({}) },
+    }) as unknown as E2BSandboxHandle,
   getInfo: async () => ({ state: "running" }),
   pause: async () => true,
   delete: async () => true,
@@ -129,15 +135,24 @@ describe("E2B sandbox provider", () => {
     Effect.gen(function* () {
       const driver = makeE2BSandboxProvider(
         client({
-          connect: async () => ({
-            commands: {
-              run: async (command, options) => {
-                expect(command).toBe("echo ready");
-                expect(options.shell).toEqual(["/bin/sh", "-lc"]);
-                return { exitCode: 0, stdout: "ready", stderr: "" };
+          connect: async () =>
+            ({
+              commands: {
+                run: async (
+                  command: string,
+                  options: {
+                    readonly shell?: ReadonlyArray<string>;
+                    readonly cwd?: string;
+                    readonly timeoutMs?: number;
+                  },
+                ) => {
+                  expect(command).toBe("echo ready");
+                  expect(options.shell).toEqual(["/bin/sh", "-lc"]);
+                  return { exitCode: 0, stdout: "ready", stderr: "" };
+                },
               },
-            },
-          }),
+              files: { write: async () => ({}) },
+            }) as unknown as E2BSandboxHandle,
         }),
       );
       const result = yield* driver.exec({

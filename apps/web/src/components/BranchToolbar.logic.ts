@@ -40,7 +40,7 @@ export interface EnvironmentOption {
 export const ADD_TO_MACHINE_LABEL_CLASS =
   "flex min-w-0 items-center gap-1.5 opacity-55 in-data-highlighted:opacity-100 in-data-popup-open:opacity-100";
 
-export const EnvMode = Schema.Literals(["local", "worktree"]);
+export const EnvMode = Schema.Literals(["local", "worktree", "cloud"]);
 export type EnvMode = typeof EnvMode.Type;
 
 const GENERIC_LOCAL_ENVIRONMENT_LABELS = new Set(["local", "local environment"]);
@@ -119,8 +119,30 @@ export function resolveContextStripLabelsCompact(input: {
     : input.neededWidth > input.availableWidth;
 }
 
+export function resolveCloudTargetDisabledReason(
+  reason: NonNullable<import("@t3tools/contracts").SandboxCloudTarget["disabledReason"]>,
+  resolve: MessageResolver = m,
+): string {
+  switch (reason) {
+    case "no-remote":
+      return resolve(msg("Add a Git remote to this project to start a cloud thread."));
+    case "account-disabled":
+      return resolve(msg("Enable this provider account in Settings to start a cloud thread."));
+    case "provider-unavailable":
+      return resolve(msg("This sandbox provider is not available."));
+    case "no-create":
+      return resolve(msg("This sandbox provider cannot create sandboxes."));
+    case "no-exec":
+      return resolve(msg("This sandbox provider cannot run commands."));
+  }
+}
+
 export function resolveEnvModeLabel(mode: EnvMode, resolve: MessageResolver = m): string {
-  return mode === "worktree" ? resolve(msg("New worktree")) : resolve(msg("Current checkout"));
+  return mode === "worktree"
+    ? resolve(msg("New worktree"))
+    : mode === "cloud"
+      ? resolve(msg("Cloud sandbox"))
+      : resolve(msg("Current checkout"));
 }
 
 export const WORKTREE_SUBMODULES_LABELS: Record<WorktreeSubmodules, string> = {
@@ -147,7 +169,9 @@ export function resolveLockedWorkspaceLabel(
     return activeWorktreePath.split(/[\\/]/).findLast(Boolean) ?? resolve(msg("Worktree"));
   return effectiveEnvMode === "worktree"
     ? resolveEnvModeLabel("worktree", resolve)
-    : resolve(msg("Local checkout"));
+    : effectiveEnvMode === "cloud"
+      ? resolve(msg("Cloud sandbox"))
+      : resolve(msg("Local checkout"));
 }
 
 export interface PreviousWorktreeSeed {
@@ -208,7 +232,11 @@ export function resolveEffectiveEnvMode(input: {
     if (activeWorktreePath) {
       return "local";
     }
-    return draftThreadEnvMode === "worktree" ? "worktree" : "local";
+    return draftThreadEnvMode === "worktree"
+      ? "worktree"
+      : draftThreadEnvMode === "cloud"
+        ? "cloud"
+        : "local";
   }
   return activeWorktreePath || preparingWorktree ? "worktree" : "local";
 }
@@ -225,7 +253,7 @@ export function resolveDraftEnvModeAfterBranchChange(input: {
   if (effectiveEnvMode === "worktree" && !currentWorktreePath) {
     return "worktree";
   }
-  return "local";
+  return effectiveEnvMode === "cloud" ? "cloud" : "local";
 }
 
 export function resolveBranchToolbarValue(input: {
@@ -301,7 +329,7 @@ export function resolveBranchTriggerLabel(
   if (!resolvedActiveBranch) {
     return resolve(msg("Select ref"));
   }
-  if (effectiveEnvMode === "worktree" && !activeWorktreePath) {
+  if ((effectiveEnvMode === "worktree" || effectiveEnvMode === "cloud") && !activeWorktreePath) {
     // Only the server can determine a local branch's configured remote.
     return startFromOrigin && resolvedActiveBranchIsRemote === false
       ? resolve(msg("From {branch} (remote)", { branch: resolvedActiveBranch }))
