@@ -27,6 +27,7 @@ import {
   type VcsStatusLocalResult,
   type VcsStatusRemoteResult,
   type VcsStatusResult,
+  type VcsError,
 } from "@t3tools/contracts";
 
 import { trimAsciiWhitespace } from "@t3tools/contracts";
@@ -109,6 +110,12 @@ export class GitWorkflowService extends Context.Service<
       readonly refName: string;
     }) => Effect.Effect<boolean, GitCommandError>;
     readonly resolvePrimaryRemoteName: (cwd: string) => Effect.Effect<string, GitCommandError>;
+    readonly listRemotes: (
+      cwd: string,
+    ) => Effect.Effect<
+      import("@t3tools/contracts").VcsListRemotesResult,
+      VcsError | GitCommandError
+    >;
     readonly resolveRemoteTrackingCommit: (input: {
       readonly cwd: string;
       readonly refName: string;
@@ -490,6 +497,10 @@ export const make = Effect.gen(function* () {
         );
       },
     ),
+    listRemotes: Effect.fn("GitWorkflowService.listRemotes")(function* (cwd: string) {
+      const handle = yield* registry.resolve({ cwd });
+      return yield* handle.driver.listRemotes(cwd);
+    }),
     resolveRemoteTrackingCommit: Effect.fn("GitWorkflowService.resolveRemoteTrackingCommit")(
       function (input) {
         return ensureGitCommand("GitWorkflowService.resolveRemoteTrackingCommit", input.cwd).pipe(

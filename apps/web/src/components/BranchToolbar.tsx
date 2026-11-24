@@ -10,10 +10,17 @@ import { readLocalApi } from "../localApi";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { ComposerContextLabel } from "./ComposerContextLabel";
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
-import type { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
+import type { EnvironmentId, ProjectId, SandboxCloudTarget, ThreadId } from "@t3tools/contracts";
 import { msg, T, useGT, useMessages } from "gt-react";
 import { m as resolveMessage } from "../i18n/messages";
-import { FolderGit2Icon, FolderGitIcon, FolderIcon, PlusIcon, ScaleIcon } from "lucide-react";
+import {
+  CloudIcon,
+  FolderGit2Icon,
+  FolderGitIcon,
+  FolderIcon,
+  PlusIcon,
+  ScaleIcon,
+} from "lucide-react";
 import {
   type Ref,
   type MouseEvent as ReactMouseEvent,
@@ -32,6 +39,7 @@ import {
   ADD_TO_MACHINE_LABEL_CLASS,
   type EnvMode,
   type EnvironmentOption,
+  resolveCloudTargetDisabledReason,
   resolveContextStripLabelsCompact,
   resolveCurrentWorkspaceLabel,
   resolveEnvModeLabel,
@@ -104,6 +112,9 @@ interface BranchToolbarProps {
   showBranchControls?: boolean;
   draftId?: DraftId;
   onEnvModeChange: (mode: EnvMode) => void;
+  cloudTargets?: ReadonlyArray<SandboxCloudTarget>;
+  cloudAccountId?: string | null;
+  onCloudTargetChange?: (accountId: string) => void;
   envMode: EnvMode;
   activeThreadBranchOverride?: string | null;
   onActiveThreadBranchOverrideChange?: (branch: string | null) => void;
@@ -172,6 +183,9 @@ interface RunContextSelectorProps {
   effectiveEnvMode: EnvMode;
   activeWorktreePath: string | null;
   onEnvModeChange: (mode: EnvMode) => void;
+  cloudTargets: ReadonlyArray<SandboxCloudTarget>;
+  cloudAccountId: string | null;
+  onCloudTargetChange: (accountId: string) => void;
   previousWorktreeLabel: string | null;
   previousWorktreeBranch: string | null;
   onUsePreviousWorktree: () => void;
@@ -196,6 +210,9 @@ const RunContextSelector = memo(function RunContextSelector({
   effectiveEnvMode: requestedEnvMode,
   activeWorktreePath,
   onEnvModeChange,
+  cloudTargets,
+  cloudAccountId,
+  onCloudTargetChange,
   previousWorktreeLabel,
   previousWorktreeBranch,
   onUsePreviousWorktree,
@@ -210,24 +227,35 @@ const RunContextSelector = memo(function RunContextSelector({
   // A folder no worktree can come from runs threads in place, whatever mode was requested.
   const forceNewWorktree = offersWorkspaceModes && requestedForceNewWorktree;
   const effectiveEnvMode = offersWorkspaceModes ? requestedEnvMode : "local";
+  const cloudWorkspaceValue =
+    effectiveEnvMode === "cloud" && cloudAccountId !== null
+      ? `cloud:${cloudAccountId}`
+      : effectiveEnvMode;
+  const selectedCloudTarget = cloudTargets.find((target) => target.accountId === cloudAccountId);
   const WorkspaceIcon =
-    effectiveEnvMode === "worktree"
-      ? FolderGit2Icon
-      : activeWorktreePath && offersWorkspaceModes
-        ? FolderGitIcon
-        : FolderIcon;
+    effectiveEnvMode === "cloud"
+      ? CloudIcon
+      : effectiveEnvMode === "worktree"
+        ? FolderGit2Icon
+        : activeWorktreePath && offersWorkspaceModes
+          ? FolderGitIcon
+          : FolderIcon;
   const workspaceLabel = forceNewWorktree
     ? resolveEnvModeLabel("worktree", m)
     : envModeLocked
       ? resolveLockedWorkspaceLabel(activeWorktreePath, effectiveEnvMode, m)
-      : effectiveEnvMode === "worktree"
-        ? resolveEnvModeLabel("worktree", m)
-        : resolveCurrentWorkspaceLabel(activeWorktreePath, m);
+      : effectiveEnvMode === "cloud"
+        ? (selectedCloudTarget?.label ?? resolveEnvModeLabel("cloud", m))
+        : effectiveEnvMode === "worktree"
+          ? resolveEnvModeLabel("worktree", m)
+          : resolveCurrentWorkspaceLabel(activeWorktreePath, m);
   const isPanel = displayMode === "panel";
   const workspaceModesLocked = envModeLocked || !offersWorkspaceModes;
   const isLocked = envLocked || (workspaceModesLocked && (!isPanel || !showEnvironmentPicker));
   const workspacePath =
-    forceNewWorktree || (effectiveEnvMode === "worktree" && !activeWorktreePath)
+    effectiveEnvMode === "cloud" ||
+    forceNewWorktree ||
+    (effectiveEnvMode === "worktree" && !activeWorktreePath)
       ? null
       : (activeWorktreePath ?? workspaceRoot);
   const handleContextMenu = (event: ReactMouseEvent) => {
@@ -435,10 +463,15 @@ const RunContextSelector = memo(function RunContextSelector({
               <T>Workspace</T>
             </MenuGroupLabel>
             <MenuRadioGroup
-              value={effectiveEnvMode}
+              value={cloudWorkspaceValue}
               onValueChange={(value) => {
                 if (value === "previous-worktree") {
                   onUsePreviousWorktree();
+                  return;
+                }
+                if (value.startsWith("cloud:")) {
+                  onCloudTargetChange(value.slice("cloud:".length));
+                  onEnvModeChange("cloud");
                   return;
                 }
                 onEnvModeChange(value as EnvMode);
@@ -464,6 +497,24 @@ const RunContextSelector = memo(function RunContextSelector({
                   <span className="min-w-0 truncate">{resolveEnvModeLabel("worktree", m)}</span>
                 </span>
               </MenuRadioItem>
+              {cloudTargets.map((target) => (
+                <MenuRadioItem
+                  key={target.accountId}
+                  disabled={envModeLocked || !target.enabled}
+                  value={`cloud:${target.accountId}`}
+                  closeOnClick
+                >
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <CloudIcon className="size-3" />
+                    <span className="min-w-0 truncate">{target.label}</span>
+                    {target.disabledReason ? (
+                      <span className="min-w-0 truncate text-muted-foreground/70 text-xs">
+                        {resolveCloudTargetDisabledReason(target.disabledReason, m)}
+                      </span>
+                    ) : null}
+                  </span>
+                </MenuRadioItem>
+              ))}
               {previousWorktreeLabel ? (
                 <MenuRadioItem disabled={envModeLocked} value="previous-worktree" closeOnClick>
                   <PreviousWorktreeItemContent branch={previousWorktreeBranch} />
@@ -652,6 +703,9 @@ export const BranchToolbar = memo(function BranchToolbar({
   showBranchControls = showGitControls,
   draftId,
   onEnvModeChange,
+  cloudTargets = [],
+  cloudAccountId = null,
+  onCloudTargetChange,
   envMode,
   activeThreadBranchOverride,
   onActiveThreadBranchOverrideChange,
@@ -766,6 +820,9 @@ export const BranchToolbar = memo(function BranchToolbar({
             effectiveEnvMode={effectiveEnvMode}
             activeWorktreePath={activeWorktreePath}
             onEnvModeChange={onEnvModeChange}
+            cloudTargets={cloudTargets}
+            cloudAccountId={cloudAccountId}
+            onCloudTargetChange={onCloudTargetChange ?? (() => {})}
             previousWorktreeLabel={previousWorktreeLabel}
             previousWorktreeBranch={previousWorktreeSeed?.branch ?? null}
             onUsePreviousWorktree={onUsePreviousWorktree}
@@ -817,6 +874,9 @@ export const BranchToolbar = memo(function BranchToolbar({
             effectiveEnvMode={effectiveEnvMode}
             activeWorktreePath={activeWorktreePath}
             onEnvModeChange={onEnvModeChange}
+            cloudTargets={cloudTargets}
+            cloudAccountId={cloudAccountId}
+            onCloudTargetChange={onCloudTargetChange ?? (() => {})}
             previousWorktreeLabel={previousWorktreeLabel}
             previousWorktreeBranch={previousWorktreeSeed?.branch ?? null}
             onUsePreviousWorktree={onUsePreviousWorktree}
@@ -860,6 +920,9 @@ export const BranchToolbar = memo(function BranchToolbar({
               effectiveEnvMode={effectiveEnvMode}
               activeWorktreePath={activeWorktreePath}
               onEnvModeChange={onEnvModeChange}
+              cloudTargets={cloudTargets}
+              cloudAccountId={cloudAccountId}
+              onCloudTargetChange={onCloudTargetChange ?? (() => {})}
               previousWorktreeLabel={previousWorktreeLabel}
               previousWorktreeBranch={previousWorktreeSeed?.branch ?? null}
               onUsePreviousWorktree={onUsePreviousWorktree}

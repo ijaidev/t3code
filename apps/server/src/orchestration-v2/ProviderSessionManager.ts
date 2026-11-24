@@ -77,6 +77,7 @@ import {
 } from "@t3tools/provider-core/server/subagentProjection";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import * as CloudThreadRuntime from "../sandbox/CloudThreadRuntime.ts";
 
 const DEFAULT_IDLE_TIMEOUT_MS = 2 * 60 * 1000;
 // Without native resume, a released session comes back as a summary of the thread, so it stays longer.
@@ -472,6 +473,7 @@ export const layerWithOptions = (
     ProviderSessionManagerV2,
     Effect.gen(function* () {
       const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
+      const cloudRuntime = yield* Effect.serviceOption(CloudThreadRuntime.CloudThreadRuntime);
       const fileSystem = yield* FileSystem.FileSystem;
       const mcpSessionRegistry = yield* McpSessionRegistry.McpSessionRegistry;
       const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
@@ -3277,29 +3279,50 @@ export const layerWithOptions = (
               const sessionClosed = yield* Deferred.make<void>();
               yield* Scope.addFinalizer(sessionScope, Deferred.done(sessionClosed, Exit.void));
               yield* agentScope.clear(input.threadId);
+              const openSessionInput = {
+                threadId: input.threadId,
+                providerSessionId: input.providerSessionId,
+                modelSelection: input.modelSelection,
+                runtimePolicy: input.runtimePolicy,
+                promptSuggestions: promptSuggestionsEnabled,
+                ...(input.resumeFromSession === undefined
+                  ? {}
+                  : { resumeFromSession: input.resumeFromSession }),
+                ...(input.initialNativeThreadId === undefined
+                  ? {}
+                  : { initialNativeThreadId: input.initialNativeThreadId }),
+                ...(input.initialProviderItemIdentityVersion === undefined
+                  ? {}
+                  : {
+                      initialProviderItemIdentityVersion: input.initialProviderItemIdentityVersion,
+                    }),
+              };
+              const openProviderSession = Effect.gen(function* () {
+                if (
+                  Option.isSome(cloudRuntime) &&
+                  (yield* cloudRuntime.value.hasThread(input.threadId))
+                ) {
+                  const environment =
+                    registry.getResolvedEnvironment === undefined
+                      ? []
+                      : ((yield* registry.getResolvedEnvironment(
+                          input.modelSelection.instanceId,
+                        )) ?? []);
+                  return yield* cloudRuntime.value.openSession(
+                    {
+                      threadId: input.threadId,
+                      providerSessionId: input.providerSessionId,
+                      modelSelection: input.modelSelection,
+                      runtimePolicy: input.runtimePolicy,
+                      environment,
+                    },
+                    adapter,
+                  );
+                }
+                return yield* adapter.openSession(openSessionInput);
+              });
               const runtime = yield* installationGate
-                .execute(
-                  input.modelSelection.instanceId,
-                  adapter.openSession({
-                    threadId: input.threadId,
-                    providerSessionId: input.providerSessionId,
-                    modelSelection: input.modelSelection,
-                    runtimePolicy: input.runtimePolicy,
-                    promptSuggestions: promptSuggestionsEnabled,
-                    ...(input.resumeFromSession === undefined
-                      ? {}
-                      : { resumeFromSession: input.resumeFromSession }),
-                    ...(input.initialNativeThreadId === undefined
-                      ? {}
-                      : { initialNativeThreadId: input.initialNativeThreadId }),
-                    ...(input.initialProviderItemIdentityVersion === undefined
-                      ? {}
-                      : {
-                          initialProviderItemIdentityVersion:
-                            input.initialProviderItemIdentityVersion,
-                        }),
-                  }),
-                )
+                .execute(input.modelSelection.instanceId, openProviderSession)
                 .pipe(
                   Effect.provideService(Scope.Scope, sessionScope),
                   // Bound scope close after cleanup; a wedged finalizer must not hold the open lock or interrupter.

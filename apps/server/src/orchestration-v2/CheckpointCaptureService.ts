@@ -17,6 +17,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import * as CloudThreadStore from "../sandbox/CloudThreadStore.ts";
 import * as CheckpointService from "./CheckpointService.ts";
 import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -68,11 +69,24 @@ export const layer: Layer.Layer<
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const threadCommands = yield* ThreadCommandExecutor.ThreadCommandExecutor;
 
+    const cloudThreads = yield* Effect.serviceOption(CloudThreadStore.CloudThreadStore);
+
     const execute = Effect.fn("orchestrationV2.checkpointCapture.execute")(function* (input: {
       readonly threadId: ThreadId;
       readonly runId: RunId;
       readonly scopeId: CheckpointScopeId;
     }) {
+      // A cloud thread's files live in its sandbox; never snapshot the project's local checkout for it.
+      if (
+        Option.isSome(cloudThreads) &&
+        Option.isSome(
+          yield* cloudThreads.value
+            .get(input.threadId)
+            .pipe(Effect.orElseSucceed(() => Option.none())),
+        )
+      ) {
+        return;
+      }
       const context = yield* projections.getCheckpointCaptureContext(input.threadId, input);
       const { run, rootNode, scope, providerThread, preservedCheckpointOrdinals, sideChat } =
         context;

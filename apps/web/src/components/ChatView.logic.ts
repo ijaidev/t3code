@@ -1464,6 +1464,7 @@ export function planComposerTurn(input: {
     !input.sendQueuesBehindSetup && (!input.isServerThread || input.activeMessageCount === 0);
   const shouldCreateWorktree =
     isFirstMessage && input.sendEnvMode === "worktree" && !input.worktreePath;
+  const shouldCreateCloud = isFirstMessage && input.sendEnvMode === "cloud";
   // A stale Claude session compacts before this message so the turn does not re-read the
   // old history. The message queues behind the /compact run, since steering into it is
   // rejected.
@@ -1484,12 +1485,14 @@ export function planComposerTurn(input: {
       input.projectIsGitRepo &&
       !input.activeThreadBranch &&
       !input.isScratchProject,
+    missingCloudBaseBranch: shouldCreateCloud && !input.activeThreadBranch,
     // The launch schema requires a base ref; `HEAD` leaves each repository on its default branch.
     baseBranchForWorktree: !shouldCreateWorktree
       ? null
       : input.projectIsGitRepo
         ? input.activeThreadBranch
         : input.plainProjectBaseBranch || "HEAD",
+    cloudBaseBranch: shouldCreateCloud ? input.activeThreadBranch : null,
     compactBeforeSend,
     turnDispatchMode:
       compactBeforeSend || (input.sendQueuesBehindSetup && dispatchMode !== "steer")

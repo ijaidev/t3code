@@ -217,6 +217,8 @@ interface ComposerSendInput {
   readonly phase: SessionPhase;
   readonly runtimeMode: RuntimeMode;
   readonly sendEnvMode: DraftThreadEnvMode;
+  /** The connected sandbox provider account a cloud thread starts on. */
+  readonly cloudAccountId: string | null;
   /** Tracked repositories a new worktree takes; undefined leaves the choice to the server. */
   readonly worktreeRepositories: ReadonlyArray<{ readonly path: string }> | undefined;
   readonly startFromOrigin: boolean;
@@ -320,6 +322,7 @@ export function useComposerSend(input: ComposerSendInput) {
     phase,
     runtimeMode,
     sendEnvMode,
+    cloudAccountId,
     worktreeRepositories,
     startFromOrigin,
     localCheckoutBranchMismatch,
@@ -1008,7 +1011,9 @@ export function useComposerSend(input: ComposerSendInput) {
     } = sendSnapshot;
     const {
       missingWorktreeBaseBranch,
+      missingCloudBaseBranch,
       baseBranchForWorktree,
+      cloudBaseBranch,
       compactBeforeSend,
       turnDispatchMode,
       shouldQueueBehindActiveRun,
@@ -1029,6 +1034,20 @@ export function useComposerSend(input: ComposerSendInput) {
       dispatchMode,
       freshContext: freshArm !== undefined,
     });
+    if (missingCloudBaseBranch) {
+      setThreadError(
+        threadIdForSend,
+        m(msg("Select a base branch before sending in Cloud sandbox mode.")),
+      );
+      return;
+    }
+    if (sendEnvMode === "cloud" && cloudAccountId === null) {
+      setThreadError(
+        threadIdForSend,
+        m(msg("Connect an E2B account in Settings before starting a cloud thread.")),
+      );
+      return;
+    }
     if (missingWorktreeBaseBranch) {
       setThreadError(
         threadIdForSend,
@@ -1498,8 +1517,16 @@ export function useComposerSend(input: ComposerSendInput) {
     let turnStartSucceeded = false;
     if (failure === null && turnAttachmentsResult._tag === "Success") {
       const bootstrap =
-        isLocalDraftThread || baseBranchForWorktree
+        isLocalDraftThread || baseBranchForWorktree || cloudBaseBranch
           ? {
+              ...(cloudBaseBranch !== null && cloudAccountId !== null
+                ? {
+                    prepareCloud: {
+                      accountId: cloudAccountId,
+                      baseBranch: cloudBaseBranch,
+                    },
+                  }
+                : {}),
               ...(isLocalDraftThread
                 ? {
                     createThread: {

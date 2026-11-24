@@ -491,6 +491,8 @@ import {
   SandboxCreateTestSandboxResult,
   SandboxError,
   SandboxHealthCheckResult,
+  SandboxListCloudTargetsInput,
+  SandboxListCloudTargetsResult,
   SandboxProviderListResult,
   SandboxTestSandboxInput,
   SandboxTestSandboxListResult,
@@ -621,6 +623,7 @@ export const WS_METHODS = {
   serverGetSettings: "server.getSettings",
   serverUpdateSettings: "server.updateSettings",
   sandboxListProviders: "sandbox.listProviders",
+  sandboxListCloudTargets: "sandbox.listCloudTargets",
   sandboxConnectAccount: "sandbox.connectAccount",
   sandboxTestAccount: "sandbox.testAccount",
   sandboxDisconnectAccount: "sandbox.disconnectAccount",
@@ -1059,6 +1062,12 @@ const SandboxRpcError = Schema.Union([SandboxError, EnvironmentAuthorizationErro
 const WsSandboxListProvidersRpc = Rpc.make(WS_METHODS.sandboxListProviders, {
   payload: Schema.Struct({}),
   success: SandboxProviderListResult,
+  error: SandboxRpcError,
+});
+
+const WsSandboxListCloudTargetsRpc = Rpc.make(WS_METHODS.sandboxListCloudTargets, {
+  payload: SandboxListCloudTargetsInput,
+  success: SandboxListCloudTargetsResult,
   error: SandboxRpcError,
 });
 
@@ -2590,6 +2599,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerReclaimDatabaseSpaceRpc,
   WsServerUpdateSettingsRpc,
   WsSandboxListProvidersRpc,
+  WsSandboxListCloudTargetsRpc,
   WsSandboxConnectAccountRpc,
   WsSandboxTestAccountRpc,
   WsSandboxDisconnectAccountRpc,

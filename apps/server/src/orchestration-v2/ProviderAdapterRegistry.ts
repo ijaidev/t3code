@@ -46,6 +46,10 @@ export interface ProviderAdapterRegistryV2Shape {
     instanceId: ProviderInstanceId,
   ) => Effect.Effect<ProviderAdapter.ProviderAdapterV2["Service"], ProviderAdapterRegistryV2Error>;
   readonly list: () => Effect.Effect<ReadonlyArray<ProviderInstanceId>>;
+  /** The provider's resolved launch environment, for workspace transports that leave this machine. */
+  readonly getResolvedEnvironment?: (
+    instanceId: ProviderInstanceId,
+  ) => Effect.Effect<ReadonlyArray<{ readonly name: string; readonly value: string }> | undefined>;
   readonly getMetadata?: (instanceId: ProviderInstanceId) => Effect.Effect<
     {
       readonly driver: ProviderAdapter.ProviderAdapterV2["Service"]["driver"];
@@ -155,6 +159,15 @@ export const layerFromProviderInstanceRegistry: Layer.Layer<
           Effect.map((available) => available.map((instance) => instance.instanceId)),
         );
       }),
+      getResolvedEnvironment: Effect.fn("ProviderAdapterRegistryV2.getResolvedEnvironment")(
+        function* (instanceId) {
+          const environment =
+            instances.getResolvedEnvironment === undefined
+              ? undefined
+              : yield* instances.getResolvedEnvironment(instanceId);
+          return environment?.filter((variable) => variable.value !== "");
+        },
+      ),
       getMetadata: Effect.fn("ProviderAdapterRegistry.getMetadata")(function* (instanceId) {
         const instance = yield* instances.getInstance(instanceId);
         if (instance === undefined) {

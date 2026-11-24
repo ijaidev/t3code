@@ -20,6 +20,7 @@ import {
   type RunId,
   type RuntimeMode,
   type ScheduledTaskId,
+  type SandboxProviderAccountId,
   type GitCommandError,
   type GitManagerServiceError,
   TaskFolderError,
@@ -50,6 +51,8 @@ import {
 
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
+import * as CloudThreads from "../sandbox/CloudThreads.ts";
+import { projectPublicRemote } from "../sandbox/CloudRepository.ts";
 import type * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import { parseGitCloneProgressLine } from "../project/gitCloneProgress.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -84,6 +87,12 @@ export type ThreadLaunchWorkspaceStrategy =
       readonly branch?: string | undefined;
       readonly startFromOrigin?: boolean | undefined;
       readonly repositories?: ReadonlyArray<{ readonly path: string }> | undefined;
+    }
+  | {
+      readonly type: "cloud";
+      readonly accountId: SandboxProviderAccountId;
+      readonly baseRef: string;
+      readonly branch?: string | undefined;
     };
 
 export interface ThreadLaunchInitialMessage {
@@ -269,6 +278,16 @@ export class ThreadLaunchService extends Context.Service<
 
 const isThreadLaunchError = Schema.is(ThreadLaunchError);
 
+/** `git clone --branch` takes a branch name, not a remote-tracking ref. */
+function cloudBranchName(baseRef: string): string {
+  const withoutRefPrefix = baseRef
+    .replace(/^refs\/remotes\/[^/]+\//, "")
+    .replace(/^refs\/heads\//, "");
+  return withoutRefPrefix.startsWith("origin/")
+    ? withoutRefPrefix.slice("origin/".length)
+    : withoutRefPrefix;
+}
+
 function failureDetail(error: unknown): string {
   if (isThreadLaunchError(error)) {
     const cause = error.cause;
@@ -295,11 +314,14 @@ const make = Effect.gen(function* () {
   const eventSink = yield* EventSink.EventSinkV2;
   const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
   const taskFolders = yield* TaskFolders.TaskFolders;
+  const cloudThreads = yield* Effect.serviceOption(CloudThreads.CloudThreads);
   // A project-folder launch that names no branch records the folder's checkout, as the composer does.
   const launchBranch = (strategy: ThreadLaunchWorkspaceStrategy, workspaceRoot: string) =>
     strategy.type === "root" && strategy.branch === undefined
       ? git.currentBranch(workspaceRoot).pipe(Effect.orElseSucceed(() => null))
-      : Effect.succeed(strategy.branch ?? null);
+      : strategy.type === "cloud"
+        ? Effect.succeed(strategy.branch ?? cloudBranchName(strategy.baseRef))
+        : Effect.succeed(strategy.branch ?? null);
   const preparationScope = yield* Scope.make("sequential");
   const scheduledLaunches = yield* Ref.make<ReadonlySet<CommandId>>(new Set());
   yield* Effect.addFinalizer(() => Scope.close(preparationScope, Exit.void));
@@ -545,6 +567,127 @@ const make = Effect.gen(function* () {
       : null;
   });
 
+  const prepareCloudWorkspace = Effect.fn("ThreadLaunchService.prepareCloudWorkspace")(function* (
+    input: PreparationInput,
+    project: { readonly id: ProjectId; readonly title: string; readonly workspaceRoot: string },
+    threadId: ThreadId,
+    runId: RunId | null,
+  ) {
+    const strategy = input.workspaceStrategy;
+    if (strategy.type !== "cloud") return;
+    const branch = yield* launchBranch(strategy, project.workspaceRoot);
+    let prepared = false;
+    yield* setupTracker.begin({
+      threadId,
+      branch,
+      baseRef: strategy.baseRef,
+      stages: ["fetch", "checkout", "setup-script", "agent"],
+      fiber: yield* Effect.fiber,
+    });
+    yield* Effect.gen(function* () {
+      yield* setupTracker.stageStatus(threadId, "fetch", "running");
+      const remote = yield* projectPublicRemote(projects, git, project.id).pipe(
+        Effect.mapError(mapError(input, "provision-worktree", threadId)),
+      );
+      if (remote === null) {
+        return yield* mapError(
+          input,
+          "provision-worktree",
+          threadId,
+        )("This project has no Git remote, so it cannot start a cloud thread.");
+      }
+      if (remote.type === "credentials") {
+        return yield* mapError(
+          input,
+          "provision-worktree",
+          threadId,
+        )(
+          "This project's Git remote embeds credentials. Use a public remote; private repository credentials land in a later ticket.",
+        );
+      }
+      yield* setupTracker.stageStatus(threadId, "fetch", "done");
+      if (runId !== null) {
+        yield* threads
+          .dispatch({
+            type: "prepared-run.progress",
+            commandId: CommandId.make(`${input.commandId}:progress:worktree`),
+            threadId,
+            runId,
+            phase: "worktree",
+          })
+          .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
+      }
+      yield* threads
+        .dispatch({
+          type: "thread.metadata.update",
+          commandId: CommandId.make(`${input.commandId}:workspace`),
+          threadId,
+          branch,
+          worktreePath: null,
+        })
+        .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
+      yield* setupTracker.stageStatus(threadId, "checkout", "running");
+      if (Option.isNone(cloudThreads)) {
+        return yield* mapError(
+          input,
+          "provision-worktree",
+          threadId,
+        )("This server cannot run cloud threads.");
+      }
+      yield* cloudThreads.value
+        .prepare({
+          threadId,
+          accountId: strategy.accountId,
+          cloneUrl: remote.url,
+          baseRef: strategy.baseRef,
+          branch: branch ?? strategy.baseRef,
+        })
+        .pipe(Effect.mapError((error) => mapError(input, "provision-worktree", threadId)(error)));
+      prepared = true;
+      yield* setupTracker.stageStatus(threadId, "checkout", "done");
+      yield* setupTracker.stageStatus(threadId, "setup-script", "skipped");
+      if (runId !== null) {
+        yield* threads
+          .dispatch({
+            type: "prepared-run.progress",
+            commandId: CommandId.make(`${input.commandId}:progress:setup`),
+            threadId,
+            runId,
+            phase: "setup",
+          })
+          .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
+      }
+      yield* setupTracker.markUncancellable(threadId);
+      yield* setupTracker.stageStatus(threadId, "agent", "running");
+      if (runId !== null) {
+        yield* threads
+          .dispatch({
+            type: "prepared-run.release",
+            commandId: CommandId.make(`${input.commandId}:release`),
+            threadId,
+            runId,
+          })
+          .pipe(Effect.mapError(mapError(input, "release-run", threadId)));
+      }
+      yield* setupTracker.stageStatus(threadId, "agent", "done");
+      yield* setupTracker.finish(threadId, "done");
+    }).pipe(
+      Effect.onError((cause) =>
+        Effect.gen(function* () {
+          const cancelled = Cause.hasInterruptsOnly(cause);
+          yield* setupTracker.finish(
+            threadId,
+            cancelled ? "cancelled" : "failed",
+            cancelled ? null : failureDetail(Cause.squash(cause)),
+          );
+          if (!cancelled && !prepared && Option.isSome(cloudThreads)) {
+            yield* cloudThreads.value.deleteForThread(threadId).pipe(Effect.ignore);
+          }
+        }),
+      ),
+    );
+  });
+
   const prepareInBackground = Effect.fn("ThreadLaunchService.prepareInBackground")(function* (
     input: PreparationInput,
     threadId: ThreadId,
@@ -560,6 +703,11 @@ const make = Effect.gen(function* () {
         }),
       ),
     );
+
+    if (input.workspaceStrategy.type === "cloud") {
+      yield* prepareCloudWorkspace(input, project, threadId, runId);
+      return;
+    }
 
     const reused = input.reusedWorktree;
     const tracked = input.workspaceStrategy.type === "worktree" || reused !== undefined;

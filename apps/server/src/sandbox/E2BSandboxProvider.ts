@@ -7,6 +7,9 @@ import {
   type SandboxProviderDriver,
   type SandboxProviderExecInput,
   type SandboxProviderOperation,
+  type SandboxProviderProcess,
+  type SandboxProviderStartProcessInput,
+  type SandboxProviderWriteFileInput,
 } from "./SandboxProvider.ts";
 
 const E2B_KIND = SandboxProviderKind.make("e2b");
@@ -40,16 +43,44 @@ interface E2BCommandResult {
   readonly stderr: string;
 }
 
-interface E2BSandboxHandle {
+interface E2BCommandHandle {
+  readonly pid: number;
+  readonly exitCode: number | undefined;
+  readonly sendStdin: (data: string | Uint8Array) => Promise<void>;
+  readonly kill: () => Promise<boolean>;
+  readonly wait: () => Promise<E2BCommandResult>;
+  readonly disconnect: () => Promise<void>;
+}
+
+export interface E2BSandboxHandle {
   readonly commands: {
-    readonly run: (
-      command: string,
-      options: {
-        readonly cwd?: string;
-        readonly timeoutMs?: number;
-        readonly shell?: ReadonlyArray<string>;
-      },
-    ) => Promise<E2BCommandResult>;
+    readonly run: {
+      (
+        command: string,
+        options: {
+          readonly cwd?: string;
+          readonly timeoutMs?: number;
+          readonly shell?: ReadonlyArray<string>;
+        },
+      ): Promise<E2BCommandResult>;
+      (
+        command: string,
+        options: {
+          readonly background: true;
+          readonly stdin: true;
+          readonly cwd?: string;
+          readonly envs?: Readonly<Record<string, string>>;
+          readonly timeoutMs?: number;
+          readonly retainOutput?: false;
+          readonly onStdout?: (data: string) => void | Promise<void>;
+          readonly onStderr?: (data: string) => void | Promise<void>;
+          readonly shell?: ReadonlyArray<string>;
+        },
+      ): Promise<E2BCommandHandle>;
+    };
+  };
+  readonly files: {
+    readonly write: (path: string, data: string | Uint8Array) => Promise<unknown>;
   };
 }
 
@@ -264,5 +295,48 @@ export const makeE2BSandboxProvider = (
       stdout: result.stdout,
       stderr: result.stderr,
     };
+  }),
+  writeFile: Effect.fn("E2BSandboxProvider.writeFile")(function* (
+    input: SandboxProviderWriteFileInput,
+  ) {
+    const sandbox = yield* attempt(input.account, "exec", () =>
+      client.connect({ sandboxId: input.providerSandboxId, apiKey: input.account.apiKey }),
+    );
+    yield* attempt(input.account, "exec", () => sandbox.files.write(input.path, input.data));
+  }),
+  startProcess: Effect.fn("E2BSandboxProvider.startProcess")(function* (
+    input: SandboxProviderStartProcessInput,
+  ) {
+    const sandbox = yield* attempt(input.account, "exec", () =>
+      client.connect({ sandboxId: input.providerSandboxId, apiKey: input.account.apiKey }),
+    );
+    const handle = yield* attempt(input.account, "exec", () =>
+      sandbox.commands.run(input.command, {
+        background: true,
+        stdin: true,
+        retainOutput: false,
+        timeoutMs: 60 * 60_000,
+        ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
+        ...(input.envs === undefined ? {} : { envs: input.envs }),
+        onStdout: input.onStdout,
+        onStderr: input.onStderr,
+        shell: ["/bin/sh", "-lc"],
+      }),
+    );
+    const process: SandboxProviderProcess = {
+      pid: handle.pid,
+      sendStdin: (data) =>
+        attempt(input.account, "exec", () => handle.sendStdin(data)).pipe(Effect.asVoid),
+      kill: attempt(input.account, "exec", () => handle.kill()).pipe(Effect.asVoid),
+      wait: attempt(input.account, "exec", async () => {
+        try {
+          const result = await handle.wait();
+          return { exitCode: result.exitCode };
+        } catch {
+          return { exitCode: handle.exitCode ?? 1 };
+        }
+      }),
+    };
+    return process;
   }),
 });

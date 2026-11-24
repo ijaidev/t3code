@@ -262,7 +262,7 @@ import { type TerminalContextDraft } from "../lib/terminalContext";
 import { collectInlineContextIds } from "../lib/composerContextReferences";
 import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
 import { useKnownTerminalSessions, useThreadRunningTerminalIds } from "../state/terminalSessions";
-import { useEnvironmentQueryRefresh } from "../state/query";
+import { useEnvironmentQuery, useEnvironmentQueryRefresh } from "../state/query";
 import { revisionedQuery } from "../state/revisionedQuery";
 import { useEnvironmentScope } from "~/state/session";
 import { primaryServerKeybindingsAtom, serverEnvironment } from "../state/server";
@@ -1202,6 +1202,22 @@ export default function ChatView(props: ChatViewProps) {
       ? scopeProjectRef(activeThreadEnvironmentId, activeThreadProjectId)
       : null;
   const activeProject = useProject(activeProjectRef);
+  const cloudTargetsQuery = useEnvironmentQuery(
+    activeProject && isLocalDraftThread
+      ? serverEnvironment.sandboxCloudTargets({
+          environmentId,
+          input: { projectId: activeProject.id },
+        })
+      : null,
+    messages,
+  );
+  const cloudTargets = cloudTargetsQuery.data?.targets ?? [];
+  const [selectedCloudAccountId, setSelectedCloudAccountId] = useState<string | null>(null);
+  const selectedCloudTarget =
+    cloudTargets.find((target) => target.accountId === selectedCloudAccountId) ??
+    cloudTargets.find((target) => target.enabled) ??
+    cloudTargets[0] ??
+    null;
   const activeProjectSettings = resolveProjectSettings(
     settings,
     activeProject?.id ?? null,
@@ -3117,6 +3133,7 @@ export default function ChatView(props: ChatViewProps) {
     phase,
     runtimeMode,
     sendEnvMode,
+    cloudAccountId: selectedCloudTarget?.accountId ?? null,
     worktreeRepositories,
     startFromOrigin,
     localCheckoutBranchMismatch,
@@ -4003,6 +4020,9 @@ export default function ChatView(props: ChatViewProps) {
                                   showBranchControls={isGitRepo}
                                   {...(routeKind === "draft" && draftId ? { draftId } : {})}
                                   onEnvModeChange={onEnvModeChangeStable}
+                                  cloudTargets={cloudTargets}
+                                  cloudAccountId={selectedCloudTarget?.accountId ?? null}
+                                  onCloudTargetChange={setSelectedCloudAccountId}
                                   startFromOrigin={startFromOrigin}
                                   onStartFromOriginChange={onStartFromOriginChange}
                                   envMode={envMode}
@@ -4134,6 +4154,9 @@ export default function ChatView(props: ChatViewProps) {
                     ? { onEnvironmentChange: onEnvironmentChangeStable }
                     : {})}
                   onEnvModeChange={onEnvModeChangeStable}
+                  cloudTargets={cloudTargets}
+                  cloudAccountId={selectedCloudTarget?.accountId ?? null}
+                  onCloudTargetChange={setSelectedCloudAccountId}
                   envMode={envMode}
                   {...(canOverrideServerThreadEnvMode
                     ? {

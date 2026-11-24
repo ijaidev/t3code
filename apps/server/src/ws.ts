@@ -134,6 +134,7 @@ import * as DocumentText from "./provider/DocumentText.ts";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
 import * as SandboxAccounts from "./sandbox/SandboxAccounts.ts";
 import * as SandboxLifecycle from "./sandbox/SandboxLifecycle.ts";
+import { projectPublicRemote } from "./sandbox/CloudRepository.ts";
 import * as Workflows from "./workflows/Workflows.ts";
 import * as WorkflowRuntime from "./workflows/WorkflowRuntime.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
@@ -1613,6 +1614,45 @@ export const layerWsRpc = (
       const textGenerators = yield* TextGenerators.TextGenerators;
       const sandboxAccounts = yield* SandboxAccounts.SandboxAccounts;
       const sandboxLifecycle = yield* SandboxLifecycle.SandboxLifecycle;
+      const listSandboxCloudTargets = Effect.fn("ws.sandbox.listCloudTargets")(function* (
+        input: import("@t3tools/contracts").SandboxListCloudTargetsInput,
+      ) {
+        const remote = yield* projectPublicRemote(projectService, gitWorkflow, input.projectId);
+        const providers = yield* sandboxAccounts.list;
+        return {
+          targets: providers.accounts.map((account) => {
+            const provider = providers.providers.find(
+              (candidate) => candidate.kind === account.kind,
+            );
+            const enabled =
+              remote?.type === "url" &&
+              account.enabled &&
+              provider?.capabilities.create === true &&
+              provider.capabilities.exec === true;
+            const disabledReason =
+              remote === null
+                ? ("no-remote" as const)
+                : remote.type === "credentials"
+                  ? ("unsafe-remote" as const)
+                  : !account.enabled
+                    ? ("account-disabled" as const)
+                    : provider === undefined
+                      ? ("provider-unavailable" as const)
+                      : provider.capabilities.create !== true
+                        ? ("no-create" as const)
+                        : provider.capabilities.exec !== true
+                          ? ("no-exec" as const)
+                          : undefined;
+            return {
+              accountId: account.id,
+              providerKind: account.kind,
+              label: account.label,
+              enabled,
+              ...(disabledReason === undefined ? {} : { disabledReason }),
+            };
+          }),
+        };
+      });
       const sourceControlRepositories =
         yield* SourceControlRepositoryService.SourceControlRepositoryService;
       const sourceControlSignIn = yield* SourceControlSignIn.SourceControlSignIn;
@@ -2807,6 +2847,7 @@ export const layerWsRpc = (
             return ServerSettings.redactServerSettingsForClient(settings, settingsClient);
           }),
         [WS_METHODS.sandboxListProviders]: (_input) => sandboxAccounts.list,
+        [WS_METHODS.sandboxListCloudTargets]: listSandboxCloudTargets,
         [WS_METHODS.sandboxConnectAccount]: (input) => sandboxAccounts.connect(input),
         [WS_METHODS.sandboxTestAccount]: (input) => sandboxAccounts.test(input.accountId),
         [WS_METHODS.sandboxDisconnectAccount]: (input) => sandboxLifecycle.disconnectAccount(input),

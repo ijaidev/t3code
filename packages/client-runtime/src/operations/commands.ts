@@ -23,6 +23,8 @@ import {
   type ProviderApprovalDecision,
   type ProviderInteractionMode,
   type ProviderUserInputAnswers,
+  type OrchestrationV2ThreadLaunchWorkspaceStrategy,
+  SandboxProviderAccountId,
   type RunId,
   type RuntimeMode,
   type RuntimeRequestId,
@@ -186,6 +188,11 @@ interface StartThreadBootstrap {
     readonly startFromOrigin?: boolean;
     /** Tracked repositories to give a worktree; absent leaves the choice to the server. */
     readonly repositories?: ReadonlyArray<{ readonly path: string }>;
+  };
+  readonly prepareCloud?: {
+    readonly accountId: string;
+    readonly baseBranch: string;
+    readonly branch?: string;
   };
   readonly runSetupScript?: boolean;
 }
@@ -795,35 +802,43 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
   const resend = input.resendAfterSocketLoss ?? true;
   const bootstrap = input.bootstrap?.createThread;
   const prepareWorktree = input.bootstrap?.prepareWorktree;
-  if (bootstrap !== undefined || prepareWorktree !== undefined) {
+  const prepareCloud = input.bootstrap?.prepareCloud;
+  if (bootstrap !== undefined || prepareWorktree !== undefined || prepareCloud !== undefined) {
     const existingProjection =
       bootstrap === undefined ? yield* getProjection(input.threadId) : null;
     const thread = bootstrap ?? existingProjection!.thread;
-    const workspaceStrategy =
-      prepareWorktree !== undefined
+    const workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy =
+      prepareCloud !== undefined
         ? {
-            type: "worktree" as const,
-            baseRef: prepareWorktree.baseBranch,
-            ...(prepareWorktree.branch === undefined ? {} : { branch: prepareWorktree.branch }),
-            ...(prepareWorktree.startFromOrigin === undefined
-              ? {}
-              : { startFromOrigin: prepareWorktree.startFromOrigin }),
-            ...(prepareWorktree.repositories === undefined
-              ? {}
-              : { repositories: prepareWorktree.repositories }),
+            type: "cloud" as const,
+            accountId: SandboxProviderAccountId.make(prepareCloud.accountId),
+            baseRef: prepareCloud.baseBranch,
+            ...(prepareCloud.branch === undefined ? {} : { branch: prepareCloud.branch }),
           }
-        : bootstrap?.worktreePath
+        : prepareWorktree !== undefined
           ? {
-              type: "existing_worktree" as const,
-              worktreePath: bootstrap.worktreePath,
-              ...(bootstrap.branch === null ? {} : { branch: bootstrap.branch }),
-            }
-          : {
-              type: "root" as const,
-              ...(bootstrap?.branch === null || bootstrap?.branch === undefined
+              type: "worktree" as const,
+              baseRef: prepareWorktree.baseBranch,
+              ...(prepareWorktree.branch === undefined ? {} : { branch: prepareWorktree.branch }),
+              ...(prepareWorktree.startFromOrigin === undefined
                 ? {}
-                : { branch: bootstrap.branch }),
-            };
+                : { startFromOrigin: prepareWorktree.startFromOrigin }),
+              ...(prepareWorktree.repositories === undefined
+                ? {}
+                : { repositories: prepareWorktree.repositories }),
+            }
+          : bootstrap?.worktreePath
+            ? {
+                type: "existing_worktree" as const,
+                worktreePath: bootstrap.worktreePath,
+                ...(bootstrap.branch === null ? {} : { branch: bootstrap.branch }),
+              }
+            : {
+                type: "root" as const,
+                ...(bootstrap?.branch === null || bootstrap?.branch === undefined
+                  ? {}
+                  : { branch: bootstrap.branch }),
+              };
     const launch = request(ORCHESTRATION_V2_WS_METHODS.launchThread, {
       commandId,
       creationSource: input.creationSource ?? "web",

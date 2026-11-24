@@ -334,7 +334,7 @@ export function taskToDraft(task: ScheduledTask): DraftState {
     threadId: task.threadId ?? "",
     savedThreadId: task.threadId ?? "",
     threadMode: scheduledTaskThreadMode(task),
-    workspaceMode: task.workspaceStrategy.type,
+    workspaceMode: task.workspaceStrategy.type === "cloud" ? "root" : task.workspaceStrategy.type,
     baseRef: task.workspaceStrategy.type === "worktree" ? task.workspaceStrategy.baseRef : "",
     startFromOrigin:
       task.workspaceStrategy.type === "worktree"
