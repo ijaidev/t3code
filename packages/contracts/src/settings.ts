@@ -1,4 +1,5 @@
 import { EasDeviceHostConfigs, SimlockDeviceHostConfigs, SshDeviceHostConfigs } from "./device.ts";
+import { SandboxProviderAccountConfig, SandboxProviderAccountId } from "./sandbox.ts";
 import {
   AuthOrchestrationOperateScope,
   AuthAccessWriteScope,
@@ -1609,6 +1610,9 @@ export const ServerSettings = Schema.Struct({
   secretProviders: Schema.Record(SecretProviderId, SecretProviderConfig).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
+  sandboxProviders: Schema.Record(SandboxProviderAccountId, SandboxProviderAccountConfig).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
 
   usageHistoryRetentionDays: UsageHistoryRetentionDays.pipe(
     Schema.withDecodingDefault(Effect.succeed(92)),
@@ -2004,6 +2008,10 @@ export const ServerSettingsPatch = Schema.Struct({
   secretProviders: Schema.optionalKey(
     Schema.Record(SecretProviderId, Schema.NullOr(SecretProviderConfigWrite)),
   ),
+  // Merge per account; null disconnects one.
+  sandboxProviders: Schema.optionalKey(
+    Schema.Record(SandboxProviderAccountId, Schema.NullOr(SandboxProviderAccountConfig)),
+  ),
 
   usageHistoryRetentionDays: Schema.optionalKey(UsageHistoryRetentionDays),
 
@@ -2037,7 +2045,8 @@ export function requiredScopesForServerSettingsPatch(
       key === "providerInstances" ||
       key === "usageLimitSources" ||
       key === "textGenerators" ||
-      key === "secretProviders"
+      key === "secretProviders" ||
+      key === "sandboxProviders"
     ) {
       changesProviders = true;
     } else {

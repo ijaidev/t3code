@@ -71,6 +71,7 @@
   "cd03eb1b84271c02": "Agent",
   "bfe1a60f3f9c60fb": "Runde {turn} · {what}",
   "dfdaa6255a416140": "Übersicht über {turns, plural, one {{turns} letzte Runde} other {{turns} letzte Runden}}, {textTurns, plural, =0 {ohne Nachrichtentext} one {mit dem Nachrichtentext der letzten Runde} other {mit den Nachrichtentexten der letzten {textTurns} Runden}}{truncated, select, yes {, passend gekürzt} other {}}",
+  "260c6b45f52d2f27": "Fügt den Text deiner Nachrichten und der Antworten des Agenten aus {textTurns, plural, one {der letzten Runde} other {den letzten {textTurns} Runden}} hinzu.",
   "afac52a5cc2dc801": "Deine Antwort konnte nicht gesendet werden. Versuche es erneut.",
   "79d776428f4d0650": "Die Datei konnte nicht geladen werden. Verbinde dich erneut und versuch es noch einmal.",
   "3ea34cbb1ca5ba9b": "Vorschau abgebrochen.",
@@ -2734,9 +2735,9 @@
   "db7b3a938c45e56c": "Update {version} bereit zum Download",
   "9a951140b69ba740": "Update wird heruntergeladen ({percent} %)",
   "7fdece033260e9fb": "Update wird heruntergeladen",
+  "52e1d4a487c0cf4b": "Installation von {version} fehlgeschlagen. Klicke, um es erneut zu versuchen.",
   "09ef51903e99e876": "Update heruntergeladen. Klicke zum Neustarten und Installieren.",
   "d62631cab06d2b80": "Update {version} heruntergeladen. Klicke zum Neustarten und Installieren.",
-  "52e1d4a487c0cf4b": "Installation von {version} fehlgeschlagen. Klicke, um es erneut zu versuchen.",
   "78a04e0e625c0990": "Update fehlgeschlagen",
   "c24de5eb69373a55": "Dieser {build}-Build ignoriert {track}-Releases. Prüfe den Update-Kanal in den Einstellungen, um den Wechsel abzuschließen.",
   "b02ae45a6109c93b": "Auf dem neuesten Stand",
@@ -3639,7 +3640,6 @@
   "4e0710d19dfc2e7e": "Diesen Bericht an das T3-Team senden?",
   "87d0ae0723ba75d1": "Das ist alles, was deinen Rechner verlässt. Erst wenn du auf Senden klickst, wird etwas gesendet.",
   "bf19826f81484328": "Unterhaltung mitsenden",
-  "260c6b45f52d2f27": "Fügt den Text deiner Nachrichten und der Antworten des Agenten aus {textTurns, plural, one {der letzten Runde} other {den letzten {textTurns} Runden}} hinzu.",
   "ddb7e6f8ce99e657": "Nur wer auf diesem Rechner Agenten ausführen kann, kann den Bericht senden oder ablehnen.",
   "03c1eb603c112f47": "Nicht senden",
   "653405e4ed498d9f": "Senden",
@@ -8756,9 +8756,13 @@
   "ed83b25c71c98a20": "Wähle für jedes Projekt ein oder mehrere {scope}s in {tracker}. Ihre Issues erscheinen neben denen des Repositorys, und Agenten legen neue Issues im ersten an, sofern kein anderes verlangt wird.",
   "19c2d5e81ff8f89a": "{tracker} {scope} für {project}",
   "68e061510b765772": "Nicht zugeordnet",
+  "99d51127f573296b": "Weiteres Konto",
+  "8ec2c57414669b79": "Verbinde einen zweiten {tracker}-Workspace oder -Nutzer.",
+  "99963c0142e17f00": "Für das neue {tracker}-Konto.",
   "a2d95d39d3398bda": "Anmeldedaten abgelehnt",
   "9eae463720500113": "Auf dem Server gespeichert.",
   "b6e27ab2537ef874": "Erstellen",
+  "6d8e4ebc889bace9": "Konto hinzufügen",
   "13ef526271b0f5d4": "Alle Bedingungen löschen",
   "d1938a629f039515": "Bedingung entfernen",
   "84a605b241ce65b7": "Gruppe und ihre Bedingungen entfernen",
@@ -9708,6 +9712,74 @@
   "e3349eb2353ee27c": "Die Genehmigung neuer Geräte ist aus, daher kann sich ein widerrufenes Gerät, das bei deinem T3-Connect-Konto angemeldet ist, von selbst wieder verbinden.",
   "080160002915c666": "Genehmigung für neue Geräte verlangen",
   "73dd0f86f5363431": "Das Gerät muss hier genehmigt werden, bevor es sich erneut verbinden kann.",
+  "4591f72298d54b74": "Provisioning",
+  "7342bfc328008926": "Running",
+  "0a1ab3194d17d5de": "Pausiert",
+  "1cfa281c89acb8cf": "create",
+  "1bb3b215faff361f": "exec",
+  "0fc72238a6a8b322": "pause/resume",
+  "613e5bbdc2f28499": "snapshots",
+  "cd1a676a0db6faad": "private ports",
+  "90b0898c65450ab5": "The sandbox request failed",
+  "a11b4a122417d474": "{provider} sandboxes for cloud work. The API key stays on {environment}.",
+  "c719b6bd1fc31802": "Accounts",
+  "25d8c75ca1d8d543": "{count} connected",
+  "2e2e317f384591ac": "No sandbox accounts",
+  "1da04833edb272cb": "Connect a provider to create a test sandbox.",
+  "fda3b35ac189eeb8": "{kind} · template {template}",
+  "36aba052800e73b3": "{label} connection works.",
+  "554ce5e1e5fc5746": "Test sandbox created on {account}.",
+  "f46d453590a749f0": "Disconnect {label}",
+  "85c8e0aa98b72363": "Test sandboxes",
+  "7394ac7b26342b71": "Provisioning the sandbox on {account}…",
+  "4404dbc78d702d97": "No test sandboxes",
+  "008858b18320f954": "Create one from an account to check the provider and the sandbox thread host.",
+  "a2fb61e9f0c2c6ba": "Thread host ready · protocol {version}",
+  "53441e443a82b298": "{kind} sandbox · {status}",
+  "35f5d9e1eec1b0f9": "Thread host ready.",
+  "9d6b667dbd3100a3": "Sandbox paused.",
+  "9d9bf996a3d3da5a": "Sandbox resumed.",
+  "a1f1265dc549e1f0": "Delete test sandbox",
+  "d9e3b431b5f24f6b": "{label} connected.",
+  "49b913bd55d9709a": "Sandbox account disconnected.",
+  "19d42d35ed05209c": "Test sandbox deleted.",
+  "01f6fcf72d5b4b28": "Enter a name for this account.",
+  "edcd8068ede60680": "Enter the provider API key.",
+  "1d34a5a6b083807e": "Enter the template to start from.",
+  "e76f6e3eece6c512": "Connect {provider}",
+  "54a1289a6a70cd55": "Connect an environment to manage the sandbox providers it can use.",
+  "7643a9e5c767f804": [
+    "Update T3 Code on ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " to manage its sandbox providers."
+  ],
+  "7328c1b786388f10": "Loading sandbox providers…",
+  "f7c3ae7a79ede728": "Testen",
+  "c01b449f80dd554c": "Create test sandbox",
+  "a541e817c465ecf6": "Health check",
+  "6848686ec40ee487": "Pause",
+  "3d9761e81798fcd8": "Fortsetzen",
+  "4d43147ffc74e3e0": "Disconnect this sandbox account?",
+  "46e9bc5e3a1b539d": "Its saved API key and test sandboxes are deleted. Any future cloud thread target from it disappears.",
+  "479e704fc4ce2a42": "Delete this test sandbox?",
+  "debc94e5051e7971": "This stops provider billing for it. The thread host and everything in the sandbox are removed.",
+  "aba29e77e52bca46": "Delete",
+  "35238c3fc86ee92a": [
+    "The API key is stored on ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " and never sent to a sandbox or a client."
+  ],
+  "b0900f4938210634": "API key",
+  "8be13b1a9a730870": "Template",
+  "0aa32eb61803bfb7": "The provider's project image or template to start a sandbox from.",
   "6c7762bd72cea808": "Verbindung wird wiederhergestellt: {error}",
   "6cced6a88a19f1f2": "Verbindung wird wiederhergestellt",
   "8cbb63fdff9fde72": "Verbindung fehlgeschlagen: {error}",
@@ -9810,7 +9882,6 @@
   "3dd2df6f4840a9cc": "„{title}“ löschen?",
   "0462d816f2982a92": "Das kann nicht rückgängig gemacht werden.",
   "41284a027261e081": "Geplante Aufgabe konnte nicht aktualisiert werden",
-  "0a1ab3194d17d5de": "Pausiert",
   "854186eb538620c4": "Lauscht",
   "4be6feb63e301484": "{title} aktivieren",
   "34fb848f079bdf69": "Aktionen für {title}",
@@ -11156,7 +11227,6 @@
   "5b928a84a624e831": "Aktiv: {url}",
   "b07718fe86a16cc6": "Laufend: Deaktiviert",
   "6d0831556a517821": "Traces, Metriken und Logs an einen OTLP-HTTP-Empfänger senden. Starte den Server neu, um es anzuwenden. Umgebungsvariablen überschreiben diese Einstellungen.",
-  "f7c3ae7a79ede728": "Testen",
   "b93d2ec53e944576": [
     "Aktiv: ",
     {
@@ -11791,6 +11861,7 @@
   "afda415d2d75a5d3": "Chat",
   "4beeab8d1814b251": "Diffs & Pull Requests",
   "3b958faa12d54484": "Tastenkürzel",
+  "8e3318309143e36b": "Sandbox providers",
   "2ab325baee3ec9a3": "Geplante Aufgaben",
   "0a59e086514a62a9": "Versionskontrolle & Issues",
   "1de0df2b8a4fb96e": "Freigabe & Zugriff",
@@ -11997,6 +12068,7 @@
   "fd4ec272764a2405": "1password tresor zugangsdaten api-schlüssel",
   "ff679e74f97044e6": "Geheimnisanbieter hinzufügen",
   "ddd5990f613aebb4": "neu 1password tresor op cli konto",
+  "da8b2b162166e6ca": "e2b sandbox cloud test sandbox compute api key",
   "b9b1dccabd2ed00d": "Archivierte Threads",
   "f505371f6f6fd624": "wiederherstellen wieder öffnen gelöscht verlauf projekte",
   "2ed592dc3ae2e382": "Gib dem Host eine Bezeichnung.",
@@ -12572,7 +12644,6 @@
       "v": "v"
     }
   ],
-  "3d9761e81798fcd8": "Fortsetzen",
   "8cebd63fc4c967d5": "Nur der fehlgeschlagene Schritt läuft erneut; zuvor Abgeschlossenes bleibt erhalten.",
   "bc1e0a2a0f1e9552": "Braucht dich",
   "a812f51e970740f1": [
@@ -12605,6 +12676,16 @@
   "156ff7b625287a1e": "Übersprungene ausblenden",
   "69b985b97ab45e6b": "{count} übersprungene anzeigen",
   "2400254d362de84d": "Workflow-Ausführungen werden geladen…",
+  "cae5c3205c01d062": [
+    {
+      "t": "span",
+      "i": 1,
+      "c": "Eine Workflow-Datei hat ein Problem."
+    },
+    " ",
+    "Die letzte funktionierende Version läuft weiter."
+  ],
+  "ed8ce6ebc73dc12d": "Datei öffnen",
   "145e1f7503ba3b2c": [
     "Diese Umgebung hat keinen Lauf mit diesem Link.",
     " ",
@@ -12630,16 +12711,6 @@
       "c": "Anleitung lesen"
     }
   ],
-  "cae5c3205c01d062": [
-    {
-      "t": "span",
-      "i": 1,
-      "c": "Eine Workflow-Datei hat ein Problem."
-    },
-    " ",
-    "Die letzte funktionierende Version läuft weiter."
-  ],
-  "ed8ce6ebc73dc12d": "Datei öffnen",
   "5d8d278ff828102d": "Alle Workflows",
   "39459da07479f482": "Agent",
   "7741243632056b81": "{step} · Transkript",
@@ -12782,9 +12853,5 @@
   "27d76249d09eb69f": "Review-Leitfaden bereit",
   "faa3bb26abb39c93": "Review-Leitfaden fehlgeschlagen",
   "b7df38b7d8792d78": "Leitfaden öffnen",
-  "9e91e9a77b664e4e": "Review-Leitfaden konnte nicht gestartet werden",
-  "99d51127f573296b": "Weiteres Konto",
-  "8ec2c57414669b79": "Verbinde einen zweiten {tracker}-Workspace oder -Nutzer.",
-  "99963c0142e17f00": "Für das neue {tracker}-Konto.",
-  "6d8e4ebc889bace9": "Konto hinzufügen"
+  "9e91e9a77b664e4e": "Review-Leitfaden konnte nicht gestartet werden"
 }

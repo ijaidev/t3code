@@ -1,0 +1,90 @@
+import type { SandboxProviderCapabilities, SandboxProviderKind } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
+
+export const SandboxProviderOperation = Schema.Literals([
+  "validate-credential",
+  "create",
+  "get",
+  "pause",
+  "resume",
+  "delete",
+  "exec",
+]);
+export type SandboxProviderOperation = typeof SandboxProviderOperation.Type;
+
+/** A provider failure with no credential or request payload in it. */
+export class SandboxProviderError extends Schema.TaggedError<
+  SandboxProviderError,
+  { readonly brand: unique symbol }
+>()("SandboxProviderError", {
+  providerKind: Schema.String,
+  operation: SandboxProviderOperation,
+  detail: Schema.String,
+  statusCode: Schema.optionalKey(Schema.Int),
+}) {
+  override get message(): string {
+    return this.detail;
+  }
+}
+
+/** Everything a driver needs about one connected account, with its credential resolved. */
+export interface SandboxProviderAccount {
+  readonly id: string;
+  readonly kind: SandboxProviderKind;
+  readonly label: string;
+  readonly apiKey: string;
+  readonly template: string;
+}
+
+export interface SandboxProviderCreateInput {
+  readonly account: SandboxProviderAccount;
+  readonly instanceId: string;
+  readonly template: string;
+  readonly timeoutMs: number;
+}
+
+export interface SandboxProviderExecInput {
+  readonly account: SandboxProviderAccount;
+  readonly providerSandboxId: string;
+  readonly command: string;
+  readonly cwd?: string;
+  readonly timeoutMs?: number;
+}
+
+export interface SandboxProviderExecResult {
+  readonly exitCode: number;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+export interface SandboxProviderDriver {
+  readonly kind: SandboxProviderKind;
+  readonly label: string;
+  readonly capabilities: SandboxProviderCapabilities;
+  readonly validateCredential: (
+    account: SandboxProviderAccount,
+  ) => Effect.Effect<void, SandboxProviderError>;
+  readonly create: (
+    input: SandboxProviderCreateInput,
+  ) => Effect.Effect<{ readonly providerSandboxId: string }, SandboxProviderError>;
+  readonly get: (
+    account: SandboxProviderAccount,
+    providerSandboxId: string,
+  ) => Effect.Effect<{ readonly status: "running" | "paused" }, SandboxProviderError>;
+  readonly pause: (
+    account: SandboxProviderAccount,
+    providerSandboxId: string,
+  ) => Effect.Effect<void, SandboxProviderError>;
+  readonly resume: (
+    account: SandboxProviderAccount,
+    providerSandboxId: string,
+  ) => Effect.Effect<void, SandboxProviderError>;
+  readonly delete: (
+    account: SandboxProviderAccount,
+    providerSandboxId: string,
+  ) => Effect.Effect<void, SandboxProviderError>;
+  readonly exec: (
+    input: SandboxProviderExecInput,
+  ) => Effect.Effect<SandboxProviderExecResult, SandboxProviderError>;
+}

@@ -482,6 +482,20 @@ import {
 } from "./sourceControl.ts";
 import { VcsError } from "./vcs.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
+import {
+  SandboxAccountConnectInput,
+  SandboxAccountConnectResult,
+  SandboxAccountInput,
+  SandboxAccountTestResult,
+  SandboxCreateTestSandboxInput,
+  SandboxCreateTestSandboxResult,
+  SandboxError,
+  SandboxHealthCheckResult,
+  SandboxProviderListResult,
+  SandboxTestSandboxInput,
+  SandboxTestSandboxListResult,
+  SandboxTestSandboxResult,
+} from "./sandbox.ts";
 
 export const WS_METHODS = {
   projectsListEntries: "projects.listEntries",
@@ -606,6 +620,16 @@ export const WS_METHODS = {
   peerLinksPairLink: "peerLinks.pairLink",
   serverGetSettings: "server.getSettings",
   serverUpdateSettings: "server.updateSettings",
+  sandboxListProviders: "sandbox.listProviders",
+  sandboxConnectAccount: "sandbox.connectAccount",
+  sandboxTestAccount: "sandbox.testAccount",
+  sandboxDisconnectAccount: "sandbox.disconnectAccount",
+  sandboxListTestSandboxes: "sandbox.listTestSandboxes",
+  sandboxCreateTestSandbox: "sandbox.createTestSandbox",
+  sandboxPauseTestSandbox: "sandbox.pauseTestSandbox",
+  sandboxResumeTestSandbox: "sandbox.resumeTestSandbox",
+  sandboxDeleteTestSandbox: "sandbox.deleteTestSandbox",
+  sandboxCheckTestSandbox: "sandbox.checkTestSandbox",
   serverDiscoverSourceControl: "server.discoverSourceControl",
   serverCheckSecretSource: "server.checkSecretSource",
   serverSearchAcpRegistry: "server.searchAcpRegistry",
@@ -1028,6 +1052,66 @@ const WsServerUpdateSettingsRpc = Rpc.make(WS_METHODS.serverUpdateSettings, {
   }),
   success: ServerSettings,
   error: Schema.Union([ServerSettingsError, EnvironmentAuthorizationError]),
+});
+
+const SandboxRpcError = Schema.Union([SandboxError, EnvironmentAuthorizationError]);
+
+const WsSandboxListProvidersRpc = Rpc.make(WS_METHODS.sandboxListProviders, {
+  payload: Schema.Struct({}),
+  success: SandboxProviderListResult,
+  error: SandboxRpcError,
+});
+
+const WsSandboxConnectAccountRpc = Rpc.make(WS_METHODS.sandboxConnectAccount, {
+  payload: SandboxAccountConnectInput,
+  success: SandboxAccountConnectResult,
+  error: SandboxRpcError,
+});
+
+const WsSandboxTestAccountRpc = Rpc.make(WS_METHODS.sandboxTestAccount, {
+  payload: SandboxAccountInput,
+  success: SandboxAccountTestResult,
+  error: SandboxRpcError,
+});
+
+const WsSandboxDisconnectAccountRpc = Rpc.make(WS_METHODS.sandboxDisconnectAccount, {
+  payload: SandboxAccountInput,
+  error: SandboxRpcError,
+});
+
+const WsSandboxListTestSandboxesRpc = Rpc.make(WS_METHODS.sandboxListTestSandboxes, {
+  payload: Schema.Struct({}),
+  success: SandboxTestSandboxListResult,
+  error: SandboxRpcError,
+});
+
+const WsSandboxCreateTestSandboxRpc = Rpc.make(WS_METHODS.sandboxCreateTestSandbox, {
+  payload: SandboxCreateTestSandboxInput,
+  success: SandboxCreateTestSandboxResult,
+  error: SandboxRpcError,
+});
+
+const WsSandboxPauseTestSandboxRpc = Rpc.make(WS_METHODS.sandboxPauseTestSandbox, {
+  payload: SandboxTestSandboxInput,
+  success: SandboxTestSandboxResult,
+  error: SandboxRpcError,
+});
+
+const WsSandboxResumeTestSandboxRpc = Rpc.make(WS_METHODS.sandboxResumeTestSandbox, {
+  payload: SandboxTestSandboxInput,
+  success: SandboxTestSandboxResult,
+  error: SandboxRpcError,
+});
+
+const WsSandboxDeleteTestSandboxRpc = Rpc.make(WS_METHODS.sandboxDeleteTestSandbox, {
+  payload: SandboxTestSandboxInput,
+  error: SandboxRpcError,
+});
+
+const WsSandboxCheckTestSandboxRpc = Rpc.make(WS_METHODS.sandboxCheckTestSandbox, {
+  payload: SandboxTestSandboxInput,
+  success: SandboxHealthCheckResult,
+  error: SandboxRpcError,
 });
 
 const WsServerDiscoverSourceControlRpc = Rpc.make(WS_METHODS.serverDiscoverSourceControl, {
@@ -2505,6 +2589,16 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetSettingsRpc,
   WsServerReclaimDatabaseSpaceRpc,
   WsServerUpdateSettingsRpc,
+  WsSandboxListProvidersRpc,
+  WsSandboxConnectAccountRpc,
+  WsSandboxTestAccountRpc,
+  WsSandboxDisconnectAccountRpc,
+  WsSandboxListTestSandboxesRpc,
+  WsSandboxCreateTestSandboxRpc,
+  WsSandboxPauseTestSandboxRpc,
+  WsSandboxResumeTestSandboxRpc,
+  WsSandboxDeleteTestSandboxRpc,
+  WsSandboxCheckTestSandboxRpc,
   WsPeerLinksListRpc,
   WsPeerLinksNamesRpc,
   WsPeerLinksLinkRpc,

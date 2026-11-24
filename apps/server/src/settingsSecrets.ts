@@ -7,6 +7,7 @@ import {
   type ProviderInstanceConfig,
   type ServerSettings,
   type SettingsSecretValue,
+  SandboxProviderAccountConfig,
   SimlockDeviceHostConfig,
   TextGeneratorConfig,
   UsageLimitSourceConfig,
@@ -49,6 +50,7 @@ const providerSecretFields = new Map([
 const usageLimitSecretFields = secretSettingsFields(UsageLimitSourceConfig);
 const textGeneratorSecretFields = secretSettingsFields(TextGeneratorConfig);
 const voiceSecretFields = secretSettingsFields(CloudSpeechCredentials);
+const sandboxProviderSecretFields = secretSettingsFields(SandboxProviderAccountConfig);
 const easDeviceHostSecretFields = secretSettingsFields(EasDeviceHostConfig);
 const simlockDeviceHostSecretFields = secretSettingsFields(SimlockDeviceHostConfig);
 const encode = (value: string) => Buffer.from(value, "utf8").toString("base64url");
@@ -224,6 +226,19 @@ function mapSecretFieldGroups(
     ]),
   ) as ServerSettings["textGenerators"];
 
+  const sandboxProviders = Object.fromEntries(
+    Object.entries(settings.sandboxProviders).map(([id, account]) => [
+      id,
+      mapFields(
+        account,
+        sandboxProviderSecretFields,
+        (field, serverHost) =>
+          `sandbox-provider-${encode(id)}-${encode(field)}` +
+          (serverHost === null ? "" : `-${encode(serverHost)}`),
+      ),
+    ]),
+  ) as ServerSettings["sandboxProviders"];
+
   const easDeviceHosts = settings.easDeviceHosts.map(
     (host) =>
       mapFields(
@@ -258,6 +273,7 @@ function mapSecretFieldGroups(
     sourceControlHosts,
     usageLimitSources,
     textGenerators,
+    sandboxProviders,
     easDeviceHosts,
     simlockDeviceHosts,
   };

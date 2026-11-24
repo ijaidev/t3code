@@ -105,6 +105,9 @@ import * as PeerThreadRelay from "./peer/PeerThreadRelay.ts";
 import * as McpSessionRegistry from "./mcp/McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as DeviceService from "./device/DeviceService.ts";
+import * as SandboxAccounts from "./sandbox/SandboxAccounts.ts";
+import * as SandboxLifecycle from "./sandbox/SandboxLifecycle.ts";
+import * as SandboxStore from "./sandbox/SandboxStore.ts";
 import * as DeviceHubProxy from "./device/DeviceHubProxy.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import * as PortScanner from "./preview/PortScanner.ts";
@@ -558,6 +561,16 @@ const layerDevice = DeviceService.layer.pipe(
   Layer.provide(NetService.layer),
 );
 
+const layerSandboxAccounts = SandboxAccounts.layer.pipe(Layer.provide(SecretResolver.layer));
+const layerSandboxStorage = Layer.mergeAll(layerSandboxAccounts, SandboxStore.layer);
+const layerSandbox = Layer.merge(
+  layerSandboxStorage,
+  SandboxLifecycle.layer.pipe(
+    Layer.provide(layerSandboxAccounts),
+    Layer.provide(SandboxStore.layer),
+  ),
+);
+
 const layerWorkspaceEntries = WorkspaceEntries.layer.pipe(Layer.provide(WorkspacePaths.layer));
 
 const layerWorkspaceFileSystem = WorkspaceFileSystem.layer.pipe(
@@ -789,7 +802,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   Layer.provideMerge(layerSourceControlProviderRegistry),
   Layer.provideMerge(layerGit),
   Layer.provideMerge(layerVcs),
-  Layer.provideMerge(Layer.mergeAll(layerTerminal, layerPreview, layerDevice)),
+  Layer.provideMerge(Layer.mergeAll(layerTerminal, layerPreview, layerDevice, layerSandbox)),
   Layer.provideMerge(layerPersistence),
   Layer.provideMerge(Layer.mergeAll(Keybindings.layer, UsageLimitSources.layer)),
   Layer.provideMerge(ProviderRegistry.layer),

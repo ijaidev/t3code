@@ -16,6 +16,8 @@ import {
   ServerSettings,
   ServerSettingsPatch,
   UsageLimitSourceId,
+  SandboxProviderAccountId,
+  SandboxProviderKind,
   type SimlockDeviceHostConfig,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
@@ -1991,6 +1993,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
         "simlockDeviceHosts.[].agentToken",
         "usageLimitSources.*.managementKey",
         "textGenerators.*.apiKey",
+        "sandboxProviders.*.apiKey",
       ]);
     }),
   );
@@ -2088,6 +2091,41 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
           "hand-edited-token",
         );
       }).pipe(Effect.provide(layerServerSettingsWithSecrets())),
+  );
+
+  it.effect("moves a hand-edited sandbox provider key into the secret store", () =>
+    Effect.gen(function* () {
+      const serverConfig = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+      const accountId = SandboxProviderAccountId.make("e2b-work");
+      yield* fileSystem.writeFileString(
+        serverConfig.settingsPath,
+        JSON.stringify({
+          sandboxProviders: {
+            [accountId]: {
+              kind: SandboxProviderKind.make("e2b"),
+              label: "E2B",
+              apiKey: "e2b-hand-edited-key",
+              template: "base",
+              enabled: true,
+            },
+          },
+        }),
+      );
+
+      const loaded = yield* serverSettings.getSettings;
+      const redacted = ServerSettingsModule.redactServerSettingsForClient(loaded, {
+        secretReferences: true,
+      });
+
+      assert.equal(loaded.sandboxProviders[accountId]?.apiKey, "e2b-hand-edited-key");
+      assert.notInclude(
+        yield* fileSystem.readFileString(serverConfig.settingsPath),
+        "e2b-hand-edited-key",
+      );
+      assert.notInclude(JSON.stringify(redacted), "e2b-hand-edited-key");
+    }).pipe(Effect.provide(layerServerSettingsWithSecrets())),
   );
 
   it.effect("materializes provider secrets for terminal environment resolution", () =>
