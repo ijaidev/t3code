@@ -59,6 +59,7 @@ export interface E2BSandboxHandle {
         command: string,
         options: {
           readonly cwd?: string;
+          readonly envs?: Readonly<Record<string, string>>;
           readonly timeoutMs?: number;
           readonly shell?: ReadonlyArray<string>;
         },
@@ -286,6 +287,7 @@ export const makeE2BSandboxProvider = (
     const result = yield* attempt(input.account, "exec", () =>
       sandbox.commands.run(input.command, {
         ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
+        ...(input.envs === undefined ? {} : { envs: input.envs }),
         timeoutMs: input.timeoutMs ?? E2B_EXEC_TIMEOUT_MS,
         shell: ["/bin/sh", "-lc"],
       }),

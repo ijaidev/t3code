@@ -105,6 +105,8 @@ import * as PeerThreadRelay from "./peer/PeerThreadRelay.ts";
 import * as McpSessionRegistry from "./mcp/McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as DeviceService from "./device/DeviceService.ts";
+import * as CloudRepositoryCredential from "./sandbox/CloudRepositoryCredential.ts";
+import * as CloudThreadGit from "./sandbox/CloudThreadGit.ts";
 import * as CloudThreadRuntime from "./sandbox/CloudThreadRuntime.ts";
 import * as CloudThreadStore from "./sandbox/CloudThreadStore.ts";
 import * as CloudThreads from "./sandbox/CloudThreads.ts";
@@ -488,11 +490,37 @@ const layerGit = Layer.empty.pipe(
   Layer.provideMerge(GitVcsDriver.layer),
 );
 
+const layerSandboxAccounts = SandboxAccounts.layer.pipe(Layer.provide(SecretResolver.layer));
+const layerSandboxStorage = Layer.mergeAll(
+  layerSandboxAccounts,
+  SandboxStore.layer,
+  CloudThreadStore.layer,
+);
+const layerSandboxLifecycle = SandboxLifecycle.layer.pipe(
+  Layer.provide(layerSandboxAccounts),
+  Layer.provide(SandboxStore.layer),
+);
+const layerCloudRepositoryCredential = CloudRepositoryCredential.layer.pipe(
+  Layer.provideMerge(layerSourceControlProviderRegistry),
+);
+const layerCloudThreads = CloudThreads.layer.pipe(
+  Layer.provide(layerSandboxAccounts),
+  Layer.provide(layerSandboxLifecycle),
+  Layer.provide(SandboxStore.layer),
+  Layer.provide(CloudThreadStore.layer),
+  Layer.provide(layerCloudRepositoryCredential),
+);
+const layerCloudThreadGit = CloudThreadGit.layer.pipe(
+  Layer.provideMerge(layerCloudThreads),
+  Layer.provideMerge(layerCloudRepositoryCredential),
+);
+const layerCloudThreadRuntime = CloudThreadRuntime.layer.pipe(Layer.provide(layerCloudThreads));
+
 const layerGitWorkflow = GitWorkflowService.layer.pipe(
   Layer.provideMerge(layerVcsDriverRegistry),
   Layer.provideMerge(layerGit),
+  Layer.provideMerge(layerCloudThreadGit),
 );
-
 const layerSourceControlRepositoryService = SourceControlRepositoryService.layer.pipe(
   Layer.provideMerge(GitVcsDriver.layer),
   Layer.provideMerge(layerSourceControlProviderRegistry),
@@ -537,7 +565,10 @@ const layerVcs = Layer.empty.pipe(
   ),
 );
 
-const layerCheckpointStore = CheckpointStore.layer.pipe(Layer.provide(layerVcsDriverRegistry));
+const layerCheckpointStore = CheckpointStore.layer.pipe(
+  Layer.provide(layerVcsDriverRegistry),
+  Layer.provide(layerCloudThreads),
+);
 
 const layerPortScanner = PortScanner.layer.pipe(
   Layer.provide(ProcessRunner.layer),
@@ -564,23 +595,6 @@ const layerDevice = DeviceService.layer.pipe(
   Layer.provide(NetService.layer),
 );
 
-const layerSandboxAccounts = SandboxAccounts.layer.pipe(Layer.provide(SecretResolver.layer));
-const layerSandboxStorage = Layer.mergeAll(
-  layerSandboxAccounts,
-  SandboxStore.layer,
-  CloudThreadStore.layer,
-);
-const layerSandboxLifecycle = SandboxLifecycle.layer.pipe(
-  Layer.provide(layerSandboxAccounts),
-  Layer.provide(SandboxStore.layer),
-);
-const layerCloudThreads = CloudThreads.layer.pipe(
-  Layer.provide(layerSandboxAccounts),
-  Layer.provide(layerSandboxLifecycle),
-  Layer.provide(SandboxStore.layer),
-  Layer.provide(CloudThreadStore.layer),
-);
-const layerCloudThreadRuntime = CloudThreadRuntime.layer.pipe(Layer.provide(layerCloudThreads));
 const layerSandbox = Layer.merge(
   Layer.mergeAll(
     layerSandboxStorage,

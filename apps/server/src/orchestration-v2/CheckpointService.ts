@@ -270,7 +270,10 @@ export interface CheckpointServiceV2Shape {
    */
   readonly discardRepositorySnapshots: (input: {
     readonly rootScope: OrchestrationV2CheckpointScope;
-    readonly thread: Pick<OrchestrationV2AppThread, "projectId" | "worktreePath">;
+    readonly thread: Pick<
+      OrchestrationV2AppThread,
+      "projectId" | "worktreePath" | "cloudWorkspace"
+    >;
     readonly ordinals: ReadonlyArray<number>;
   }) => Effect.Effect<void>;
 }
@@ -1086,7 +1089,7 @@ export const layer: Layer.Layer<
 
     const discardRepositorySnapshots: CheckpointServiceV2Shape["discardRepositorySnapshots"] =
       Effect.fn("CheckpointService.discardRepositorySnapshots")(function* (input) {
-        if (input.ordinals.length === 0) return;
+        if (input.ordinals.length === 0 || input.thread.cloudWorkspace != null) return;
         const repositories = yield* repositoryScopes({
           rootScope: input.rootScope,
           ...input.thread,

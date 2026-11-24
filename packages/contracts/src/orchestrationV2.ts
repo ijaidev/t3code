@@ -63,7 +63,7 @@ import {
   OrchestrationGetTurnDiffResult,
 } from "./checkpointDiff.ts";
 import { ModelSelection } from "./modelSelection.ts";
-import { SandboxProviderAccountId } from "./sandbox.ts";
+import { SandboxProviderAccountId, SandboxProviderKind } from "./sandbox.ts";
 import { ThreadIssueKey, ThreadIssueLink, ThreadIssueLinkSource } from "./issue.ts";
 import {
   ThreadLinkedPullRequest,
@@ -498,6 +498,14 @@ const OrchestrationV2LastTitleRegeneration = Schema.Struct({
   completedAt: Schema.DateTimeUtc,
 });
 
+/** Where a cloud thread's work lives; every path is inside its sandbox, never on the server host. */
+export const OrchestrationV2CloudWorkspace = Schema.Struct({
+  accountId: SandboxProviderAccountId,
+  providerKind: SandboxProviderKind,
+  workspacePath: TrimmedNonEmptyString,
+});
+export type OrchestrationV2CloudWorkspace = typeof OrchestrationV2CloudWorkspace.Type;
+
 export const OrchestrationV2AppThread = Schema.Struct({
   ...OrchestrationV2CreationFields,
   id: ThreadId,
@@ -509,6 +517,8 @@ export const OrchestrationV2AppThread = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   branch: Schema.NullOr(GitRefName),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  /** Set on a cloud thread; its workspace is the sandbox checkout, not a local worktree. */
+  cloudWorkspace: Schema.optional(Schema.NullOr(OrchestrationV2CloudWorkspace)),
   linkedPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
   pullRequests: Schema.optional(Schema.Array(ThreadPullRequestLink)),
   branchPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
@@ -2411,6 +2421,8 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   branch: Schema.NullOr(GitRefName),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  /** Set on a cloud thread; its workspace is the sandbox checkout, not a local worktree. */
+  cloudWorkspace: Schema.optional(Schema.NullOr(OrchestrationV2CloudWorkspace)),
   linkedPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
   pullRequests: Schema.optional(Schema.Array(ThreadPullRequestLink)),
   branchPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
@@ -3478,6 +3490,7 @@ export const OrchestrationV2Command = Schema.Union([
     regenerateTitle: Schema.optional(Schema.Boolean),
     branch: Schema.optional(Schema.NullOr(GitRefName)),
     worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+    cloudWorkspace: Schema.optional(Schema.NullOr(OrchestrationV2CloudWorkspace)),
     expectedWorktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
     expectedBranch: Schema.optional(Schema.NullOr(GitRefName)),
     /** A message queued in the same commit, so a workspace change cannot settle the thread first. */

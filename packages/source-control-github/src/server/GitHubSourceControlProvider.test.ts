@@ -23,6 +23,7 @@ import * as GitHubCredentials from "./GitHubCredentials.ts";
 import * as GitHubQuota from "./GitHubQuota.ts";
 import { parseGitHubAuthStatus } from "./gitHubAuthStatus.ts";
 import * as GitHubSourceControlProvider from "./GitHubSourceControlProvider.ts";
+import * as GitHubAppAccess from "./GitHubAppAccess.ts";
 import * as GitHubAppSignIn from "./GitHubAppSignIn.ts";
 
 const appSignedOut = Layer.mock(GitHubAppSignIn.GitHubAppSignIn)({
@@ -241,9 +242,16 @@ function harness(input: {
       ),
     ),
   );
+  const appAccess = Layer.succeed(GitHubAppAccess.GitHubAppAccess, {
+    reach: () => Effect.succeed("covered" as const),
+    viewer: () => Effect.succeed("acme"),
+    credentialFor: () =>
+      Effect.succeed({ token: Redacted.make("token"), fingerprint: "github.com:token" }),
+  });
   const layer = Layer.mergeAll(
     host,
     appSignedOut,
+    appAccess,
     Layer.mock(GitHubRest.GitHubRest)(input.api ?? {}),
     policy,
     Layer.succeed(HttpClient.HttpClient, graphQlHttp(graphql, graphqlCalls)),

@@ -36,6 +36,12 @@ export interface SourceControlRefSelector {
   readonly repository?: string;
 }
 
+/** A credential the server can hand a sandbox for one clone or push, never persist there. */
+export interface SourceControlRepositoryCredential {
+  readonly username: string;
+  readonly token: string;
+}
+
 const MAX_ERROR_TRANSPORT_VALUE_LENGTH = 256;
 
 /**
@@ -228,6 +234,15 @@ export class SourceControlProvider extends Context.Service<
       /** The host the repository is on. Without it, the checkout's host. */
       readonly host?: string;
     }) => Effect.Effect<SourceControlRepositoryCloneUrls, SourceControlProviderError>;
+    /**
+     * A repository-scoped credential for a sandbox clone or push. The caller passes it to git
+     * through a one-shot environment and never writes it into the sandbox or snapshots.
+     */
+    readonly repositoryCredential?: (input: {
+      readonly cwd: string;
+      readonly context?: SourceControlProviderContext;
+      readonly repository?: string;
+    }) => Effect.Effect<SourceControlRepositoryCredential, SourceControlProviderError>;
     readonly createRepository: (input: {
       readonly cwd: string;
       readonly repository: string;

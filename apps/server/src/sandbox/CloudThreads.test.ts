@@ -14,6 +14,7 @@ import * as Ref from "effect/Ref";
 
 import * as ServerConfig from "../config.ts";
 import * as ServerSettingsModule from "../serverSettings.ts";
+import * as CloudRepositoryCredential from "./CloudRepositoryCredential.ts";
 import * as CloudThreadStore from "./CloudThreadStore.ts";
 import * as CloudThreads from "./CloudThreads.ts";
 import * as SandboxAccounts from "./SandboxAccounts.ts";
@@ -39,6 +40,7 @@ const capabilities: SandboxProviderCapabilities = {
 interface FakeState {
   readonly calls: Ref.Ref<ReadonlyArray<string>>;
   readonly execs: Ref.Ref<ReadonlyArray<string>>;
+  readonly execEnvs: Ref.Ref<ReadonlyArray<Readonly<Record<string, string>> | undefined>>;
   readonly writes: Ref.Ref<ReadonlyArray<string>>;
   failClone: boolean;
   failWrite: boolean;
@@ -64,6 +66,7 @@ const fakeDriver = (state: FakeState): SandboxProviderDriver => ({
   exec: (input) =>
     Effect.gen(function* () {
       yield* Ref.update(state.execs, (execs) => [...execs, input.command]);
+      yield* Ref.update(state.execEnvs, (envs) => [...envs, input.envs]);
       if (input.command.includes("git clone")) {
         return state.failClone
           ? {
@@ -110,7 +113,12 @@ const fakeDriver = (state: FakeState): SandboxProviderDriver => ({
     }),
 });
 
-const testLayer = (driver: SandboxProviderDriver) => {
+const testLayer = (
+  driver: SandboxProviderDriver,
+  credential: CloudRepositoryCredential.CloudRepositoryCredentialResolver["Service"] = {
+    resolve: () => Effect.succeedNone,
+  },
+) => {
   const accounts = SandboxAccounts.layerFromDrivers([driver]);
   const store = SandboxStore.layer;
   const cloudStore = CloudThreadStore.layer;
@@ -120,6 +128,9 @@ const testLayer = (driver: SandboxProviderDriver) => {
     Layer.provide(store),
     Layer.provide(cloudStore),
     Layer.provide(lifecycle),
+    Layer.provide(
+      Layer.succeed(CloudRepositoryCredential.CloudRepositoryCredentialResolver, credential),
+    ),
   );
   return Layer.mergeAll(accounts, store, cloudStore, lifecycle, cloud).pipe(
     Layer.provideMerge(ServerSettingsModule.layerTest({})),
@@ -150,6 +161,7 @@ const makeState = (overrides: Partial<FakeState> = {}) =>
     return {
       calls: yield* Ref.make<ReadonlyArray<string>>([]),
       execs: yield* Ref.make<ReadonlyArray<string>>([]),
+      execEnvs: yield* Ref.make<ReadonlyArray<Readonly<Record<string, string>> | undefined>>([]),
       writes: yield* Ref.make<ReadonlyArray<string>>([]),
       failClone: false,
       failWrite: false,
@@ -274,6 +286,47 @@ describe("cloud threads", () => {
         );
         expect(written).toBe(false);
       }).pipe(Effect.provide(testLayer(driver)));
+    });
+    return state;
+  });
+
+  it.effect("passes a repository credential only in the clone process environment", () => {
+    const state = Effect.gen(function* () {
+      const fake = yield* makeState();
+      const driver = fakeDriver(fake);
+      const credential = {
+        resolve: () =>
+          Effect.succeedSome({
+            username: "x-access-token",
+            token: "repo-secret",
+            url: "https://github.com/example/private.git",
+          }),
+      };
+      return yield* Effect.gen(function* () {
+        yield* connect;
+        const cloud = yield* CloudThreads.CloudThreads;
+        yield* cloud.prepare({
+          threadId,
+          accountId,
+          cloneUrl: "https://github.com/example/private.git",
+          baseRef: "main",
+          branch: "main",
+        });
+        const execs = yield* Ref.get(fake.execs);
+        expect(execs.some((command) => command.includes("repo-secret"))).toBe(false);
+        const writes = yield* Ref.get(fake.writes);
+        expect(writes.some((path) => path.includes("repo-secret"))).toBe(false);
+        const envs = yield* Ref.get(fake.execEnvs);
+        const cloneEnvs = envs.filter((entry) => entry !== undefined);
+        expect(cloneEnvs.length).toBe(1);
+        expect(cloneEnvs[0]?.["GIT_CONFIG_VALUE_0"]).toBe(
+          `AUTHORIZATION: basic ${Buffer.from("x-access-token:repo-secret").toString("base64")}`,
+        );
+        const record = yield* cloud.getRecord(threadId);
+        if (record._tag === "Some") {
+          expect(JSON.stringify(record.value)).not.toContain("repo-secret");
+        }
+      }).pipe(Effect.provide(testLayer(driver, credential)));
     });
     return state;
   });

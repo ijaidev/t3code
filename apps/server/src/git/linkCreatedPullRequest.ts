@@ -75,10 +75,14 @@ export const linkCreatedPullRequest: <E>(input: {
       .pipe(Effect.map(Option.fromNullishOr));
     if (Option.isNone(thread)) return;
     const project = Option.getOrUndefined(yield* projects.getShell(thread.value.projectId));
-    const key = createdPullRequestKey(
-      input.result,
-      (yield* identities.resolve(input.cwd)) ?? project?.repositoryIdentity,
-    );
+    // A cloud action runs in a sandbox path the server cannot resolve locally, but its URL names
+    // the repository. Only fall back to reading the checkout for a result without one.
+    const key =
+      createdPullRequestKey(input.result, undefined) ??
+      createdPullRequestKey(
+        input.result,
+        (yield* identities.resolve(input.cwd)) ?? project?.repositoryIdentity,
+      );
     if (key === null) return;
     const commandId = yield* input.commandId;
     yield* engine

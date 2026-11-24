@@ -8,6 +8,7 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
+import * as CloudRepositoryCredential from "./CloudRepositoryCredential.ts";
 import * as CloudThreadStore from "./CloudThreadStore.ts";
 import * as SandboxAccounts from "./SandboxAccounts.ts";
 import * as SandboxLifecycle from "./SandboxLifecycle.ts";
@@ -25,7 +26,15 @@ export class CloudThreadError extends Schema.TaggedError<
   CloudThreadError,
   { readonly brand: unique symbol }
 >()("CloudThreadError", {
-  operation: Schema.Literals(["prepare", "clone", "start-host", "send", "delete", "resolve"]),
+  operation: Schema.Literals([
+    "prepare",
+    "clone",
+    "start-host",
+    "send",
+    "exec",
+    "delete",
+    "resolve",
+  ]),
   threadId: Schema.optional(ThreadId),
   detail: Schema.String,
   cause: Schema.optional(Schema.Defect()),
@@ -33,6 +42,20 @@ export class CloudThreadError extends Schema.TaggedError<
   override get message(): string {
     return this.detail;
   }
+}
+
+export interface CloudThreadExecInput {
+  readonly threadId: ThreadId;
+  readonly command: string;
+  readonly cwd?: string;
+  readonly envs?: Readonly<Record<string, string>>;
+  readonly timeoutMs?: number;
+}
+
+export interface CloudThreadExecResult {
+  readonly exitCode: number;
+  readonly stdout: string;
+  readonly stderr: string;
 }
 
 export interface CloudHostMessage {
@@ -56,6 +79,24 @@ export interface CloudThreadPrepareInput {
 }
 
 const shellQuote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
+
+/**
+ * Git reads this header from the process environment. Keeping it out of the command line and
+ * config means neither the sandbox filesystem nor a snapshot can retain it.
+ */
+export const gitCredentialEnvironment = (credential: {
+  readonly username: string;
+  readonly token: string;
+  readonly url: string;
+}): Readonly<Record<string, string>> => ({
+  GIT_TERMINAL_PROMPT: "0",
+  GIT_CONFIG_COUNT: "1",
+  GIT_CONFIG_KEY_0: `http.${credential.url}.extraheader`,
+  GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${Buffer.from(
+    `${credential.username}:${credential.token}`,
+    "utf8",
+  ).toString("base64")}`,
+});
 
 /** `git clone --branch` takes a branch name, not a remote-tracking ref. */
 const cloudBranchName = (baseRef: string) => {
@@ -93,6 +134,12 @@ export class CloudThreads extends Context.Service<
     readonly getRecord: (
       threadId: ThreadId,
     ) => Effect.Effect<Option.Option<CloudThreadStore.CloudThreadRecord>>;
+    readonly forWorkspace: (
+      workspacePath: string,
+    ) => Effect.Effect<Option.Option<CloudThreadStore.CloudThreadRecord>>;
+    readonly exec: (
+      input: CloudThreadExecInput,
+    ) => Effect.Effect<CloudThreadExecResult, CloudThreadError>;
     readonly writeAttachment: (
       threadId: ThreadId,
       path: string,
@@ -105,6 +152,7 @@ export class CloudThreads extends Context.Service<
 
 const make = Effect.gen(function* () {
   const accounts = yield* SandboxAccounts.SandboxAccounts;
+  const credentials = yield* CloudRepositoryCredential.CloudRepositoryCredentialResolver;
   const lifecycle = yield* SandboxLifecycle.SandboxLifecycle;
   const store = yield* SandboxStore.SandboxStore;
   const cloudThreads = yield* CloudThreadStore.CloudThreadStore;
@@ -114,6 +162,13 @@ const make = Effect.gen(function* () {
       return yield* cloudThreads.get(threadId).pipe(Effect.orElseSucceed(() => Option.none()));
     },
   );
+
+  const forWorkspace: CloudThreads["Service"]["forWorkspace"] = Effect.fn(
+    "CloudThreads.forWorkspace",
+  )(function* (workspacePath) {
+    const records = yield* cloudThreads.list.pipe(Effect.orElseSucceed(() => []));
+    return Option.fromUndefinedOr(records.find((record) => record.workspacePath === workspacePath));
+  });
 
   const getSandbox: CloudThreads["Service"]["getSandbox"] = Effect.fn("CloudThreads.getSandbox")(
     function* (threadId) {
@@ -162,6 +217,7 @@ const make = Effect.gen(function* () {
     command: string,
     operation: CloudThreadError["operation"],
     cwd?: string,
+    envs?: Readonly<Record<string, string>>,
   ) {
     if (sandbox.providerSandboxId === null) {
       return yield* new CloudThreadError({
@@ -176,6 +232,7 @@ const make = Effect.gen(function* () {
         providerSandboxId: sandbox.providerSandboxId,
         command,
         ...(cwd === undefined ? {} : { cwd }),
+        ...(envs === undefined ? {} : { envs }),
         timeoutMs: CLONE_TIMEOUT_MS,
       })
       .pipe(
@@ -197,6 +254,38 @@ const make = Effect.gen(function* () {
           `The command exited with ${result.exitCode}.`,
       });
     }
+    return result;
+  });
+
+  const exec: CloudThreads["Service"]["exec"] = Effect.fn("CloudThreads.exec")(function* (input) {
+    const sandbox = yield* requireSandbox(input.threadId);
+    const { account, driver } = yield* resolveSandbox(sandbox, "start-host");
+    if (sandbox.providerSandboxId === null) {
+      return yield* new CloudThreadError({
+        operation: "start-host",
+        threadId: input.threadId,
+        detail: "The sandbox is still provisioning. Try again in a moment.",
+      });
+    }
+    const result = yield* driver
+      .exec({
+        account,
+        providerSandboxId: sandbox.providerSandboxId,
+        command: input.command,
+        ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
+        ...(input.envs === undefined ? {} : { envs: input.envs }),
+        ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
+      })
+      .pipe(
+        Effect.mapError(
+          (error) =>
+            new CloudThreadError({
+              operation: "exec",
+              threadId: input.threadId,
+              detail: error.detail,
+            }),
+        ),
+      );
     return result;
   });
 
@@ -322,11 +411,15 @@ const make = Effect.gen(function* () {
             CloudThreadError: (error) => cleanup(error.detail, error),
           }),
         );
+        const credential = yield* credentials.resolve(input.cloneUrl);
+        const gitEnv = Option.isSome(credential)
+          ? gitCredentialEnvironment(credential.value)
+          : undefined;
         const clone = [
           "set -eu",
           `git clone --branch ${shellQuote(cloudBranchName(input.baseRef))} --single-branch --no-tags ${shellQuote(input.cloneUrl)} ${shellQuote(workspacePath)}`,
         ].join("\n");
-        yield* run(sandbox, driver, account, clone, "clone").pipe(
+        yield* run(sandbox, driver, account, clone, "clone", undefined, gitEnv).pipe(
           Effect.catchTags({
             CloudThreadError: (error) =>
               cleanup(`Could not clone the project's public branch: ${error.detail}`, error),
@@ -543,6 +636,8 @@ const make = Effect.gen(function* () {
     prepare,
     getSandbox,
     getRecord,
+    forWorkspace,
+    exec,
     writeAttachment,
     openHost,
     deleteForThread,

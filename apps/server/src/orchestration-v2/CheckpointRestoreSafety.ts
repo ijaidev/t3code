@@ -22,7 +22,7 @@ export const SHARED_WORKSPACE_RESTORE_MESSAGE =
 // Check isolation at admission and rollback; checkpoints restore whole checkouts, which may become shared.
 export const isCheckpointRestoreIsolated = Effect.fn("orchestrationV2.isCheckpointRestoreIsolated")(
   function* (
-    thread: Pick<OrchestrationV2AppThread, "id" | "worktreePath">,
+    thread: Pick<OrchestrationV2AppThread, "id" | "worktreePath" | "cloudWorkspace">,
     scope: Pick<OrchestrationV2CheckpointScope, "cwd">,
     /** The task folder the thread works in: a file restore reaches its repository worktrees too. */
     taskFolder: Pick<TaskFolder, "repositories"> | null,
@@ -41,6 +41,10 @@ export const isCheckpointRestoreIsolated = Effect.fn("orchestrationV2.isCheckpoi
         (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`))
       );
     };
+    // A sandbox checkout belongs to this one thread, so a checkpoint restore is isolated there.
+    if (thread.cloudWorkspace != null && scope.cwd === thread.cloudWorkspace.workspacePath) {
+      return true;
+    }
     const worktreePath = thread.worktreePath;
     let shared = worktreePath == null;
     if (!shared && worktreePath !== null) {

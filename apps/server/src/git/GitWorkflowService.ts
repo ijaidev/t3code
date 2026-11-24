@@ -1,6 +1,7 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as FileSystem from "effect/FileSystem";
 
 import {
@@ -32,6 +33,7 @@ import {
 
 import { trimAsciiWhitespace } from "@t3tools/contracts";
 import * as GitManager from "./GitManager.ts";
+import * as CloudThreadGit from "../sandbox/CloudThreadGit.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
@@ -202,7 +204,13 @@ export const make = Effect.gen(function* () {
   const registry = yield* VcsDriverRegistry.VcsDriverRegistry;
   const git = yield* GitVcsDriver.GitVcsDriver;
   const gitManager = yield* GitManager.GitManager;
+  const cloud = yield* Effect.serviceOption(CloudThreadGit.CloudThreadGit);
   const fileSystem = yield* FileSystem.FileSystem;
+
+  const cloudRecord = (cwd: string) =>
+    Option.isSome(cloud)
+      ? cloud.value.forCwd(cwd).pipe(Effect.orElseSucceed(() => Option.none()))
+      : Effect.succeedNone;
 
   // Nested projects and path aliases must share the checkout's branch-mutation lease.
   const withCheckoutLease = <A, E, R>(rootPath: string, effect: Effect.Effect<A, E, R>) =>
@@ -346,22 +354,40 @@ export const make = Effect.gen(function* () {
           );
     }),
     status: Effect.fn("GitWorkflowService.status")(function (input) {
-      return detectGitRepositoryForStatus("GitWorkflowService.status", input.cwd).pipe(
-        Effect.flatMap((isGitRepository) =>
-          isGitRepository ? gitManager.status(input) : Effect.succeed(nonRepositoryStatus()),
+      return cloudRecord(input.cwd).pipe(
+        Effect.flatMap((record) =>
+          Option.isSome(record) && Option.isSome(cloud)
+            ? cloud.value.status(input.cwd)
+            : detectGitRepositoryForStatus("GitWorkflowService.status", input.cwd).pipe(
+                Effect.flatMap((isGitRepository) =>
+                  isGitRepository
+                    ? gitManager.status(input)
+                    : Effect.succeed(nonRepositoryStatus()),
+                ),
+              ),
         ),
       );
     }),
     localStatus: Effect.fn("GitWorkflowService.localStatus")(function (input, options) {
-      return detectGitRepositoryForStatus("GitWorkflowService.localStatus", input.cwd).pipe(
-        Effect.flatMap((isGitRepository) =>
-          isGitRepository
-            ? gitManager.localStatus(input, options)
-            : Effect.succeed(nonRepositoryLocalStatus()),
+      return cloudRecord(input.cwd).pipe(
+        Effect.flatMap((record) =>
+          Option.isSome(record) && Option.isSome(cloud)
+            ? cloud.value.localStatus(input.cwd)
+            : detectGitRepositoryForStatus("GitWorkflowService.localStatus", input.cwd).pipe(
+                Effect.flatMap((isGitRepository) =>
+                  isGitRepository
+                    ? gitManager.localStatus(input, options)
+                    : Effect.succeed(nonRepositoryLocalStatus()),
+                ),
+              ),
         ),
       );
     }),
     currentBranch: Effect.fn("GitWorkflowService.currentBranch")(function* (cwd) {
+      const cloudThread = yield* cloudRecord(cwd);
+      if (Option.isSome(cloudThread) && Option.isSome(cloud)) {
+        return yield* cloud.value.currentBranch(cwd);
+      }
       if (!(yield* detectGitRepositoryForStatus("GitWorkflowService.currentBranch", cwd))) {
         return null;
       }
@@ -388,6 +414,7 @@ export const make = Effect.gen(function* () {
       });
     }),
     upstreamDivergence: Effect.fn("GitWorkflowService.upstreamDivergence")(function* (cwd) {
+      if (Option.isSome(yield* cloudRecord(cwd))) return null;
       const details = yield* git.statusDetailsRemote(cwd, { refreshUpstream: false });
       return details.hasUpstream && details.branch !== null
         ? {
@@ -399,17 +426,53 @@ export const make = Effect.gen(function* () {
         : null;
     }),
     remoteStatus: Effect.fn("GitWorkflowService.remoteStatus")(function (input, options) {
-      return detectGitRepositoryForStatus("GitWorkflowService.remoteStatus", input.cwd).pipe(
-        Effect.flatMap((isGitRepository) =>
-          isGitRepository ? gitManager.remoteStatus(input, options) : Effect.succeed(null),
+      return cloudRecord(input.cwd).pipe(
+        Effect.flatMap((record) =>
+          Option.isSome(record) && Option.isSome(cloud)
+            ? cloud.value.remoteStatus(input.cwd)
+            : detectGitRepositoryForStatus("GitWorkflowService.remoteStatus", input.cwd).pipe(
+                Effect.flatMap((isGitRepository) =>
+                  isGitRepository ? gitManager.remoteStatus(input, options) : Effect.succeed(null),
+                ),
+              ),
         ),
       );
     }),
-    invalidateLocalStatus: gitManager.invalidateLocalStatus,
-    invalidateRemoteStatus: gitManager.invalidateRemoteStatus,
-    readLocalStatusRefSnapshot: git.readLocalStatusRefSnapshot,
-    readRefSnapshot: git.readRefSnapshot,
-    invalidateStatus: gitManager.invalidateStatus,
+    invalidateLocalStatus: Effect.fn("GitWorkflowService.invalidateLocalStatus")((cwd) =>
+      cloudRecord(cwd).pipe(
+        Effect.flatMap((record) =>
+          Option.isSome(record) ? Effect.void : gitManager.invalidateLocalStatus(cwd),
+        ),
+      ),
+    ),
+    invalidateRemoteStatus: Effect.fn("GitWorkflowService.invalidateRemoteStatus")((cwd) =>
+      cloudRecord(cwd).pipe(
+        Effect.flatMap((record) =>
+          Option.isSome(record) ? Effect.void : gitManager.invalidateRemoteStatus(cwd),
+        ),
+      ),
+    ),
+    readLocalStatusRefSnapshot: Effect.fn("GitWorkflowService.readLocalStatusRefSnapshot")((cwd) =>
+      cloudRecord(cwd).pipe(
+        Effect.flatMap((record) =>
+          Option.isSome(record) ? Effect.succeed(null) : git.readLocalStatusRefSnapshot(cwd),
+        ),
+      ),
+    ),
+    readRefSnapshot: Effect.fn("GitWorkflowService.readRefSnapshot")((cwd, refsAtLocalRead) =>
+      cloudRecord(cwd).pipe(
+        Effect.flatMap((record) =>
+          Option.isSome(record) ? Effect.succeed(null) : git.readRefSnapshot(cwd, refsAtLocalRead),
+        ),
+      ),
+    ),
+    invalidateStatus: Effect.fn("GitWorkflowService.invalidateStatus")((cwd) =>
+      cloudRecord(cwd).pipe(
+        Effect.flatMap((record) =>
+          Option.isSome(record) ? Effect.void : gitManager.invalidateStatus(cwd),
+        ),
+      ),
+    ),
     headPath: Effect.fn("GitWorkflowService.headPath")(function* (cwd) {
       // Clients keep watching threads whose worktree was removed; spawning there fails noisily.
       if (!(yield* fileSystem.exists(cwd).pipe(Effect.orElseSucceed(() => true)))) return null;
@@ -426,17 +489,40 @@ export const make = Effect.gen(function* () {
         );
     }),
     pullCurrentBranch: Effect.fn("GitWorkflowService.pullCurrentBranch")(function (cwd) {
-      return ensureGitCommand("GitWorkflowService.pullCurrentBranch", cwd).pipe(
-        Effect.andThen(git.pullCurrentBranch(cwd)),
+      return cloudRecord(cwd).pipe(
+        Effect.flatMap((record) =>
+          Option.isSome(record) && Option.isSome(cloud)
+            ? cloud.value.pullCurrentBranch(cwd).pipe(
+                Effect.mapError((error) =>
+                  error._tag === "GitCommandError"
+                    ? error
+                    : new GitCommandError({
+                        operation: "GitWorkflowService.pullCurrentBranch",
+                        command: "git pull",
+                        cwd,
+                        detail: error.message,
+                      }),
+                ),
+              )
+            : ensureGitCommand("GitWorkflowService.pullCurrentBranch", cwd).pipe(
+                Effect.andThen(git.pullCurrentBranch(cwd)),
+              ),
+        ),
       );
     }),
     runStackedAction: Effect.fn("GitWorkflowService.runStackedAction")(function (input, options) {
-      return ensureGit("GitWorkflowService.runStackedAction", input.cwd).pipe(
-        Effect.flatMap((handle) =>
-          withCheckoutLease(
-            handle.repository.rootPath,
-            gitManager.runStackedAction(input, options),
-          ),
+      return cloudRecord(input.cwd).pipe(
+        Effect.flatMap((record) =>
+          Option.isSome(record) && Option.isSome(cloud)
+            ? cloud.value.runStackedAction(input, options)
+            : ensureGit("GitWorkflowService.runStackedAction", input.cwd).pipe(
+                Effect.flatMap((handle) =>
+                  withCheckoutLease(
+                    handle.repository.rootPath,
+                    gitManager.runStackedAction(input, options),
+                  ),
+                ),
+              ),
         ),
       );
     }),
@@ -459,9 +545,26 @@ export const make = Effect.gen(function* () {
       },
     ),
     listRefs: Effect.fn("GitWorkflowService.listRefs")(function (input) {
-      return detectGitRepositoryForCommand("GitWorkflowService.listRefs", input.cwd).pipe(
-        Effect.flatMap((isGitRepository) =>
-          isGitRepository ? git.listRefs(input) : Effect.succeed(nonRepositoryListRefs()),
+      return cloudRecord(input.cwd).pipe(
+        Effect.flatMap((record) =>
+          Option.isSome(record) && Option.isSome(cloud)
+            ? cloud.value.listRefs(input).pipe(
+                Effect.mapError((error) =>
+                  error._tag === "GitCommandError"
+                    ? error
+                    : new GitCommandError({
+                        operation: "GitWorkflowService.listRefs",
+                        command: "git for-each-ref",
+                        cwd: input.cwd,
+                        detail: error.message,
+                      }),
+                ),
+              )
+            : detectGitRepositoryForCommand("GitWorkflowService.listRefs", input.cwd).pipe(
+                Effect.flatMap((isGitRepository) =>
+                  isGitRepository ? git.listRefs(input) : Effect.succeed(nonRepositoryListRefs()),
+                ),
+              ),
         ),
       );
     }),

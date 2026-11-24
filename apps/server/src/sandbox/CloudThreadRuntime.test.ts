@@ -116,6 +116,8 @@ describe("cloud thread runtime", () => {
         prepare: () => Effect.die("unused"),
         getSandbox: () => Effect.succeedSome(sandbox),
         getRecord: () => Effect.succeedSome(record),
+        forWorkspace: () => Effect.succeedNone,
+        exec: () => Effect.die("unused"),
         writeAttachment: () => Effect.succeed(false),
         openHost: () =>
           Effect.succeed({
@@ -254,6 +256,8 @@ describe("cloud thread runtime", () => {
         prepare: () => Effect.die("unused"),
         getSandbox: () => Effect.succeedSome(sandbox),
         getRecord: () => Effect.succeedSome(record),
+        forWorkspace: () => Effect.succeedNone,
+        exec: () => Effect.die("unused"),
         writeAttachment: () => Effect.succeed(false),
         openHost: () =>
           Effect.succeed({

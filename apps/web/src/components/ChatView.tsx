@@ -1344,10 +1344,11 @@ export default function ChatView(props: ChatViewProps) {
   const providerEnvironmentId = (activeThread ? activeEnvironment : primaryEnvironment)
     ?.environmentId;
   const gitCwd = activeProject
-    ? projectScriptCwd({
+    ? (activeThread?.cloudWorkspace?.workspacePath ??
+      projectScriptCwd({
         project: { cwd: activeProject.workspaceRoot },
         worktreePath: activeThread?.worktreePath ?? null,
-      })
+      }))
     : null;
   const providerStatuses = resolveProvidersForCwd(
     (providerEnvironmentId === undefined
@@ -1745,7 +1746,8 @@ export default function ChatView(props: ChatViewProps) {
     turnDiffSummaries.at(-1)?.completedAt ?? null,
   );
 
-  const gitStatusCwd = activeThread?.worktreePath ?? gitCwd;
+  const gitStatusCwd =
+    activeThread?.cloudWorkspace?.workspacePath ?? activeThread?.worktreePath ?? gitCwd;
   const gitStatusAtom =
     gitStatusCwd === null
       ? null
@@ -1858,7 +1860,11 @@ export default function ChatView(props: ChatViewProps) {
   const hasTimelineTopBanner = Boolean(timelineThreadError) || visibleProviderStatus !== null;
   const activeProjectCwd = activeProject?.workspaceRoot ?? null;
   const activeThreadWorktreePath = activeThread?.worktreePath ?? null;
-  const activeWorkspaceRoot = activeThreadWorktreePath ?? activeProjectCwd ?? undefined;
+  const activeWorkspaceRoot =
+    activeThread?.cloudWorkspace?.workspacePath ??
+    activeThreadWorktreePath ??
+    activeProjectCwd ??
+    undefined;
   const activeTerminalLaunchContext =
     terminalUiLaunchContext?.threadId === activeThreadId ? terminalUiLaunchContext : null;
   const liveIsGitRepo = gitStatusQuery.data?.isRepo;

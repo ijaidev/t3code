@@ -839,7 +839,7 @@ export function ThreadRowLeadingStatus({ thread }: { thread: SidebarThreadSummar
   const lastVisitedAt = resolveThreadLastVisitedAt(thread.lastVisitedAt, localLastVisitedAt);
   const threadProject = useProject(scopeProjectRef(thread.environmentId, thread.projectId));
   const threadProjectCwd = threadProject?.workspaceRoot ?? null;
-  const gitCwd = thread.worktreePath ?? threadProjectCwd;
+  const gitCwd = thread.cloudWorkspace?.workspacePath ?? thread.worktreePath ?? threadProjectCwd;
   const linkedPullRequest = useLinkedThreadPullRequest(
     thread.environmentId,
     thread.linkedPullRequest,
@@ -850,7 +850,7 @@ export function ThreadRowLeadingStatus({ thread }: { thread: SidebarThreadSummar
   const gitStatus = useEnvironmentQuery(
     leaseLiveStatus &&
       thread.linkedPullRequest == null &&
-      (thread.branch != null || thread.worktreePath !== null) &&
+      (thread.branch != null || thread.worktreePath !== null || thread.cloudWorkspace != null) &&
       gitCwd !== null
       ? vcsEnvironment.status({
           environmentId: thread.environmentId,

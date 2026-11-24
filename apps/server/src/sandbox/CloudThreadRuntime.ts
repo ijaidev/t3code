@@ -102,7 +102,7 @@ const cloudCapabilities = (
   threads: {
     ...base.threads,
     canReadThreadSnapshot: true,
-    canRollbackThread: false,
+    canRollbackThread: true,
     canForkThread: false,
     canForkFromTurn: false,
     canForkFromSubagentThread: false,
@@ -130,10 +130,11 @@ const cloudCapabilities = (
     approvalCallbacksAreLiveOnly: false,
   },
   checkpointing: {
-    appCanCheckpointFilesystem: false,
+    appCanCheckpointFilesystem: true,
     supportsNestedCheckpointScopes: false,
-    providerCanRollbackConversation: false,
-    providerRollbackReturnsSnapshot: false,
+    // The sandbox host keeps the conversation; rollback clears it and the app restores files.
+    providerCanRollbackConversation: true,
+    providerRollbackReturnsSnapshot: true,
     providerCanReadConversationSnapshot: false,
   },
   context: {
@@ -220,6 +221,7 @@ const make = Effect.gen(function* () {
     const capabilities = cloudCapabilities(yield* base.getCapabilities());
     const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
     const connection = yield* Ref.make<CloudThreads.CloudHostConnection | null>(null);
+    const resetHistoryOnConnect = yield* Ref.make(false);
     const activeTurn = yield* Ref.make<ActiveTurn | null>(null);
     const pendingApprovals = yield* Ref.make<
       ReadonlyMap<
@@ -627,6 +629,9 @@ const make = Effect.gen(function* () {
         ),
       );
       yield* Ref.set(connection, opened);
+      if (yield* Ref.getAndSet(resetHistoryOnConnect, false)) {
+        yield* opened.send({ type: "reset_history" }).pipe(Effect.ignore);
+      }
       yield* Effect.forkDetach(
         opened.messages.pipe(
           Stream.runForEach((message) => handleHostMessage(opened, message)),
@@ -805,13 +810,20 @@ const make = Effect.gen(function* () {
       ),
       readThreadSnapshot: ({ providerThread }) =>
         Effect.succeed({ providerThread, messages: [], runtimeRequests: [] }),
-      rollbackThread: () =>
-        Effect.fail(
-          new ProviderAdapter.ProviderAdapterRollbackThreadError({
-            driver: base.driver,
-            providerThreadId: ProviderThreadId.make("cloud"),
-          }),
-        ),
+      rollbackThread: Effect.fn("CloudThreadRuntime.rollbackThread")(function* ({
+        providerThread,
+      }) {
+        // The host keeps the model conversation; clear it so rolled-back turns cannot return.
+        const host = yield* Ref.get(connection);
+        if (host !== null) {
+          yield* host.send({ type: "reset_history" }).pipe(Effect.ignore);
+        } else {
+          yield* Ref.set(resetHistoryOnConnect, true);
+        }
+        yield* Ref.set(activeTurn, null);
+        yield* Ref.set(pendingApprovals, new Map());
+        return { providerThread, messages: [], runtimeRequests: [] };
+      }),
       forkThread: () =>
         Effect.fail(
           new ProviderAdapter.ProviderAdapterForkThreadError({

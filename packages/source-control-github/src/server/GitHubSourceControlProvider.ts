@@ -2,6 +2,7 @@ import { requireSettingsSecretLiteral, SourceControlProviderKind } from "@t3tool
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Redacted from "effect/Redacted";
 import {
   GraphQL,
   GraphQLClient,
@@ -26,6 +27,7 @@ import { decodeJsonResult } from "@t3tools/shared/schemaJson";
 import { isSshRemoteUrl } from "@t3tools/shared/sourceControl";
 
 import { GH_PROCESS_CONCURRENCY } from "./GitHubCredentials.ts";
+import * as GitHubAppAccess from "./GitHubAppAccess.ts";
 import * as GitHubAppSignIn from "./GitHubAppSignIn.ts";
 import * as GitHubRest from "./GitHubRest.ts";
 import * as GitHubRequestPolicy from "./GitHubRequestPolicy.ts";
@@ -552,6 +554,7 @@ const contextHost = (context: SourceControlProvider.SourceControlProviderContext
 
 export const make = Effect.gen(function* () {
   const api = yield* GitHubRest.GitHubRest;
+  const appAccess = yield* GitHubAppAccess.GitHubAppAccess;
   const sourceControlHost = yield* SourceControlHost.SourceControlHost;
   const process = sourceControlHost.process;
   const environment = yield* HostProcess.Environment;
@@ -1199,6 +1202,32 @@ export const make = Effect.gen(function* () {
             providerError("getRepositoryCloneUrls", input.cwd, {
               repository: input.repository,
             }),
+          ),
+        ),
+    ),
+    repositoryCredential: Effect.fn("GitHubSourceControlProvider.repositoryCredential")(
+      function* (input) {
+        const locator = yield* resolveRepository(input);
+        const held = yield* appAccess.credentialFor(
+          locator.host,
+          `${locator.owner}/${locator.name}`,
+        );
+        return {
+          username: "x-access-token",
+          token: Redacted.value(held.token),
+        };
+      },
+      (effect, input) =>
+        effect.pipe(
+          Effect.mapError(
+            (cause) =>
+              new SourceControlProviderError({
+                provider: SourceControlProviderKind.make("github"),
+                operation: "repositoryCredential",
+                cwd: input.cwd,
+                detail: "GitHub could not provide a repository credential.",
+                cause,
+              }),
           ),
         ),
     ),

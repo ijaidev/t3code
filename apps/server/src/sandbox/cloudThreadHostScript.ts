@@ -438,6 +438,10 @@ class Host:
             except Exception:  # noqa: BLE001
                 pass
 
+    def reset_history(self):
+        self.messages = []
+        self.save_messages()
+
     def loop(self):
         self.send({"type": "ready", "protocolVersion": PROTOCOL_VERSION, "pid": os.getpid()})
         for line in sys.stdin:
@@ -455,6 +459,8 @@ class Host:
                 self.inbox.put(message)
             elif kind == "interrupt":
                 self.cancel_turn()
+            elif kind == "reset_history":
+                self.reset_history()
             elif kind == "stop":
                 self.cancel_turn()
                 self.stop = True
