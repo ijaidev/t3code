@@ -626,6 +626,7 @@ const make = Effect.gen(function* () {
         const sandbox = yield* getSandbox(input.threadId);
         if (Option.isNone(sandbox)) {
           yield* markCloudLost(input.threadId);
+          yield* clearPorts(input.threadId);
           yield* notify(input.threadId);
           return yield* requireCloudSandboxState(input.threadId);
         }
@@ -684,6 +685,7 @@ const make = Effect.gen(function* () {
           return next;
         });
         yield* markCloudLost(input.threadId);
+        yield* clearPorts(input.threadId);
         yield* notify(input.threadId);
         return yield* requireCloudSandboxState(input.threadId);
       }),

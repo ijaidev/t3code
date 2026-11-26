@@ -132,12 +132,22 @@ const fakeDriver = (state: FakeCloud): SandboxProviderDriver => ({
     }),
 });
 
-const makeLayer = (driver: SandboxProviderDriver, idleMinutes = 10) => {
+const makeLayer = (
+  driver: SandboxProviderDriver,
+  idleMinutes = 10,
+  ports?: CloudThreadPorts.CloudThreadPorts["Service"],
+) => {
   const accounts = SandboxAccounts.layerFromDrivers([driver]);
   const store = SandboxStore.layer;
   const cloudStore = CloudThreadStore.layer;
   const lifecycle = SandboxLifecycle.layer.pipe(Layer.provide(accounts), Layer.provide(store));
-  const cloud = CloudThreads.layer.pipe(
+  const cloudWithPorts =
+    ports === undefined
+      ? CloudThreads.layer
+      : CloudThreads.layer.pipe(
+          Layer.provide(Layer.succeed(CloudThreadPorts.CloudThreadPorts, ports)),
+        );
+  const cloud = cloudWithPorts.pipe(
     Layer.provide(accounts),
     Layer.provide(store),
     Layer.provide(cloudStore),
@@ -480,6 +490,16 @@ describe("cloud sandbox lifecycle", () => {
       const fake = yield* makeState();
       fake.dirtyStatus = " M src/file.ts\n?? notes.md\n";
       fake.aheadCount = "2";
+      const cleared: ThreadId[] = [];
+      const ports = {
+        setPorts: () => Effect.void,
+        clear: (clearedThreadId: ThreadId) =>
+          Effect.sync(() => {
+            cleared.push(clearedThreadId);
+          }),
+        snapshot: Effect.succeed({ servers: [], unavailable: [] }),
+        subscribe: () => Effect.void,
+      } satisfies CloudThreadPorts.CloudThreadPorts["Service"];
       return yield* Effect.gen(function* () {
         yield* connect;
         yield* prepare;
@@ -514,7 +534,12 @@ describe("cloud sandbox lifecycle", () => {
         expect(Option.isSome(record) && record.value.status).toBe("lost");
         const sandbox = yield* cloud.getSandbox(threadId);
         expect(Option.isNone(sandbox)).toBe(true);
-      }).pipe(Effect.provide(makeLayer(fakeDriver(fake))));
+        expect(cleared).toEqual([threadId]);
+
+        // The explicit-delete path is idempotent and also clears ports when the sandbox is gone.
+        yield* cloud.deleteCloudSandbox({ threadId, acknowledgedUnpushedChanges: true });
+        expect(cleared).toEqual([threadId, threadId]);
+      }).pipe(Effect.provide(makeLayer(fakeDriver(fake), 10, ports)));
     });
     return test;
   });
