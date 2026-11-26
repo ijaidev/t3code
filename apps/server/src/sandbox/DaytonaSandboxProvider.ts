@@ -8,6 +8,7 @@ import {
 import * as NodeCrypto from "node:crypto";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import { WebSocket } from "ws";
 
 import {
   SandboxProviderError,
@@ -26,10 +27,10 @@ const DEFAULT_API_URL = "https://app.daytona.io/api";
 const API_REQUEST_TIMEOUT_MS = 60_000;
 const CREATE_READY_TIMEOUT_MS = 120_000;
 const CREATE_POLL_INTERVAL = "500 millis";
-const PROCESS_POLL_INTERVAL = "200 millis";
 const EXEC_TIMEOUT_MS = 120_000;
 const MAX_ERROR_DETAIL_LENGTH = 300;
 const BASE_TEMPLATE = "base";
+const DAYTONA_SDK_VERSION = "0.167.0";
 
 const capabilities: SandboxProviderCapabilities = {
   create: true,
@@ -41,7 +42,7 @@ const capabilities: SandboxProviderCapabilities = {
   snapshots: false,
   privatePorts: true,
   // The toolbox, terminal, and recordings dashboards are never app previews.
-  reservedPorts: [22222, 2280, 33333],
+  reservedPorts: [22222, 2280, 2281, 22220, 33333],
   sizes: [
     { id: "small", label: "1 vCPU · 1 GiB", cpuCount: 1, memoryMB: 1024 },
     { id: "medium", label: "2 vCPU · 4 GiB", cpuCount: 2, memoryMB: 4096 },
@@ -64,6 +65,8 @@ export interface DaytonaRequest {
   readonly data?: string | Uint8Array;
   readonly headers?: Readonly<Record<string, string>>;
   readonly timeoutMs?: number;
+  /** Logs are text even when the body itself looks like JSON. */
+  readonly parseJson?: boolean;
 }
 
 export interface DaytonaResponse {
@@ -71,9 +74,23 @@ export interface DaytonaResponse {
   readonly body: unknown;
 }
 
+export interface DaytonaFollowLogsInput {
+  /** The HTTPS logs URL; the client upgrades it to a WebSocket. */
+  readonly url: string;
+  readonly apiKey: string;
+  readonly onData: (data: string) => void;
+  readonly onClose: () => void;
+}
+
+export interface DaytonaLogFollow {
+  readonly close: () => void;
+}
+
 /** The slice of Daytona's HTTP API this adapter uses, so tests can run it without a network. */
 export interface DaytonaClient {
   readonly request: (input: DaytonaRequest) => Promise<DaytonaResponse>;
+  /** Follows combined log chunks over Daytona's WebSocket; no full log body is re-downloaded. */
+  readonly followLogs?: (input: DaytonaFollowLogsInput) => Promise<DaytonaLogFollow>;
 }
 
 const asRecord = (value: unknown): Readonly<Record<string, unknown>> =>
@@ -121,11 +138,20 @@ const providerError = (
   cause: unknown,
 ): SandboxProviderError => {
   const statusCode = statusCodeOf(cause);
-  if (statusCode === 401 || statusCode === 403) {
+  if (statusCode === 401) {
     return new SandboxProviderError({
       providerKind: DAYTONA_KIND,
       operation,
       detail: "Daytona rejected the API key. Check the key and reconnect the account.",
+      statusCode,
+    });
+  }
+  if (statusCode === 403) {
+    const detail = safeDetail(cause, account.apiKey);
+    return new SandboxProviderError({
+      providerKind: DAYTONA_KIND,
+      operation,
+      detail: `${detail || "Daytona denied the request."} Check that this Daytona key has permission for this organization and plan.`,
       statusCode,
     });
   }
@@ -181,13 +207,37 @@ const defaultClient: DaytonaClient = {
         : { body: input.data }),
       signal: AbortSignal.timeout(input.timeoutMs ?? API_REQUEST_TIMEOUT_MS),
     });
-    const body = parseBody(await response.text());
+    const text = await response.text();
+    const body = input.parseJson === false ? text : parseBody(text);
     if (!response.ok) {
       throw Object.assign(new Error(errorDetail(body, response.status)), {
         statusCode: response.status,
       });
     }
     return { status: response.status, body };
+  },
+  followLogs: async (input) => {
+    const url = new URL(input.url);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    url.searchParams.set("follow", "true");
+    // No X-Daytona-SDK-Version here: the daemon then streams combined text chunks instead of
+    // JSON or split-output frames, which is what the host line parser expects.
+    const socket = new WebSocket(url, {
+      headers: { authorization: `Bearer ${input.apiKey}` },
+    });
+    socket.on("message", (data) => input.onData(data.toString()));
+    socket.on("close", input.onClose);
+    socket.on("error", () => {
+      // The close event reports the failure to the caller.
+    });
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve);
+      socket.once("error", reject);
+      socket.once("close", () =>
+        reject(new Error("Daytona closed the log stream before it opened.")),
+      );
+    });
+    return { close: () => socket.close() };
   },
 };
 
@@ -203,8 +253,8 @@ const PAUSED_STATES = new Set([
 ]);
 const FAILED_STATES = new Set(["destroyed", "destroying", "error", "build_failed", "unknown"]);
 
-const providerStatus = (state: string): "running" | "paused" =>
-  PAUSED_STATES.has(state) ? "paused" : "running";
+const providerStatus = (state: string): "running" | "paused" | "failed" =>
+  FAILED_STATES.has(state) ? "failed" : PAUSED_STATES.has(state) ? "paused" : "running";
 
 const shellQuote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
 
@@ -221,8 +271,41 @@ const sessionCommand = (input: {
   return input.cwd === undefined ? command : `cd ${shellQuote(input.cwd)} && ${command}`;
 };
 
-const memoryGiB = (size: SandboxProviderSize | undefined): number | undefined =>
-  size === undefined ? undefined : Math.max(1, Math.ceil(size.memoryMB / 1024));
+const logsObject = (text: string): Readonly<Record<string, unknown>> | null => {
+  try {
+    const record = asRecord(JSON.parse(text) as unknown);
+    return "stdout" in record || "stderr" in record || "output" in record ? record : null;
+  } catch {
+    return null;
+  }
+};
+
+const logsFromBody = (body: unknown): { readonly stdout?: string; readonly stderr?: string } => {
+  if (typeof body === "string") {
+    const parsed = logsObject(body);
+    return parsed === null ? { stdout: body } : logsFromBody(parsed);
+  }
+  const record = asRecord(body);
+  const stdout = readString(record["stdout"]);
+  const stderr = readString(record["stderr"]);
+  const output = readString(record["output"]);
+  const combined = stdout ?? output;
+  return {
+    ...(combined === undefined ? {} : { stdout: combined }),
+    ...(stderr === undefined ? {} : { stderr }),
+  };
+};
+
+const BASE_SNAPSHOTS: Readonly<Record<SandboxProviderSize["id"], string>> = {
+  small: "daytona-small",
+  medium: "daytona-medium",
+  large: "daytona-large",
+};
+
+const BASE_SNAPSHOT = "daytona-small";
+
+const baseSnapshotFor = (size: SandboxProviderSize | undefined): string =>
+  size === undefined ? BASE_SNAPSHOT : (BASE_SNAPSHOTS[size.id] ?? BASE_SNAPSHOT);
 
 const createBody = (input: {
   readonly template: string;
@@ -230,14 +313,14 @@ const createBody = (input: {
   readonly size?: SandboxProviderSize;
   readonly region?: SandboxProviderRegion;
 }): Readonly<Record<string, unknown>> => ({
-  // "base" is the account schema's default template; Daytona picks its default snapshot then.
-  ...(input.template === BASE_TEMPLATE ? {} : { snapshot: input.template }),
+  // Daytona rejects cpu/memory/disk together with a snapshot. Base sizes are snapshots, and a
+  // custom template already names an image with its own resources.
+  snapshot: input.template === BASE_TEMPLATE ? baseSnapshotFor(input.size) : input.template,
   labels: { "t3.instance": input.instanceId },
   public: false,
   // T3 owns sleep and delete for cloud threads; provider lifetime timers must not race them.
   autoStopInterval: 0,
   autoDeleteInterval: -1,
-  ...(input.size === undefined ? {} : { cpu: input.size.cpuCount, memory: memoryGiB(input.size) }),
   ...(input.region === undefined ? {} : { target: input.region.id }),
 });
 
@@ -352,12 +435,17 @@ export const makeDaytonaSandboxProvider = (
       account: SandboxProviderAccount,
       instanceId: string,
     ) {
-      const found: Array<{ providerSandboxId: string; status: "running" | "paused" }> = [];
+      const found: Array<{
+        providerSandboxId: string;
+        status: "running" | "paused" | "failed";
+      }> = [];
       let cursor: string | undefined;
       for (let page = 0; page < 10; page += 1) {
         const query = new URLSearchParams({
           labels: instanceLabels(instanceId),
           limit: "200",
+          // Failed creates can leave a sandbox Daytona hides from ordinary lists.
+          includeErroredDeleted: "true",
           ...(cursor === undefined ? {} : { cursor }),
         });
         const response = yield* request(
@@ -393,7 +481,8 @@ export const makeDaytonaSandboxProvider = (
         apiUrlFor(`/sandbox/${encodeURIComponent(providerSandboxId)}`),
       );
       const state = sandboxState(response.body);
-      if (FAILED_STATES.has(state)) {
+      const status = providerStatus(state);
+      if (status === "failed") {
         return yield* new SandboxProviderError({
           providerKind: DAYTONA_KIND,
           operation: "get",
@@ -401,7 +490,7 @@ export const makeDaytonaSandboxProvider = (
           statusCode: 404,
         });
       }
-      return { status: providerStatus(state) };
+      return { status };
     }),
     pause: (_account) =>
       Effect.fail(
@@ -548,6 +637,7 @@ export const makeDaytonaSandboxProvider = (
       );
       let stdoutOffset = 0;
       let stderrOffset = 0;
+      let followClosed = false;
 
       const emit = (next: string, offset: number, write: (data: string) => void): number => {
         if (next.length > offset) {
@@ -563,22 +653,19 @@ export const makeDaytonaSandboxProvider = (
       };
 
       const readLogs = Effect.gen(function* () {
-        const response = yield* request(input.account, "exec", "GET", logsUrl);
-        const body = asRecord(response.body);
-        const stdout = readString(body["stdout"]);
-        const stderr = readString(body["stderr"]);
-        if (stdout !== undefined) {
-          stdoutOffset = emit(stdout, stdoutOffset, input.onStdout);
+        const response = yield* request(input.account, "exec", "GET", logsUrl, {
+          headers: { "x-daytona-sdk-version": DAYTONA_SDK_VERSION },
+          // Log text can itself look like JSON (the host's ready line), so keep it as text.
+          parseJson: false,
+        });
+        const logs = logsFromBody(response.body);
+        if (logs.stdout !== undefined) {
+          stdoutOffset = emit(logs.stdout, stdoutOffset, input.onStdout);
         }
-        if (stderr !== undefined) {
-          stderrOffset = emit(stderr, stderrOffset, input.onStderr);
+        if (logs.stderr !== undefined) {
+          stderrOffset = emit(logs.stderr, stderrOffset, input.onStderr);
         }
-      }).pipe(
-        Effect.catchIf(
-          (error) => error.statusCode === 404,
-          () => Effect.void,
-        ),
-      );
+      }).pipe(Effect.ignore);
 
       const deleteSession = request(input.account, "exec", "DELETE", sessionUrl).pipe(
         Effect.catchIf(
@@ -588,6 +675,30 @@ export const makeDaytonaSandboxProvider = (
         Effect.asVoid,
       );
 
+      const followLogs = client.followLogs;
+      const follow =
+        followLogs === undefined
+          ? null
+          : yield* Effect.tryPromise({
+              try: () =>
+                followLogs({
+                  url: logsUrl,
+                  apiKey: input.account.apiKey,
+                  onData: input.onStdout,
+                  onClose: () => {
+                    followClosed = true;
+                  },
+                }),
+              catch: (cause) => providerError(input.account, "exec", cause),
+            }).pipe(Effect.orElseSucceed(() => null));
+
+      const waitForFollowClose = Effect.gen(function* () {
+        for (let attempt = 0; attempt < 40; attempt += 1) {
+          if (followClosed) return;
+          yield* Effect.sleep("50 millis");
+        }
+      });
+
       const process: SandboxProviderProcess = {
         pid: 0,
         sendStdin: (data) =>
@@ -596,8 +707,11 @@ export const makeDaytonaSandboxProvider = (
           }).pipe(Effect.asVoid),
         kill: deleteSession,
         wait: Effect.gen(function* () {
+          let delayMs = 250;
           while (true) {
-            yield* readLogs;
+            if (follow === null) {
+              yield* readLogs;
+            }
             const command = yield* request(input.account, "exec", "GET", commandUrl).pipe(
               Effect.catchIf(
                 (error) => error.statusCode === 404,
@@ -606,15 +720,23 @@ export const makeDaytonaSandboxProvider = (
             );
             const exitCode = readNumber(asRecord(command.body)["exitCode"]);
             if (exitCode !== undefined) {
-              yield* readLogs;
+              if (follow === null) {
+                yield* readLogs;
+              } else {
+                // The follow stream delivers the final frames before it closes.
+                yield* waitForFollowClose;
+                follow.close();
+              }
               yield* deleteSession;
               return { exitCode };
             }
             if (command.status === 404) {
+              follow?.close();
               yield* deleteSession;
               return { exitCode: 1 };
             }
-            yield* Effect.sleep(PROCESS_POLL_INTERVAL);
+            yield* Effect.sleep(`${delayMs} millis`);
+            delayMs = Math.min(delayMs * 2, 2_000);
           }
         }),
       };

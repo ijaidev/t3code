@@ -108,7 +108,8 @@ export interface SandboxProviderProcess {
 
 export interface SandboxProviderFoundSandbox {
   readonly providerSandboxId: string;
-  readonly status: "running" | "paused";
+  /** `failed` means the provider reports an errored or deleted sandbox; cleanup may delete it, never adopt it. */
+  readonly status: "running" | "paused" | "failed";
 }
 
 export interface SandboxProviderDriver {

@@ -1,7 +1,9 @@
 import {
+  SandboxInstanceId,
   SandboxProviderAccountId,
   SandboxProviderKind,
   type SandboxProviderCapabilities,
+  type SandboxTestSandbox,
   ThreadId,
 } from "@t3tools/contracts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -44,12 +46,15 @@ const FAKE_KIND = SandboxProviderKind.make("fake-cloud");
 interface HarnessSandbox {
   readonly instanceId: string;
   readonly providerSandboxId: string;
-  status: "running" | "paused";
+  status: "running" | "paused" | "failed";
 }
 
 interface HarnessState {
   rejectKey: boolean;
+  forbidden: boolean;
   failCreateAfterAccept: boolean;
+  plainTextLogs: boolean;
+  disableFollowLogs: boolean;
   calls: Array<string>;
   sandboxes: Array<HarnessSandbox>;
   writes: Array<{ readonly path: string; readonly data: string }>;
@@ -60,6 +65,12 @@ interface HarnessState {
     readonly envs?: Readonly<Record<string, string>>;
   } | null;
   lastProcessCommand: string | null;
+  listQueries: Array<string>;
+  logsRequests: number;
+  lastLogsHeaders: Readonly<Record<string, string>> | null;
+  followCalls: number;
+  followChunks: Array<string>;
+  followClosed: boolean;
   session: {
     stdout: string;
     stderr: string;
@@ -77,13 +88,22 @@ interface ProviderHarness {
 
 const makeState = (): HarnessState => ({
   rejectKey: false,
+  forbidden: false,
   failCreateAfterAccept: false,
+  plainTextLogs: false,
+  disableFollowLogs: false,
   calls: [],
   sandboxes: [],
   writes: [],
   lastCreateBody: null,
   lastExec: null,
   lastProcessCommand: null,
+  listQueries: [],
+  logsRequests: 0,
+  lastLogsHeaders: null,
+  followCalls: 0,
+  followChunks: [],
+  followClosed: false,
   session: null,
 });
 
@@ -180,7 +200,7 @@ const makeE2BHarness = (): ProviderHarness => {
       if (sandbox === undefined) {
         throw Object.assign(new Error("missing"), { statusCode: 404 });
       }
-      return { state: sandbox.status };
+      return { state: sandbox.status === "paused" ? "paused" : "running" };
     },
     pause: async (input) => {
       const sandbox = find(input.sandboxId);
@@ -207,7 +227,7 @@ const makeE2BHarness = (): ProviderHarness => {
         .filter((sandbox) => instanceId === undefined || sandbox.instanceId === instanceId)
         .map((sandbox) => ({
           sandboxId: sandbox.providerSandboxId,
-          state: sandbox.status,
+          state: sandbox.status === "paused" ? ("paused" as const) : ("running" as const),
         }));
     },
   };
@@ -240,17 +260,33 @@ const makeDaytonaHarness = (): ProviderHarness => {
       if (path === "/api/sandbox" && input.method === "GET") {
         state.calls.push("list");
         if (state.rejectKey) throw rejection(DAYTONA_KIND, "Daytona");
+        if (state.forbidden) {
+          throw Object.assign(
+            new Error(
+              "The API key is missing the sandboxes:write permission for this organization.",
+            ),
+            { statusCode: 403 },
+          );
+        }
+        state.listQueries.push(url.search);
         const labels = url.searchParams.get("labels");
         const instanceId =
           labels === null
             ? undefined
             : (JSON.parse(labels) as Readonly<Record<string, string>>)["t3.instance"];
+        const includeErroredDeleted = url.searchParams.get("includeErroredDeleted") === "true";
         return respond(200, {
           items: state.sandboxes
             .filter((sandbox) => instanceId === undefined || sandbox.instanceId === instanceId)
+            .filter((sandbox) => includeErroredDeleted || sandbox.status !== "failed")
             .map((sandbox) => ({
               id: sandbox.providerSandboxId,
-              state: sandbox.status === "running" ? "started" : "stopped",
+              state:
+                sandbox.status === "running"
+                  ? "started"
+                  : sandbox.status === "paused"
+                    ? "stopped"
+                    : "error",
               labels: { "t3.instance": sandbox.instanceId },
             })),
         });
@@ -258,10 +294,20 @@ const makeDaytonaHarness = (): ProviderHarness => {
 
       if (path === "/api/sandbox" && input.method === "POST") {
         state.calls.push("create");
+        const body = asRecord(input.body);
+        if (
+          body["cpu"] !== undefined ||
+          body["memory"] !== undefined ||
+          body["disk"] !== undefined
+        ) {
+          throw Object.assign(new Error("Cannot specify Sandbox resources when using a snapshot"), {
+            statusCode: 400,
+          });
+        }
         const sandbox: HarnessSandbox = {
           instanceId: labelInstance(input.body) ?? String(state.sandboxes.length + 1),
           providerSandboxId: `daytona-${state.sandboxes.length + 1}`,
-          status: "running",
+          status: state.failCreateAfterAccept ? "failed" : "running",
         };
         state.sandboxes.push(sandbox);
         if (state.failCreateAfterAccept) throw new Error("Daytona create failed after accepting.");
@@ -288,7 +334,12 @@ const makeDaytonaHarness = (): ProviderHarness => {
         const sandbox = requireSandbox(providerSandboxId);
         return respond(200, {
           id: sandbox.providerSandboxId,
-          state: sandbox.status === "running" ? "started" : "stopped",
+          state:
+            sandbox.status === "running"
+              ? "started"
+              : sandbox.status === "paused"
+                ? "stopped"
+                : "error",
         });
       }
 
@@ -329,7 +380,7 @@ const makeDaytonaHarness = (): ProviderHarness => {
       }
 
       if (path.endsWith("/process/session") && input.method === "POST") {
-        state.session = {
+        state.session = state.session ?? {
           stdout: `${JSON.stringify({ type: "ready", protocolVersion: "1", pid: 1 })}\n`,
           stderr: "warn\n",
           exitCode: 0,
@@ -355,7 +406,12 @@ const makeDaytonaHarness = (): ProviderHarness => {
       }
 
       if (path.endsWith("/logs")) {
+        state.logsRequests += 1;
+        state.lastLogsHeaders = input.headers ?? null;
         const session = state.session;
+        if (state.plainTextLogs) {
+          return respond(200, `${session?.stdout ?? ""}${session?.stderr ?? ""}`);
+        }
         return respond(200, {
           output: `${session?.stdout ?? ""}${session?.stderr ?? ""}`,
           stdout: session?.stdout ?? "",
@@ -378,6 +434,17 @@ const makeDaytonaHarness = (): ProviderHarness => {
       }
 
       throw new Error(`Unexpected Daytona request: ${input.method} ${input.url}`);
+    },
+    followLogs: async (input) => {
+      state.followCalls += 1;
+      if (state.disableFollowLogs) throw new Error("The follow stream is unavailable.");
+      for (const chunk of state.followChunks) input.onData(chunk);
+      input.onClose();
+      return {
+        close: () => {
+          state.followClosed = true;
+        },
+      };
     },
   };
 
@@ -432,7 +499,7 @@ const makeFakeHarness = (): ProviderHarness => {
         const sandbox = state.sandboxes.find(
           (candidate) => candidate.providerSandboxId === providerSandboxId,
         );
-        return sandbox === undefined
+        return sandbox === undefined || sandbox.status === "failed"
           ? Effect.fail(
               new SandboxProviderError({
                 providerKind: FAKE_KIND,
@@ -678,6 +745,17 @@ describe.each(harnesses)("$name sandbox provider", ({ make }) => {
   );
 });
 
+const provisioningRecord = (id: string): SandboxTestSandbox => ({
+  id: SandboxInstanceId.make(id),
+  accountId: SandboxProviderAccountId.make("daytona-work"),
+  providerKind: DAYTONA_KIND,
+  providerSandboxId: null,
+  status: "provisioning",
+  template: "base",
+  createdAt: "2026-11-26T00:00:00.000Z",
+  updatedAt: "2026-11-26T00:00:00.000Z",
+});
+
 const daytonaCloudLayer = (driver: SandboxProviderDriver) => {
   const accounts = SandboxAccounts.layerFromDrivers([driver]);
   const store = SandboxStore.layer;
@@ -771,13 +849,61 @@ describe("Daytona failures", () => {
         expect(yield* store.list).toEqual([]);
         expect(state.sandboxes).toEqual([]);
         expect(state.calls).toContain("delete");
+        expect(
+          state.listQueries.some((query) => query.includes("includeErroredDeleted=true")),
+        ).toBe(true);
+      }).pipe(Effect.provide(daytonaCloudLayer(driver)));
+    }),
+  );
+
+  it.effect("deletes a failed sandbox instead of adopting it during reconcile", () =>
+    Effect.gen(function* () {
+      const { driver, account: credentials, state } = makeDaytonaHarness();
+      const accountId = SandboxProviderAccountId.make("daytona-work");
+      yield* Effect.gen(function* () {
+        const accounts = yield* SandboxAccounts.SandboxAccounts;
+        yield* accounts.connect({
+          id: accountId,
+          config: {
+            kind: DAYTONA_KIND,
+            label: "Daytona",
+            apiKey: credentials.apiKey,
+            template: "base",
+            enabled: true,
+          },
+        });
+        const lifecycle = yield* SandboxLifecycle.SandboxLifecycle;
+        const store = yield* SandboxStore.SandboxStore;
+        const record = provisioningRecord("failed-record");
+        yield* store.upsert(record);
+        state.sandboxes.push({
+          instanceId: record.id,
+          providerSandboxId: "daytona-failed",
+          status: "failed",
+        });
+
+        yield* lifecycle.reconcile;
+
+        expect(yield* store.list).toEqual([]);
+        expect(state.sandboxes).toEqual([]);
+        expect(state.calls).toContain("delete");
+        expect(
+          state.listQueries.some((query) => query.includes("includeErroredDeleted=true")),
+        ).toBe(true);
       }).pipe(Effect.provide(daytonaCloudLayer(driver)));
     }),
   );
 });
 
 describe("Daytona adapter", () => {
-  it.effect("maps size, region, template, and instance ownership into the create request", () =>
+  it("reserves Daytona's daemon ports from previews", () => {
+    const { driver } = makeDaytonaHarness();
+    expect(driver.capabilities.reservedPorts).toEqual(
+      expect.arrayContaining([2280, 2281, 22220, 22222, 33333]),
+    );
+  });
+
+  it.effect("maps the base size to a snapshot instead of rejected resources", () =>
     Effect.gen(function* () {
       const { driver, account: credentials, state } = makeDaytonaHarness();
       const size = driver.capabilities.sizes[1]!;
@@ -785,7 +911,7 @@ describe("Daytona adapter", () => {
       yield* driver.create({
         account: credentials,
         instanceId: "instance-1",
-        template: "daytona-medium",
+        template: "base",
         timeoutMs: 60_000,
         size,
         region,
@@ -796,14 +922,32 @@ describe("Daytona adapter", () => {
         public: false,
         autoStopInterval: 0,
         autoDeleteInterval: -1,
-        cpu: size.cpuCount,
-        memory: size.memoryMB / 1024,
         target: region.id,
       });
+      expect(state.lastCreateBody).not.toHaveProperty("cpu");
+      expect(state.lastCreateBody).not.toHaveProperty("memory");
     }),
   );
 
-  it.effect("uses Daytona's default snapshot for the base template", () =>
+  it.effect("sends only a custom template's snapshot, ignoring its size", () =>
+    Effect.gen(function* () {
+      const { driver, account: credentials, state } = makeDaytonaHarness();
+      yield* driver.create({
+        account: credentials,
+        instanceId: "instance-1",
+        template: "acme/daytona-base:latest",
+        timeoutMs: 60_000,
+        size: driver.capabilities.sizes[2]!,
+      });
+      expect(state.lastCreateBody).toMatchObject({
+        snapshot: "acme/daytona-base:latest",
+      });
+      expect(state.lastCreateBody).not.toHaveProperty("cpu");
+      expect(state.lastCreateBody).not.toHaveProperty("memory");
+    }),
+  );
+
+  it.effect("uses the small snapshot for the default base template", () =>
     Effect.gen(function* () {
       const { driver, account: credentials, state } = makeDaytonaHarness();
       yield* driver.create({
@@ -812,13 +956,30 @@ describe("Daytona adapter", () => {
         template: "base",
         timeoutMs: 60_000,
       });
-      expect(state.lastCreateBody).not.toHaveProperty("snapshot");
+      expect(state.lastCreateBody).toMatchObject({ snapshot: "daytona-small" });
     }),
   );
 
-  it.effect("streams a session process, forwards stdin, and cleans the session up", () =>
+  it.effect("reports a forbidden key with permission detail, not a bad-key message", () =>
     Effect.gen(function* () {
       const { driver, account: credentials, state } = makeDaytonaHarness();
+      state.forbidden = true;
+      const failure = yield* Effect.flip(driver.validateCredential(credentials));
+      expect(failure.statusCode).toBe(403);
+      expect(failure.detail).toContain("permission");
+      expect(failure.detail).not.toContain("rejected the API key");
+      expect(failure.detail).not.toContain(credentials.apiKey);
+    }),
+  );
+
+  it.effect("streams growing session logs incrementally and cleans the session up", () =>
+    Effect.gen(function* () {
+      const { driver, account: credentials, state } = makeDaytonaHarness();
+      state.followChunks = [
+        `${JSON.stringify({ type: "ready", protocolVersion: "1", pid: 1 })}\n`,
+        "line-2\n",
+        "line-3\n",
+      ];
       const created = yield* driver.create({
         account: credentials,
         instanceId: "instance-1",
@@ -844,11 +1005,53 @@ describe("Daytona adapter", () => {
       const result = yield* process.wait;
       expect(result.exitCode).toBe(0);
       expect(stdout).toContain('"type":"ready"');
-      expect(stderr).toBe("warn\n");
+      expect(stdout).toContain("line-3");
+      expect(stderr).toBe("");
       expect(state.lastProcessCommand).toBe(
         "cd '/home/daytona/workspace' && env T3_TEST='1' python3 -u host.py",
       );
       expect(state.session?.input).toEqual(["ping\n"]);
+      expect(state.session?.deleted).toBe(true);
+      expect(state.followCalls).toBe(1);
+      expect(state.followClosed).toBe(true);
+      // A follow stream must not re-download the full log body on every poll.
+      expect(state.logsRequests).toBe(0);
+    }),
+  );
+
+  it.effect("falls back to plain-text logs with an SDK version and still delivers ready", () =>
+    Effect.gen(function* () {
+      const { driver, account: credentials, state } = makeDaytonaHarness();
+      state.disableFollowLogs = true;
+      state.plainTextLogs = true;
+      state.session = {
+        stdout: `${JSON.stringify({ type: "ready", protocolVersion: "1", pid: 1 })}\n`,
+        stderr: "warn\n",
+        exitCode: 0,
+        input: [],
+        deleted: false,
+      };
+      const created = yield* driver.create({
+        account: credentials,
+        instanceId: "instance-1",
+        template: "base",
+        timeoutMs: 60_000,
+      });
+      let stdout = "";
+      const process = yield* driver.startProcess!({
+        account: credentials,
+        providerSandboxId: created.providerSandboxId,
+        command: "python3 -u host.py",
+        onStdout: (data) => {
+          stdout += data;
+        },
+        onStderr: () => {},
+      });
+      const result = yield* process.wait;
+      expect(result.exitCode).toBe(0);
+      expect(stdout).toContain('"type":"ready"');
+      expect(state.logsRequests).toBeGreaterThan(0);
+      expect(state.lastLogsHeaders?.["x-daytona-sdk-version"]).toBe("0.167.0");
       expect(state.session?.deleted).toBe(true);
     }),
   );

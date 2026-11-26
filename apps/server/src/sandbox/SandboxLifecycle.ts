@@ -141,7 +141,9 @@ const make = Effect.gen(function* () {
     return {
       ...withoutLastError(record),
       providerSandboxId: found.providerSandboxId,
-      status: found.status,
+      // A failed sandbox is kept only so its cleanup record stays deletable. Reconcile never
+      // adopts one as healthy.
+      status: found.status === "failed" ? "running" : found.status,
       updatedAt: DateTime.formatIso(yield* DateTime.now),
     } satisfies SandboxTestSandbox;
   });
@@ -228,13 +230,47 @@ const make = Effect.gen(function* () {
         yield* markFailed(record, `The provider could not be checked: ${found.failure.detail}`);
         continue;
       }
-      const first = found.success[0];
+      const healthy = found.success.filter((sandbox) => sandbox.status !== "failed");
+      const first = healthy[0];
       if (first === undefined) {
-        yield* store.remove(record.id).pipe(Effect.ignore);
+        // The provider only reports failed or deleted sandboxes. Delete them so they stop
+        // billing instead of adopting one as a running record.
+        const outcomes = yield* deleteFound(
+          resolved.success.driver,
+          resolved.success.account,
+          found.success,
+        );
+        const failure = outcomes.find(Result.isFailure);
+        if (failure === undefined) {
+          yield* store.remove(record.id).pipe(Effect.ignore);
+        } else {
+          yield* markFailed(
+            record,
+            `The failed sandbox could not be deleted: ${failure.failure.detail}`,
+          );
+        }
         continue;
       }
       const adopted = yield* adopt(record, first);
-      yield* store.upsert(adopted).pipe(Effect.ignore);
+      const extras = found.success.filter(
+        (sandbox) => sandbox.providerSandboxId !== first.providerSandboxId,
+      );
+      const outcomes = yield* deleteFound(
+        resolved.success.driver,
+        resolved.success.account,
+        extras,
+      );
+      const failure = outcomes.find(Result.isFailure);
+      yield* store
+        .upsert(
+          failure === undefined
+            ? adopted
+            : {
+                ...adopted,
+                lastError: `A stale sandbox could not be deleted: ${failure.failure.detail}`,
+              },
+        )
+        .pipe(Effect.ignore);
     }
   });
 
