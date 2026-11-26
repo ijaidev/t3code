@@ -1591,6 +1591,12 @@ export function createServerEnvironmentAtoms<R, E>(
       scheduler: sandboxScheduler,
       concurrency: sandboxConcurrency,
     }),
+    recreateCloudSandbox: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:sandbox:recreate-cloud-sandbox",
+      tag: WS_METHODS.sandboxRecreateCloudSandbox,
+      scheduler: sandboxScheduler,
+      concurrency: sandboxConcurrency,
+    }),
     previewCloudSandboxDelete: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:sandbox:preview-cloud-sandbox-delete",
       tag: WS_METHODS.sandboxPreviewCloudSandboxDelete,

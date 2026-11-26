@@ -3450,6 +3450,12 @@
     }
   ],
   "1b1131295f62c44c": "Le processus du fournisseur n’existe plus. Interrompez ou redémarrez le fil enfant pour répondre.",
+  "66d606fa31ccb153": "The sandbox could not be recreated",
+  "9c356d3604f7f010": "Cloud workspace lost",
+  "23bbe3d9843bcf61": "The sandbox was deleted outside T3 Code. Unpushed work is gone; the transcript is still here.",
+  "00245a015dec7ea6": "Recreate sandbox",
+  "d0a54b753e7c8ece": "Recreate this cloud sandbox?",
+  "352d3c38898fe8d5": "This clones the thread's branch into a new sandbox. Unpushed work from the lost sandbox is gone.",
   "da66023072c473d1": [
     "Impossible de charger la sortie : ",
     {
@@ -4219,6 +4225,7 @@
   "da46a132665c321a": "{count, plural, one {{count} commit non poussé} other {{count} commits non poussés}}",
   "90b0898c65450ab5": "The sandbox request failed",
   "90fad0d810bdcec3": "Active depuis {duration}",
+  "890956045715b07c": "This sandbox was deleted outside T3 Code. Unpushed work is gone; the transcript is still here.",
   "c1c5b60a6324a14e": "Mettre en veille",
   "f903e7f0ca23602c": "Réveiller",
   "a913bdb90568014c": "Supprimer la sandbox",

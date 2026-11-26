@@ -70,12 +70,26 @@ interface AnthropicAccess {
   readonly baseUrl: string;
 }
 
+export interface CloudThreadRuntimeResumeTurn {
+  readonly runId: RunId;
+  readonly runOrdinal: number;
+  readonly providerTurnId: ProviderTurnId;
+  readonly providerTurnOrdinal: number;
+  readonly providerThreadId: ProviderThreadId;
+  readonly nodeId: NodeId;
+  readonly startedAt: DateTime.Utc;
+  /** The next item position after everything already persisted for this turn. */
+  readonly nextItemOrdinal: number;
+}
+
 export interface CloudThreadRuntimeOpenInput {
   readonly threadId: ThreadId;
   readonly providerSessionId: ProviderSessionId;
   readonly modelSelection: ModelSelection;
   readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
   readonly environment: ReadonlyArray<{ readonly name: string; readonly value: string }>;
+  /** Set when a server restart found this cloud turn still running in its sandbox. */
+  readonly resumeTurn?: CloudThreadRuntimeResumeTurn;
 }
 
 const accessFromEnvironment = (
@@ -237,15 +251,22 @@ const make = Effect.gen(function* () {
       >
     >(new Map());
     const waitingForTurnStart = yield* Ref.make<Deferred.Deferred<void> | null>(null);
+    const reconnecting = yield* Ref.make(false);
+    const closed = yield* Ref.make(false);
     yield* Effect.addFinalizer(() =>
-      Effect.all([
-        Ref.get(connection).pipe(Effect.flatMap((host) => host?.close ?? Effect.void)),
-        Ref.get(activeTurn).pipe(
-          Effect.flatMap((turn) =>
-            turn === null ? Effect.void : cloudThreads.endTurn(input.threadId),
-          ),
+      Ref.set(closed, true).pipe(
+        Effect.andThen(
+          Effect.all([
+            Ref.get(connection).pipe(Effect.flatMap((host) => host?.close ?? Effect.void)),
+            Ref.get(activeTurn).pipe(
+              Effect.flatMap((turn) =>
+                turn === null ? Effect.void : cloudThreads.endTurn(input.threadId),
+              ),
+            ),
+          ]),
         ),
-      ]).pipe(Effect.asVoid),
+        Effect.asVoid,
+      ),
     );
 
     const emit = (event: ProviderAdapter.ProviderAdapterV2Event) =>
@@ -396,11 +417,39 @@ const make = Effect.gen(function* () {
       });
     });
 
-    const failActiveTurn = Effect.fn("CloudThreadRuntime.failActiveTurn")(function* (
-      message: string,
-    ) {
+    const failActiveTurn: (message: string) => Effect.Effect<void> = Effect.fn(
+      "CloudThreadRuntime.failActiveTurn",
+    )(function* (message) {
       const turn = yield* Ref.get(activeTurn);
       if (turn === null) return;
+      const resolvedAt = yield* DateTime.now;
+      const pending = yield* Ref.get(pendingApprovals);
+      for (const pendingApproval of pending.values()) {
+        yield* emit({
+          type: "runtime_request.updated",
+          driver: base.driver,
+          runtimeRequest: {
+            ...pendingApproval.request,
+            status: "cancelled",
+            responseCapability: {
+              type: "not_resumable",
+              reason: "The cloud sandbox stopped before this request was resolved.",
+            },
+            resolvedAt,
+          },
+        });
+        yield* emit({
+          type: "turn_item.updated",
+          driver: base.driver,
+          turnItem: {
+            ...pendingApproval.item,
+            status: "cancelled",
+            completedAt: resolvedAt,
+            updatedAt: resolvedAt,
+          },
+        });
+      }
+      yield* Ref.set(pendingApprovals, new Map());
       const failure = makeProviderFailure({
         message,
         class: "provider_error",
@@ -423,264 +472,279 @@ const make = Effect.gen(function* () {
       yield* cloudThreads.endTurn(input.threadId);
     });
 
-    const handleHostMessage = Effect.fn("CloudThreadRuntime.handleHostMessage")(function* (
+    const handleHostMessage: (
       host: CloudThreads.CloudHostConnection,
       message: CloudThreads.CloudHostMessage,
-    ) {
-      switch (message.type) {
-        case "turn_started": {
-          const waiting = yield* Ref.get(waitingForTurnStart);
-          if (waiting !== null) yield* Deferred.succeed(waiting, undefined);
-          return;
-        }
-        case "ports": {
-          yield* cloudThreadPorts.setPorts(
-            input.threadId,
-            Array.isArray(message["ports"]) ? message["ports"] : [],
-          );
-          return;
-        }
-        case "model_request":
-          yield* Effect.forkDetach(replyToModelRequest(host, message));
-          return;
-        case "text": {
-          const turn = yield* Ref.get(activeTurn);
-          const text = typeof message["text"] === "string" ? message["text"] : "";
-          if (turn === null || text === "") return;
-          const occurredAt = yield* DateTime.now;
-          const ordinal = yield* allocateOrdinal(turn);
-          const messageId = MessageId.make(randomId());
-          const item: OrchestrationV2TurnItem = {
-            id: TurnItemId.make(randomId()),
-            threadId: input.threadId,
-            runId: turn.runId,
-            nodeId: turn.nodeId,
-            providerThreadId: turn.providerThreadId,
-            providerTurnId: turn.providerTurnId,
-            nativeItemRef: null,
-            parentItemId: null,
-            ordinal,
-            status: "completed",
-            title: null,
-            startedAt: occurredAt,
-            completedAt: occurredAt,
-            updatedAt: occurredAt,
-            type: "assistant_message",
-            messageId,
-            text,
-            streaming: false,
-          };
-          yield* emit({
-            type: "message.updated",
-            driver: base.driver,
-            message: {
-              createdBy: "agent",
-              creationSource: "provider",
-              id: messageId,
+    ) => Effect.Effect<void> = Effect.fn("CloudThreadRuntime.handleHostMessage")(
+      function* (host, message) {
+        switch (message.type) {
+          case "turn_started": {
+            const waiting = yield* Ref.get(waitingForTurnStart);
+            if (waiting !== null) yield* Deferred.succeed(waiting, undefined);
+            return;
+          }
+          case "ports": {
+            yield* cloudThreadPorts.setPorts(
+              input.threadId,
+              Array.isArray(message["ports"]) ? message["ports"] : [],
+            );
+            return;
+          }
+          case "model_request":
+            yield* Effect.forkDetach(replyToModelRequest(host, message));
+            return;
+          case "text": {
+            const turn = yield* Ref.get(activeTurn);
+            const text = typeof message["text"] === "string" ? message["text"] : "";
+            if (turn === null || text === "") return;
+            const occurredAt = yield* DateTime.now;
+            const ordinal = yield* allocateOrdinal(turn);
+            // The host replays this event after a reconnect; the sequence keeps the same ids.
+            const sequence = typeof message["seq"] === "number" ? message["seq"] : null;
+            const suffix = sequence === null ? randomId() : String(sequence);
+            const messageId = MessageId.make(`cloud-message-${turn.providerTurnId}-${suffix}`);
+            const item: OrchestrationV2TurnItem = {
+              id: TurnItemId.make(`cloud-text-${turn.providerTurnId}-${suffix}`),
               threadId: input.threadId,
               runId: turn.runId,
               nodeId: turn.nodeId,
-              role: "assistant",
-              text,
-              attachments: [],
-              streaming: false,
-              createdAt: occurredAt,
+              providerThreadId: turn.providerThreadId,
+              providerTurnId: turn.providerTurnId,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal,
+              status: "completed",
+              title: null,
+              startedAt: occurredAt,
+              completedAt: occurredAt,
               updatedAt: occurredAt,
-            },
-          });
-          yield* emit({ type: "turn_item.updated", driver: base.driver, turnItem: item });
-          return;
-        }
-        case "tool_start":
-        case "tool_end": {
-          const turn = yield* Ref.get(activeTurn);
-          if (turn === null) return;
-          const toolId =
-            typeof message["id"] === "string" && message["id"] !== "" ? message["id"] : randomId();
-          const name = typeof message["name"] === "string" ? message["name"] : "tool";
-          const ended = message.type === "tool_end";
-          const occurredAt = yield* DateTime.now;
-          const ordinal = yield* toolOrdinal(turn, toolId);
-          const itemId = TurnItemId.make(toolItemId(turn.providerTurnId, toolId));
-          const inputValue = message["input"];
-          const output = message["output"];
-          const item: OrchestrationV2TurnItem =
-            name === "bash"
-              ? {
-                  id: itemId,
-                  threadId: input.threadId,
-                  runId: turn.runId,
-                  nodeId: turn.nodeId,
-                  providerThreadId: turn.providerThreadId,
-                  providerTurnId: turn.providerTurnId,
-                  nativeItemRef: null,
-                  parentItemId: null,
-                  ordinal,
-                  status: ended ? "completed" : "running",
-                  title: "Command",
-                  startedAt: occurredAt,
-                  completedAt: ended ? occurredAt : null,
-                  updatedAt: occurredAt,
-                  type: "command_execution",
-                  input:
-                    typeof inputValue === "object" && inputValue !== null
-                      ? String((inputValue as { readonly command?: unknown }).command ?? "")
-                      : "",
-                  ...(ended && typeof output === "string" ? { output } : {}),
-                  ...(ended && typeof message["exitCode"] === "number"
-                    ? { exitCode: message["exitCode"] }
-                    : {}),
-                }
-              : {
-                  id: itemId,
-                  threadId: input.threadId,
-                  runId: turn.runId,
-                  nodeId: turn.nodeId,
-                  providerThreadId: turn.providerThreadId,
-                  providerTurnId: turn.providerTurnId,
-                  nativeItemRef: null,
-                  parentItemId: null,
-                  ordinal,
-                  status: ended ? "completed" : "running",
-                  title: name,
-                  startedAt: occurredAt,
-                  completedAt: ended ? occurredAt : null,
-                  updatedAt: occurredAt,
-                  type: "dynamic_tool",
-                  toolName: name,
-                  input: inputValue,
-                  ...(ended && output !== undefined ? { output } : {}),
-                };
-          yield* emit({ type: "turn_item.updated", driver: base.driver, turnItem: item });
-          return;
-        }
-        case "approval_request": {
-          const turn = yield* Ref.get(activeTurn);
-          if (turn === null) return;
-          const requestId = typeof message["id"] === "string" ? message["id"] : randomId();
-          const kind = message["kind"] === "command" ? "command" : "file-change";
-          const createdAt = yield* DateTime.now;
-          const request: OrchestrationV2RuntimeRequest = {
-            id: RuntimeRequestIdSchema.make(requestId),
-            nodeId: turn.nodeId,
-            providerTurnId: turn.providerTurnId,
-            nativeRequestRef: null,
-            kind,
-            status: "pending",
-            responseCapability: {
-              type: "live",
-              providerSessionId: input.providerSessionId,
-            },
-            createdAt,
-            resolvedAt: null,
-          };
-          const item: Extract<OrchestrationV2TurnItem, { readonly type: "approval_request" }> = {
-            id: TurnItemId.make(randomId()),
-            threadId: input.threadId,
-            runId: turn.runId,
-            nodeId: turn.nodeId,
-            providerThreadId: turn.providerThreadId,
-            providerTurnId: turn.providerTurnId,
-            nativeItemRef: null,
-            parentItemId: null,
-            ordinal: yield* allocateOrdinal(turn),
-            status: "waiting",
-            title: typeof message["title"] === "string" ? message["title"] : null,
-            startedAt: createdAt,
-            completedAt: null,
-            updatedAt: createdAt,
-            type: "approval_request",
-            requestId: request.id,
-            requestKind: kind,
-            ...(typeof message["prompt"] === "string" ? { prompt: message["prompt"] } : {}),
-          };
-          yield* Ref.update(pendingApprovals, (current) =>
-            new Map(current).set(requestId, { request, item }),
-          );
-          yield* emit({
-            type: "runtime_request.updated",
-            driver: base.driver,
-            runtimeRequest: request,
-          });
-          yield* emit({ type: "turn_item.updated", driver: base.driver, turnItem: item });
-          return;
-        }
-        case "history_reset": {
-          const acknowledged = yield* Ref.get(resetAck);
-          if (acknowledged !== null) {
-            yield* Deferred.succeed(acknowledged, message["ok"] === true);
+              type: "assistant_message",
+              messageId,
+              text,
+              streaming: false,
+            };
+            yield* emit({
+              type: "message.updated",
+              driver: base.driver,
+              message: {
+                createdBy: "agent",
+                creationSource: "provider",
+                id: messageId,
+                threadId: input.threadId,
+                runId: turn.runId,
+                nodeId: turn.nodeId,
+                role: "assistant",
+                text,
+                attachments: [],
+                streaming: false,
+                createdAt: occurredAt,
+                updatedAt: occurredAt,
+              },
+            });
+            yield* emit({ type: "turn_item.updated", driver: base.driver, turnItem: item });
+            return;
           }
-          return;
-        }
-        case "turn_end": {
-          const turn = yield* Ref.get(activeTurn);
-          if (turn === null) return;
-          const completedAt = yield* DateTime.now;
-          const status =
-            message["status"] === "failed"
-              ? "failed"
-              : message["status"] === "cancelled"
-                ? "cancelled"
-                : "completed";
-          const providerTurn: OrchestrationV2ProviderTurn = {
-            id: turn.providerTurnId,
-            providerThreadId: turn.providerThreadId,
-            nodeId: turn.nodeId,
-            runAttemptId: null,
-            nativeTurnRef: null,
-            ordinal: turn.providerTurnOrdinal,
-            status,
-            startedAt: turn.startedAt,
-            completedAt,
-          };
-          yield* emit({ type: "provider_turn.updated", driver: base.driver, providerTurn });
-          if (status === "failed") {
-            const failure = makeProviderFailure({
-              message:
-                typeof message["error"] === "string" ? message["error"] : "The cloud turn failed.",
-              class: "provider_error",
-              retryable: true,
-            });
-            const ordinal = yield* allocateOrdinal(turn);
-            yield* emit({
-              type: "turn.terminal",
-              driver: base.driver,
+          case "tool_start":
+          case "tool_end": {
+            const turn = yield* Ref.get(activeTurn);
+            if (turn === null) return;
+            const toolId =
+              typeof message["id"] === "string" && message["id"] !== ""
+                ? message["id"]
+                : randomId();
+            const name = typeof message["name"] === "string" ? message["name"] : "tool";
+            const ended = message.type === "tool_end";
+            const occurredAt = yield* DateTime.now;
+            const ordinal = yield* toolOrdinal(turn, toolId);
+            const itemId = TurnItemId.make(toolItemId(turn.providerTurnId, toolId));
+            const inputValue = message["input"];
+            const output = message["output"];
+            const item: OrchestrationV2TurnItem =
+              name === "bash"
+                ? {
+                    id: itemId,
+                    threadId: input.threadId,
+                    runId: turn.runId,
+                    nodeId: turn.nodeId,
+                    providerThreadId: turn.providerThreadId,
+                    providerTurnId: turn.providerTurnId,
+                    nativeItemRef: null,
+                    parentItemId: null,
+                    ordinal,
+                    status: ended ? "completed" : "running",
+                    title: "Command",
+                    startedAt: occurredAt,
+                    completedAt: ended ? occurredAt : null,
+                    updatedAt: occurredAt,
+                    type: "command_execution",
+                    input:
+                      typeof inputValue === "object" && inputValue !== null
+                        ? String((inputValue as { readonly command?: unknown }).command ?? "")
+                        : "",
+                    ...(ended && typeof output === "string" ? { output } : {}),
+                    ...(ended && typeof message["exitCode"] === "number"
+                      ? { exitCode: message["exitCode"] }
+                      : {}),
+                  }
+                : {
+                    id: itemId,
+                    threadId: input.threadId,
+                    runId: turn.runId,
+                    nodeId: turn.nodeId,
+                    providerThreadId: turn.providerThreadId,
+                    providerTurnId: turn.providerTurnId,
+                    nativeItemRef: null,
+                    parentItemId: null,
+                    ordinal,
+                    status: ended ? "completed" : "running",
+                    title: name,
+                    startedAt: occurredAt,
+                    completedAt: ended ? occurredAt : null,
+                    updatedAt: occurredAt,
+                    type: "dynamic_tool",
+                    toolName: name,
+                    input: inputValue,
+                    ...(ended && output !== undefined ? { output } : {}),
+                  };
+            yield* emit({ type: "turn_item.updated", driver: base.driver, turnItem: item });
+            return;
+          }
+          case "approval_request": {
+            const turn = yield* Ref.get(activeTurn);
+            if (turn === null) return;
+            const requestId = typeof message["id"] === "string" ? message["id"] : randomId();
+            const kind = message["kind"] === "command" ? "command" : "file-change";
+            const createdAt = yield* DateTime.now;
+            const request: OrchestrationV2RuntimeRequest = {
+              id: RuntimeRequestIdSchema.make(requestId),
+              nodeId: turn.nodeId,
+              providerTurnId: turn.providerTurnId,
+              nativeRequestRef: null,
+              kind,
+              status: "pending",
+              responseCapability: {
+                type: "live",
+                providerSessionId: input.providerSessionId,
+              },
+              createdAt,
+              resolvedAt: null,
+            };
+            const item: Extract<OrchestrationV2TurnItem, { readonly type: "approval_request" }> = {
+              id: TurnItemId.make(toolItemId(turn.providerTurnId, `approval-${requestId}`)),
+              threadId: input.threadId,
+              runId: turn.runId,
+              nodeId: turn.nodeId,
               providerThreadId: turn.providerThreadId,
               providerTurnId: turn.providerTurnId,
-              runOrdinal: turn.runOrdinal,
-              failureItemOrdinal: ordinal,
-              status: "failed",
-              failure,
-              threadDisposition: "reusable",
-            });
-          } else {
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal: yield* allocateOrdinal(turn),
+              status: "waiting",
+              title: typeof message["title"] === "string" ? message["title"] : null,
+              startedAt: createdAt,
+              completedAt: null,
+              updatedAt: createdAt,
+              type: "approval_request",
+              requestId: request.id,
+              requestKind: kind,
+              ...(typeof message["prompt"] === "string" ? { prompt: message["prompt"] } : {}),
+            };
+            yield* Ref.update(pendingApprovals, (current) =>
+              new Map(current).set(requestId, { request, item }),
+            );
             yield* emit({
-              type: "turn.terminal",
+              type: "runtime_request.updated",
               driver: base.driver,
+              runtimeRequest: request,
+            });
+            yield* emit({ type: "turn_item.updated", driver: base.driver, turnItem: item });
+            return;
+          }
+          case "history_reset": {
+            const acknowledged = yield* Ref.get(resetAck);
+            if (acknowledged !== null) {
+              yield* Deferred.succeed(acknowledged, message["ok"] === true);
+            }
+            return;
+          }
+          case "turn_end": {
+            const turn = yield* Ref.get(activeTurn);
+            if (turn === null) return;
+            const completedAt = yield* DateTime.now;
+            const status =
+              message["status"] === "failed"
+                ? "failed"
+                : message["status"] === "cancelled"
+                  ? "cancelled"
+                  : "completed";
+            const providerTurn: OrchestrationV2ProviderTurn = {
+              id: turn.providerTurnId,
               providerThreadId: turn.providerThreadId,
-              providerTurnId: turn.providerTurnId,
-              runOrdinal: turn.runOrdinal,
+              nodeId: turn.nodeId,
+              runAttemptId: null,
+              nativeTurnRef: null,
+              ordinal: turn.providerTurnOrdinal,
               status,
-              failure: null,
-              threadDisposition: "reusable",
-            });
+              startedAt: turn.startedAt,
+              completedAt,
+            };
+            yield* emit({ type: "provider_turn.updated", driver: base.driver, providerTurn });
+            if (status === "failed") {
+              const failure = makeProviderFailure({
+                message:
+                  typeof message["error"] === "string"
+                    ? message["error"]
+                    : "The cloud turn failed.",
+                class: "provider_error",
+                retryable: true,
+              });
+              const ordinal = yield* allocateOrdinal(turn);
+              yield* emit({
+                type: "turn.terminal",
+                driver: base.driver,
+                providerThreadId: turn.providerThreadId,
+                providerTurnId: turn.providerTurnId,
+                runOrdinal: turn.runOrdinal,
+                failureItemOrdinal: ordinal,
+                status: "failed",
+                failure,
+                threadDisposition: "reusable",
+              });
+            } else {
+              yield* emit({
+                type: "turn.terminal",
+                driver: base.driver,
+                providerThreadId: turn.providerThreadId,
+                providerTurnId: turn.providerTurnId,
+                runOrdinal: turn.runOrdinal,
+                status,
+                failure: null,
+                threadDisposition: "reusable",
+              });
+            }
+            yield* Ref.set(activeTurn, null);
+            yield* noteTurnEnded;
+            yield* cloudThreads.endTurn(input.threadId);
+            return;
           }
-          yield* Ref.set(activeTurn, null);
-          yield* noteTurnEnded;
-          yield* cloudThreads.endTurn(input.threadId);
-          return;
+          case "process_exit": {
+            yield* Ref.set(connection, null);
+            // The bridge exits when the controlling connection drops; the sandbox daemon and its
+            // turn keep running. A live turn reattaches and replays what it missed.
+            if ((yield* Ref.get(closed)) === false && (yield* Ref.get(activeTurn)) !== null) {
+              yield* Effect.forkDetach(reconnectHost());
+            }
+            return;
+          }
+          default:
+            return;
         }
-        case "process_exit": {
-          yield* failActiveTurn("The sandbox thread host exited before the turn finished.");
-          yield* Ref.set(connection, null);
-          return;
-        }
-        default:
-          return;
-      }
-    });
+      },
+    );
 
-    const ensureConnection = Effect.fn("CloudThreadRuntime.ensureConnection")(function* () {
+    const ensureConnection = Effect.fn("CloudThreadRuntime.ensureConnection")(function* (
+      since: number | "latest" = "latest",
+    ) {
       const existing = yield* Ref.get(connection);
       if (existing !== null) {
         if (yield* Ref.get(resetHistoryOnConnect)) {
@@ -696,7 +760,7 @@ const make = Effect.gen(function* () {
         }
         return existing;
       }
-      const opened = yield* cloudThreads.openHost(input.threadId).pipe(
+      const opened = yield* cloudThreads.openHost(input.threadId, { since }).pipe(
         Effect.mapError(
           (error) =>
             new ProviderAdapter.ProviderAdapterProtocolError({
@@ -731,6 +795,88 @@ const make = Effect.gen(function* () {
       }
       return opened;
     });
+
+    const reconnectHost: () => Effect.Effect<void> = Effect.fn("CloudThreadRuntime.reconnectHost")(
+      function* () {
+        if ((yield* Ref.get(closed)) || (yield* Ref.get(reconnecting))) return;
+        yield* Ref.set(reconnecting, true);
+        yield* Effect.gen(function* () {
+          const previous = yield* Ref.get(connection);
+          if (previous !== null) {
+            yield* previous.close.pipe(Effect.ignore);
+            yield* Ref.set(connection, null);
+          }
+          for (let attempt = 0; attempt < 5; attempt += 1) {
+            const opened = yield* cloudThreads
+              .openHost(input.threadId, { since: 0 })
+              .pipe(Effect.result);
+            if (opened._tag === "Success") {
+              yield* Ref.set(connection, opened.success);
+              yield* Effect.forkDetach(
+                opened.success.messages.pipe(
+                  Stream.runForEach((message) => handleHostMessage(opened.success, message)),
+                  Effect.catchCause((cause) =>
+                    Effect.logWarning("Cloud thread host replay stopped", {
+                      threadId: input.threadId,
+                      cause,
+                    }),
+                  ),
+                ),
+              );
+              return;
+            }
+            const detail = opened.failure.detail;
+            if (opened.failure.statusCode === 404 || /deleted|lost|not found/i.test(detail)) {
+              yield* failActiveTurn(`The cloud sandbox is gone: ${detail}`);
+              return;
+            }
+            yield* Effect.sleep(`${Math.min(5_000, 250 * 2 ** attempt)} millis`);
+          }
+          yield* failActiveTurn(
+            "The cloud sandbox could not be reached after its connection dropped. The turn may have stopped.",
+          );
+        }).pipe(Effect.ensuring(Ref.set(reconnecting, false)));
+      },
+    );
+
+    if (input.resumeTurn !== undefined) {
+      const resume = input.resumeTurn;
+      yield* cloudThreads.beginTurn(input.threadId);
+      yield* Ref.set(activeTurn, {
+        providerTurnId: resume.providerTurnId,
+        runId: resume.runId,
+        nodeId: resume.nodeId,
+        providerThreadId: resume.providerThreadId,
+        providerTurnOrdinal: resume.providerTurnOrdinal,
+        runOrdinal: resume.runOrdinal,
+        startedAt: resume.startedAt,
+        text: "",
+        toolOrdinals: new Map(),
+        nextOrdinal: resume.nextItemOrdinal,
+      });
+      const opened = yield* ensureConnection(0).pipe(Effect.result);
+      if (opened._tag === "Failure") {
+        const cloudError =
+          typeof opened.failure.cause === "object" && opened.failure.cause !== null
+            ? (opened.failure.cause as { readonly statusCode?: unknown })
+            : undefined;
+        const detail = opened.failure.message;
+        if (cloudError?.statusCode === 404 || /deleted|lost|not found/i.test(detail)) {
+          yield* failActiveTurn(`The cloud sandbox is gone: ${detail}`);
+        } else {
+          return yield* opened.failure;
+        }
+      } else if (
+        opened.success.activeRunId !== String(resume.runId) &&
+        opened.success.latestEventType !== "turn_end"
+      ) {
+        yield* opened.success.close.pipe(Effect.ignore);
+        yield* Ref.set(connection, null);
+        yield* failActiveTurn(
+          "The sandbox host restarted before the turn finished, so its in-flight work was lost.",
+        );
+      }
+    }
 
     const runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime = {
       instanceId: input.modelSelection.instanceId,

@@ -252,6 +252,8 @@ export const CloudSandboxState = Schema.Struct({
   canSleep: Schema.Boolean,
   canWake: Schema.Boolean,
   canDelete: Schema.Boolean,
+  /** A lost sandbox keeps its thread; recreating it clones the thread's branch again. */
+  canRecreate: Schema.Boolean,
   /** Why sleep is unavailable even though the sandbox exists. */
   sleepDisabledReason: Schema.optionalKey(CloudSandboxSleepDisabledReason),
   lastError: Schema.optionalKey(Schema.String),

@@ -1,12 +1,17 @@
 import {
   ModelSelection,
+  NodeId,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderSessionId,
+  ProviderThreadId,
+  ProviderTurnId,
+  RunId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
+import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -30,6 +35,10 @@ const instanceId = ProviderInstanceId.make("claudeAgent");
 const driver = ProviderDriverKind.make("claudeAgent");
 const modelSelection: ModelSelection = { instanceId, model: "claude-sonnet-4-5" };
 const now = "2026-11-24T00:00:00.000Z";
+const resumeRunId = RunId.make("run-resume");
+const resumeProviderTurnId = ProviderTurnId.make("turn-resume");
+const resumeProviderThreadId = ProviderThreadId.make("provider-thread-resume");
+const resumeNodeId = NodeId.make("node-resume");
 
 const record: CloudThreadStore.CloudThreadRecord = {
   threadId,
@@ -137,9 +146,14 @@ describe("cloud thread runtime", () => {
             messages: Stream.fromQueue(outbound),
             send: (message) => Effect.sync(() => sent.push(message)),
             close: Effect.void,
+            activeRunId: null,
+            latestEventType: null,
           }),
         deleteForThread: () => Effect.void,
         getCloudSandboxState: () => Effect.succeedNone,
+        verifyCloudSandbox: () => Effect.succeedNone,
+        markCloudSandboxLost: () => Effect.void,
+        recreateCloudSandbox: () => Effect.die("unused"),
         subscribeCloudSandbox: () => Stream.empty,
         sleepCloudSandbox: () => Effect.die("unused"),
         wakeCloudSandbox: () => Effect.die("unused"),
@@ -288,9 +302,14 @@ describe("cloud thread runtime", () => {
             messages: Stream.fromQueue(outbound),
             send: () => Effect.void,
             close: Effect.void,
+            activeRunId: null,
+            latestEventType: null,
           }),
         deleteForThread: () => Effect.void,
         getCloudSandboxState: () => Effect.succeedNone,
+        verifyCloudSandbox: () => Effect.succeedNone,
+        markCloudSandboxLost: () => Effect.void,
+        recreateCloudSandbox: () => Effect.die("unused"),
         subscribeCloudSandbox: () => Stream.empty,
         sleepCloudSandbox: () => Effect.die("unused"),
         wakeCloudSandbox: () => Effect.die("unused"),
@@ -370,9 +389,14 @@ describe("cloud thread runtime", () => {
             messages: Stream.fromQueue(outbound),
             send: (message) => Effect.sync(() => sent.push(message)),
             close: Effect.void,
+            activeRunId: null,
+            latestEventType: null,
           }),
         deleteForThread: () => Effect.void,
         getCloudSandboxState: () => Effect.succeedNone,
+        verifyCloudSandbox: () => Effect.succeedNone,
+        markCloudSandboxLost: () => Effect.void,
+        recreateCloudSandbox: () => Effect.die("unused"),
         subscribeCloudSandbox: () => Stream.empty,
         sleepCloudSandbox: () => Effect.die("unused"),
         wakeCloudSandbox: () => Effect.die("unused"),
@@ -457,6 +481,95 @@ describe("cloud thread runtime", () => {
     return result;
   });
 
+  it.effect("reattaches a running cloud turn and replays its missed events", () => {
+    const result = Effect.gen(function* () {
+      const outbound = yield* Queue.unbounded<CloudThreads.CloudHostMessage>();
+      const begins = yield* Ref.make(0);
+      const ends = yield* Ref.make(0);
+      const sent: Array<unknown> = [];
+      const cloud = CloudThreads.CloudThreads.of({
+        prepare: () => Effect.die("unused"),
+        getSandbox: () => Effect.succeedSome(sandbox),
+        getRecord: () => Effect.succeedSome(record),
+        forWorkspace: () => Effect.succeedNone,
+        exec: () => Effect.die("unused"),
+        writeAttachment: () => Effect.succeed(false),
+        openHost: () =>
+          Effect.succeed({
+            sandbox,
+            messages: Stream.fromQueue(outbound),
+            send: (message) => Effect.sync(() => sent.push(message)),
+            close: Effect.void,
+            activeRunId: String(resumeRunId),
+            latestEventType: "turn_started",
+          }),
+        deleteForThread: () => Effect.void,
+        getCloudSandboxState: () => Effect.succeedNone,
+        subscribeCloudSandbox: () => Stream.empty,
+        sleepCloudSandbox: () => Effect.die("unused"),
+        wakeCloudSandbox: () => Effect.die("unused"),
+        previewCloudSandboxDelete: () => Effect.die("unused"),
+        deleteCloudSandbox: () => Effect.die("unused"),
+        verifyCloudSandbox: () => Effect.succeedNone,
+        markCloudSandboxLost: () => Effect.void,
+        recreateCloudSandbox: () => Effect.die("unused"),
+        beginTurn: () => Ref.update(begins, (count) => count + 1),
+        endTurn: () => Ref.update(ends, (count) => count + 1),
+        holdPreview: () => Effect.void,
+        releasePreview: () => Effect.void,
+        sweepIdle: Effect.succeed(0),
+      });
+      return yield* Effect.gen(function* () {
+        const runtimeService = yield* CloudThreadRuntime.CloudThreadRuntime;
+        const runtime = yield* runtimeService.openSession(
+          {
+            ...input,
+            resumeTurn: {
+              runId: resumeRunId,
+              runOrdinal: 1,
+              providerTurnId: resumeProviderTurnId,
+              providerTurnOrdinal: 1,
+              providerThreadId: resumeProviderThreadId,
+              nodeId: resumeNodeId,
+              startedAt: yield* DateTime.now,
+              nextItemOrdinal: 5,
+            },
+          },
+          baseAdapter,
+        );
+        expect(yield* Ref.get(begins)).toBe(1);
+        yield* Queue.offer(outbound, {
+          type: "text",
+          runId: String(resumeRunId),
+          seq: 7,
+          text: "Replayed after restart.",
+        });
+        yield* Queue.offer(outbound, {
+          type: "turn_end",
+          runId: String(resumeRunId),
+          seq: 8,
+          status: "completed",
+        });
+        const collected = yield* runtime.events.pipe(
+          Stream.takeUntil((event) => event.type === "turn.terminal"),
+          Stream.runCollect,
+        );
+        const eventList = [...collected];
+        const message = eventList.find((event) => event.type === "message.updated");
+        expect(message?.type).toBe("message.updated");
+        if (message?.type === "message.updated") {
+          expect(message.message.id).toBe(`cloud-message-${resumeProviderTurnId}-7`);
+          expect(message.message.text).toBe("Replayed after restart.");
+        }
+        const terminal = eventList.at(-1);
+        expect(terminal?.type).toBe("turn.terminal");
+        expect(sent.some((value) => (value as { type?: string }).type === "turn")).toBe(false);
+        expect(yield* Ref.get(ends)).toBe(1);
+      }).pipe(Effect.provide(testLayer(cloud)));
+    });
+    return result;
+  });
+
   it.effect("fails a rollback when the host cannot persist the reset", () => {
     const result = Effect.gen(function* () {
       const outbound = yield* Queue.unbounded<CloudThreads.CloudHostMessage>();
@@ -506,9 +619,14 @@ describe("cloud thread runtime", () => {
                 return Effect.void;
               }),
             close: Effect.void,
+            activeRunId: null,
+            latestEventType: null,
           }),
         deleteForThread: () => Effect.void,
         getCloudSandboxState: () => Effect.succeedNone,
+        verifyCloudSandbox: () => Effect.succeedNone,
+        markCloudSandboxLost: () => Effect.void,
+        recreateCloudSandbox: () => Effect.die("unused"),
         subscribeCloudSandbox: () => Stream.empty,
         sleepCloudSandbox: () => Effect.die("unused"),
         wakeCloudSandbox: () => Effect.die("unused"),

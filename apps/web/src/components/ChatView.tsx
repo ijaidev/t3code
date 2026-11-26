@@ -3623,6 +3623,7 @@ export default function ChatView(props: ChatViewProps) {
               providerStatusDismissalKey={providerStatusDismissalKey}
               onOpenProviderSetup={openProviderSetupStable}
               threadId={activeThread.id}
+              cloudThread={activeThread.cloudWorkspace != null}
               threadError={timelineThreadError}
               threadErrorClass={
                 threadErrorIsServerRuntimeError ? (serverRuntime?.lastErrorClass ?? null) : null

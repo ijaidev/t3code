@@ -64,6 +64,9 @@ export function useCloudSandboxMenu(props: {
   const deleteSandbox = useAtomCommand(serverEnvironment.deleteCloudSandbox, {
     reportFailure: false,
   });
+  const recreateSandbox = useAtomCommand(serverEnvironment.recreateCloudSandbox, {
+    reportFailure: false,
+  });
 
   if (!AsyncResult.isSuccess(state)) return { subtitle: null, menu: null };
   const sandbox = state.value;
@@ -190,6 +193,32 @@ export function useCloudSandboxMenu(props: {
       destructive: true,
       disabled: !canOperate,
       onPress: () => void requestDelete(),
+    });
+  }
+  if (sandbox.canRecreate) {
+    items.push({
+      id: "cloud-sandbox-recreate",
+      title: gt("Recreate sandbox"),
+      subtitle: gt("Unpushed work is gone; the transcript stays."),
+      icon: "cloud",
+      disabled: !canOperate,
+      onPress: () => {
+        Dialog.confirm({
+          title: gt("Recreate this cloud sandbox?"),
+          message: gt(
+            "This clones the thread's branch into a new sandbox. Unpushed work from the lost sandbox is gone.",
+          ),
+          confirmText: gt("Recreate sandbox"),
+          onConfirm: () => {
+            void recreateSandbox({
+              environmentId: props.environmentId,
+              input: { threadId: props.threadId },
+            }).then((result) => {
+              if (result._tag === "Failure") reportFailure(result.cause);
+            });
+          },
+        });
+      },
     });
   }
   if (items.length === 1 && sandbox.status !== "running" && sandbox.status !== "sleeping") {

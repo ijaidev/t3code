@@ -97,13 +97,18 @@ export function ThreadCloudSandbox(props: {
   const deleteSandbox = useAtomCommand(serverEnvironment.deleteCloudSandbox, {
     reportFailure: false,
   });
+  const recreateSandbox = useAtomCommand(serverEnvironment.recreateCloudSandbox, {
+    reportFailure: false,
+  });
   const [preview, setPreview] = useState<CloudSandboxDeletePreview | null>(null);
+  const [recreating, setRecreating] = useState(false);
   const [busy, setBusy] = useState(false);
 
   if (!AsyncResult.isSuccess(state)) return null;
 
   const sandbox = state.value;
   const showDelete = sandbox.canDelete;
+  const showRecreate = sandbox.canRecreate;
   const sleepUnavailableOnProvider =
     sandbox.sleepDisabledReason === "provider-no-sleep" ||
     sandbox.sleepDisabledReason === "provider-unavailable";
@@ -150,6 +155,20 @@ export function ThreadCloudSandbox(props: {
     setPreview(null);
   };
 
+  const confirmRecreate = async () => {
+    setBusy(true);
+    const result = await recreateSandbox({
+      environmentId: props.environmentId,
+      input: { threadId: props.threadId },
+    });
+    setBusy(false);
+    if (result._tag === "Failure") {
+      reportFailure(result.cause);
+      return;
+    }
+    setRecreating(false);
+  };
+
   const detail = [
     sandbox.size?.label ?? null,
     sandbox.region?.label ?? null,
@@ -181,11 +200,29 @@ export function ThreadCloudSandbox(props: {
               {messages(SLEEP_REASONS[sandbox.sleepDisabledReason])}
             </div>
           ) : null}
+          {sandbox.status === "lost" ? (
+            <div className="text-muted-foreground">
+              {gt(
+                "This sandbox was deleted outside T3 Code. Unpushed work is gone; the transcript is still here.",
+              )}
+            </div>
+          ) : null}
           {sandbox.lastError !== undefined ? (
             <div className="text-destructive">{sandbox.lastError}</div>
           ) : null}
-          {showSleep || showWake || showDelete ? (
+          {showSleep || showWake || showDelete || showRecreate ? (
             <div className="flex items-center gap-1 pt-0.5">
+              {showRecreate ? (
+                <Button
+                  size="xs"
+                  variant="outline"
+                  disabled={!canOperate || busy}
+                  onClick={() => setRecreating(true)}
+                >
+                  <CloudIcon className="size-3" aria-hidden />
+                  {gt("Recreate sandbox")}
+                </Button>
+              ) : null}
               {showSleep ? (
                 <Button
                   size="xs"
@@ -261,6 +298,30 @@ export function ThreadCloudSandbox(props: {
               <Button variant="destructive" disabled={busy} onClick={() => void confirmDelete()}>
                 {busy ? <Spinner className="size-3.5" /> : null}
                 {gt("Delete sandbox")}
+              </Button>
+            </AlertDialogFooter>
+          </AlertDialogPopup>
+        </AlertDialog>
+      ) : null}
+
+      {recreating ? (
+        <AlertDialog open onOpenChange={(open) => !open && !busy && setRecreating(false)}>
+          <AlertDialogPopup>
+            <AlertDialogHeader>
+              <AlertDialogTitle>{gt("Recreate this cloud sandbox?")}</AlertDialogTitle>
+              <AlertDialogDescription>
+                {gt(
+                  "This clones the thread's branch into a new sandbox. Unpushed work from the lost sandbox is gone.",
+                )}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogClose render={<Button variant="outline" />} disabled={busy}>
+                {gt("Cancel")}
+              </AlertDialogClose>
+              <Button disabled={busy} onClick={() => void confirmRecreate()}>
+                {busy ? <Spinner className="size-3.5" /> : null}
+                {gt("Recreate sandbox")}
               </Button>
             </AlertDialogFooter>
           </AlertDialogPopup>

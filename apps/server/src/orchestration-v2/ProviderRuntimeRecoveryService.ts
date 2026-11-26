@@ -5,6 +5,7 @@ import {
   type OrchestrationV2DomainEvent,
   type ProviderThreadId,
   type RunAttemptId,
+  type RunId,
   type OrchestrationV2RestartCancelledBackgroundWork,
   type OrchestrationV2Subagent,
   type OrchestrationV2ThreadProjection,
@@ -75,6 +76,36 @@ export interface ProviderRuntimeReconciliationSummary {
   readonly closedRequests: number;
   readonly retiredEffects: number;
   readonly requeuedEffects: number;
+}
+
+/** A cloud turn whose sandbox host kept running while this server was offline. */
+function resumableCloudRun(
+  projection: Pick<
+    ProjectionStore.ProjectionRuntimeRecoveryState,
+    "thread" | "runs" | "providerThreads" | "providerTurns"
+  >,
+): OrchestrationV2ThreadProjection["runs"][number] | undefined {
+  const thread = projection.thread;
+  if (
+    thread.cloudWorkspace == null ||
+    thread.deletedAt !== null ||
+    thread.archivedAt !== null ||
+    thread.settledOverride === "settled"
+  ) {
+    return undefined;
+  }
+  return projection.runs.find((run) => {
+    if (run.status !== "running" || run.activeAttemptId === null) return false;
+    const providerThread = projection.providerThreads.find(
+      (candidate) => candidate.id === run.providerThreadId,
+    );
+    if (providerThread === undefined || providerThread.providerSessionId === null) return false;
+    return projection.providerTurns.some(
+      (turn) =>
+        turn.runAttemptId === run.activeAttemptId &&
+        (turn.status === "running" || turn.status === "pending"),
+    );
+  });
 }
 
 export class ProviderRuntimeRecoveryService extends Context.Service<
@@ -179,6 +210,7 @@ export const make = Effect.gen(function* () {
   const eventSink = yield* EventSink.EventSinkV2;
   const ids = yield* IdAllocator.IdAllocatorV2;
   const outbox = yield* EffectOutbox.EffectOutboxV2;
+  const startupId = DateTime.formatIso(yield* DateTime.now);
   type RecoverySession = ProjectionStore.ProjectionRuntimeRecoveryState["providerSessions"][number];
   /** Shared sessions stop on their first recovered thread; later threads still decide wakes from pre-recovery liveness. */
   const sessionsLiveAtStart = (
@@ -260,6 +292,47 @@ export const make = Effect.gen(function* () {
       stoppedThisPass: ReadonlyMap<string, RecoverySession> = new Map(),
     ) {
       const now = yield* DateTime.now;
+      // The sandbox kept the turn and its event log while this server was offline. Leave the
+      // run, attempt, turn, session, and items alone so the resume can settle them once.
+      const cloudRun = resumableCloudRun(stored);
+      if (cloudRun !== undefined) {
+        const detail = "Server restarted during a cloud turn; its sandbox keeps running.";
+        const cloudEffectIds = yield* outbox
+          .cancelUnsettled({
+            threadId: stored.thread.id,
+            effectTypes: EffectOutbox.PROCESS_BOUND_EFFECT_TYPES,
+            reason: detail,
+          })
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new ProviderRuntimeRecoveryError({
+                  operation: "reconcile",
+                  threadId: stored.thread.id,
+                  cause: { detail, cause },
+                }),
+            ),
+          );
+        return {
+          terminalizedRuns: 0,
+          stoppedSessions: 0,
+          closedRequests: 0,
+          retiredEffects: cloudEffectIds.length,
+          cancelledEffectIds: cloudEffectIds,
+          resends: [],
+          cloudResumes:
+            trigger === "startup"
+              ? [
+                  {
+                    threadId: stored.thread.id,
+                    runId: cloudRun.id,
+                    commandId: CommandId.make(`command:cloud-resume:${cloudRun.id}:${startupId}`),
+                    effectId: `effect:cloud-resume:${cloudRun.id}:${startupId}`,
+                  },
+                ]
+              : [],
+        };
+      }
       const projection = yield* rewindUnacceptedRuns(stored);
       let runs = [] as Array<OrchestrationV2ThreadProjection["runs"][number]>;
       for (const run of nonterminalRuns(projection)) {
@@ -1087,6 +1160,7 @@ export const make = Effect.gen(function* () {
         retiredEffects,
         cancelledEffectIds,
         resends,
+        cloudResumes: [],
       };
     },
   );
@@ -1107,6 +1181,12 @@ export const make = Effect.gen(function* () {
     let closedRequests = 0;
     let retiredEffects = 0;
     const resends: Array<EffectOutbox.PendingOrchestrationEffectV2> = [];
+    const cloudResumes: Array<{
+      readonly threadId: ThreadId;
+      readonly runId: RunId;
+      readonly commandId: CommandId;
+      readonly effectId: string;
+    }> = [];
     const stoppedThisPass = new Map<string, RecoverySession>();
     const grouped = trigger === "shutdown" && threadIds.length > 1;
     const groupSize = grouped ? 32 : 1;
@@ -1137,6 +1217,7 @@ export const make = Effect.gen(function* () {
           }
           cancelledEffectIds.push(...result.cancelledEffectIds);
           resends.push(...result.resends);
+          cloudResumes.push(...result.cloudResumes);
           terminalizedRuns += result.terminalizedRuns;
           stoppedSessions += result.stoppedSessions;
           closedRequests += result.closedRequests;
@@ -1158,6 +1239,25 @@ export const make = Effect.gen(function* () {
         (cause) => new ProviderRuntimeRecoveryError({ operation: "drain-outbox", cause }),
       ),
     );
+    // Reattach cloud turns the sandbox kept running. A fresh startup id makes a later restart
+    // enqueue its own resume even though this effect already succeeded once.
+    if (cloudResumes.length > 0) {
+      yield* eventSink
+        .writeWithEffects({
+          events: [],
+          effects: cloudResumes.map((resume) => ({
+            id: resume.effectId,
+            commandId: resume.commandId,
+            threadId: resume.threadId,
+            request: { type: "cloud-thread.resume" as const, runId: resume.runId },
+          })),
+        })
+        .pipe(
+          Effect.mapError(
+            (cause) => new ProviderRuntimeRecoveryError({ operation: "reconcile", cause }),
+          ),
+        );
+    }
     // After the drain, which cancels every unsettled provider start. A crash before this write
     // leaves the run unstarted, so the next recovery sends it again.
     if (resends.length > 0) {
@@ -1199,6 +1299,8 @@ export const make = Effect.gen(function* () {
       (threadId) =>
         Effect.gen(function* () {
           const projection = yield* projections.getRuntimeRecoveryProjection(threadId);
+          // A cloud sandbox keeps its turn; its resume starts after the next server boots.
+          if (projection.thread.cloudWorkspace != null) return;
           if (
             !resolveProjectSettings(enabled, projection.thread.projectId).settings
               .continueThreadsAfterServerUpdate

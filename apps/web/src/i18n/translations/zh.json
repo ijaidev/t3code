@@ -3455,6 +3455,12 @@
     " 需要批准"
   ],
   "1b1131295f62c44c": "提供方进程已退出。请中断或重启子会话后再回应。",
+  "66d606fa31ccb153": "The sandbox could not be recreated",
+  "9c356d3604f7f010": "Cloud workspace lost",
+  "23bbe3d9843bcf61": "The sandbox was deleted outside T3 Code. Unpushed work is gone; the transcript is still here.",
+  "00245a015dec7ea6": "Recreate sandbox",
+  "d0a54b753e7c8ece": "Recreate this cloud sandbox?",
+  "352d3c38898fe8d5": "This clones the thread's branch into a new sandbox. Unpushed work from the lost sandbox is gone.",
   "da66023072c473d1": [
     "无法加载输出：",
     {
@@ -4224,6 +4230,7 @@
   "da46a132665c321a": "{count, plural, other {{count} 个未推送提交}}",
   "90b0898c65450ab5": "The sandbox request failed",
   "90fad0d810bdcec3": "已运行 {duration}",
+  "890956045715b07c": "This sandbox was deleted outside T3 Code. Unpushed work is gone; the transcript is still here.",
   "c1c5b60a6324a14e": "休眠",
   "f903e7f0ca23602c": "唤醒",
   "a913bdb90568014c": "删除沙盒",

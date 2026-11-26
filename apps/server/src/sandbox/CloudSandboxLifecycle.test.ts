@@ -117,7 +117,7 @@ const fakeDriver = (state: FakeCloud): SandboxProviderDriver => ({
       if (entered !== null) yield* Deferred.succeed(entered, undefined);
       const gate = state.hostStartGate;
       if (gate !== null) yield* Deferred.await(gate);
-      input.onStdout(`${JSON.stringify({ type: "ready", protocolVersion: "1", pid: 1 })}\n`);
+      input.onStdout(`${JSON.stringify({ type: "ready", protocolVersion: "2", pid: 1 })}\n`);
       return {
         pid: 1,
         sendStdin: (data: string) =>

@@ -253,6 +253,8 @@ export interface ProviderSessionManagerV2Shape {
     readonly resumeFromSession?: OrchestrationV2ProviderSession;
     readonly initialNativeThreadId?: string;
     readonly initialProviderItemIdentityVersion?: 2;
+    /** Reattaches a cloud turn that kept running in its sandbox while the server restarted. */
+    readonly resumeCloudTurn?: CloudThreadRuntime.CloudThreadRuntimeResumeTurn;
   }) => Effect.Effect<
     ProviderAdapter.ProviderAdapterV2SessionRuntime,
     ProviderSessionManagerV2Error
@@ -318,6 +320,14 @@ export interface ProviderSessionManagerV2Shape {
   readonly subscribePromptSuggestion: (
     threadId: ThreadId,
   ) => Stream.Stream<OrchestrationV2PromptSuggestion>;
+  /**
+   * Reopens the provider session for a cloud turn that survived a server restart and
+   * reattaches it to the sandbox host so its remaining events reach the transcript.
+   */
+  readonly resumeCloudTurn: (input: {
+    readonly threadId: ThreadId;
+    readonly runId: RunId;
+  }) => Effect.Effect<void, ProviderSessionManagerV2Error>;
 }
 
 export class ProviderSessionManagerV2 extends Context.Service<
@@ -877,6 +887,11 @@ export const layerWithOptions = (
 
         const events: Array<OrchestrationV2DomainEvent> = [];
         for (const threadId of releasedThreadIds(input)) {
+          // A cloud turn outlives this server; its sandbox host still holds the request.
+          const thread = yield* projectionStore
+            .getThread(threadId)
+            .pipe(Effect.orElseSucceed(() => null));
+          if (thread?.cloudWorkspace != null) continue;
           const projection = yield* projectionStore.getThreadRecords(
             threadId,
             ["runtimeRequests"],
@@ -3209,7 +3224,7 @@ export const layerWithOptions = (
         ),
       );
 
-      return ProviderSessionManagerV2.of({
+      const service = {
         shutdown,
         open: (input) =>
           sessionOpen.withLock(
@@ -3296,6 +3311,9 @@ export const layerWithOptions = (
                   : {
                       initialProviderItemIdentityVersion: input.initialProviderItemIdentityVersion,
                     }),
+                ...(input.resumeCloudTurn === undefined
+                  ? {}
+                  : { resumeCloudTurn: input.resumeCloudTurn }),
               };
               const openProviderSession = Effect.gen(function* () {
                 if (
@@ -3315,6 +3333,9 @@ export const layerWithOptions = (
                       modelSelection: input.modelSelection,
                       runtimePolicy: input.runtimePolicy,
                       environment,
+                      ...(input.resumeCloudTurn === undefined
+                        ? {}
+                        : { resumeTurn: input.resumeCloudTurn }),
                     },
                     adapter,
                   );
@@ -3413,6 +3434,25 @@ export const layerWithOptions = (
                   ).pipe(logReleaseFailure(input.providerSessionId)),
                 ),
               );
+              if (input.resumeCloudTurn !== undefined) {
+                // The turn is already running in its sandbox; keep the reopened session busy until
+                // its replayed terminal settles, or the idle timer would close it mid-turn.
+                yield* markBusy(
+                  input.providerSessionId,
+                  busyTurnKey(
+                    input.resumeCloudTurn.providerThreadId,
+                    input.resumeCloudTurn.runOrdinal,
+                  ),
+                  runtime,
+                ).pipe(
+                  Effect.catchCause((cause) =>
+                    Effect.logWarning("orchestration-v2.driver-session.activity-failed", {
+                      providerSessionId: input.providerSessionId,
+                      cause,
+                    }),
+                  ),
+                );
+              }
               yield* startEventPump(entry, sessionClosed);
               yield* scheduleIdleRelease(input.providerSessionId);
               return exposedRuntime;
@@ -3734,7 +3774,71 @@ export const layerWithOptions = (
             ),
             Stream.changes,
           ),
-      } satisfies ProviderSessionManagerV2Shape);
+      } satisfies Omit<ProviderSessionManagerV2Shape, "resumeCloudTurn">;
+      return ProviderSessionManagerV2.of({
+        ...service,
+        resumeCloudTurn: Effect.fn("ProviderSessionManager.resumeCloudTurn")(function* (input) {
+          const projection = yield* projectionStore
+            .getRuntimeRecoveryProjection(input.threadId)
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderSessionLookupError({
+                    providerSessionId: ProviderSessionId.make("cloud-resume"),
+                    cause,
+                  }),
+              ),
+            );
+          if (projection.thread.cloudWorkspace == null) return;
+          const run = projection.runs.find((candidate) => candidate.id === input.runId);
+          if (run === undefined || run.status !== "running") return;
+          const providerThread = projection.providerThreads.find(
+            (candidate) => candidate.id === run.providerThreadId,
+          );
+          const providerTurn =
+            projection.providerTurns.find(
+              (candidate) =>
+                candidate.runAttemptId === run.activeAttemptId && candidate.status === "running",
+            ) ??
+            projection.providerTurns.find(
+              (candidate) =>
+                candidate.runAttemptId === run.activeAttemptId && candidate.status === "pending",
+            );
+          if (
+            providerThread === undefined ||
+            providerThread.providerSessionId === null ||
+            providerTurn === undefined
+          ) {
+            return;
+          }
+          const nextItemOrdinal =
+            projection.turnItems.reduce(
+              (highest, item) =>
+                item.runId === run.id ? Math.max(highest, item.ordinal) : highest,
+              0,
+            ) + 1;
+          yield* service.open({
+            threadId: input.threadId,
+            providerSessionId: providerThread.providerSessionId,
+            modelSelection: run.modelSelection,
+            runtimePolicy: {
+              runtimeMode: projection.thread.runtimeMode,
+              interactionMode: projection.thread.interactionMode,
+              cwd: null,
+            },
+            resumeCloudTurn: {
+              runId: run.id,
+              runOrdinal: run.ordinal,
+              providerTurnId: providerTurn.id,
+              providerTurnOrdinal: providerTurn.ordinal,
+              providerThreadId: providerThread.id,
+              nodeId: providerTurn.nodeId,
+              startedAt: providerTurn.startedAt ?? run.startedAt ?? (yield* DateTime.now),
+              nextItemOrdinal,
+            },
+          });
+        }),
+      });
     }),
   );
 

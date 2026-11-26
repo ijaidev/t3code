@@ -26,6 +26,95 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderRuntimeRecovery from "./ProviderRuntimeRecoveryService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 
+it.effect("keeps a cloud turn running and enqueues one resume after a restart", () => {
+  const threadId = ThreadId.make("thread_cloud_resume");
+  const runId = RunId.make("run_cloud_resume");
+  const providerThreadId = ProviderThreadId.make("provider_thread_cloud_resume");
+  const providerTurnId = ProviderTurnId.make("provider_turn_cloud_resume");
+  const attemptId = RunAttemptId.make("attempt_cloud_resume");
+  const projection = {
+    thread: {
+      id: threadId,
+      cloudWorkspace: {
+        accountId: "e2b-work",
+        providerKind: "e2b",
+        workspacePath: "/home/t3/.t3/threads/thread_cloud_resume",
+      },
+      archivedAt: null,
+      deletedAt: null,
+      settledOverride: null,
+    },
+    runs: [
+      {
+        id: runId,
+        status: "running",
+        activeAttemptId: attemptId,
+        providerThreadId,
+        ordinal: 1,
+      },
+    ],
+    providerThreads: [
+      {
+        id: providerThreadId,
+        providerSessionId: ProviderSessionId.make("session_cloud_resume"),
+        status: "active",
+      },
+    ],
+    providerTurns: [
+      {
+        id: providerTurnId,
+        runAttemptId: attemptId,
+        providerThreadId,
+        status: "running",
+      },
+    ],
+    runtimeRequests: [],
+    providerSessions: [],
+    nodes: [],
+    messages: [],
+    turnItems: [],
+  } as unknown as OrchestrationV2ThreadProjection;
+  const commitCommand = vi.fn(() => Effect.die("a live cloud turn has nothing to cancel"));
+  const writeWithEffects = vi.fn(
+    (_input: {
+      readonly effects?: ReadonlyArray<{ readonly request?: { readonly type?: string } }>;
+    }) => Effect.succeed([]),
+  );
+  const layer = ProviderRuntimeRecovery.layer.pipe(
+    Layer.provide(ServerSettings.layerTest()),
+    Layer.provide(
+      Layer.mergeAll(
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getRecoveryThreadIds: () => Effect.succeed([threadId]),
+          getRuntimeRecoveryProjection: () => Effect.succeed(projection),
+        }),
+        Layer.mock(EventSink.EventSinkV2)({
+          commitCommand,
+          writeWithEffects,
+        }),
+        IdAllocator.layer,
+        Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({
+          runRecoveryOnce: Effect.succeed(false),
+        }),
+        Layer.mock(EffectOutbox.EffectOutboxV2)({
+          reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
+          cancelUnsettled: () => Effect.succeed([]),
+          signalCancellations: () => Effect.void,
+        }),
+      ),
+    ),
+  );
+  return Effect.gen(function* () {
+    const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
+    const summary = yield* recovery.reconcile("startup");
+    assert.equal(summary.terminalizedRuns, 0);
+    assert.equal(commitCommand.mock.calls.length, 0);
+    assert.equal(writeWithEffects.mock.calls.length, 1);
+    const written = writeWithEffects.mock.calls[0]?.[0];
+    assert.equal(written?.effects?.[0]?.request?.type, "cloud-thread.resume");
+  }).pipe(Effect.provide(layer));
+});
+
 it.effect("expires orphaned runtime requests before command readiness", () => {
   const threadId = ThreadId.make("thread_recovery_requests");
   let committedInput: Parameters<EventSink.EventSinkV2["Service"]["commitCommand"]>[0] | null =

@@ -1628,21 +1628,21 @@ export const layerWsRpc = (
         }
         return cloudThreads.value;
       });
-      const requireCloudSandbox = Effect.fn("ws.sandbox.requireCloudSandbox")(function* (
-        threadId: ThreadId,
-      ) {
-        const service = yield* requireCloudThreads();
-        const state = yield* service.getCloudSandboxState(threadId);
-        if (Option.isNone(state)) {
-          return yield* new SandboxError({
-            operation: "check-sandbox",
-            detail: "This thread has no cloud sandbox.",
-          });
-        }
-        return state.value;
-      });
       const cloudSandboxResult = (threadId: ThreadId) =>
-        requireCloudSandbox(threadId).pipe(Effect.map((state) => ({ state })));
+        requireCloudThreads().pipe(
+          Effect.flatMap((service) => service.verifyCloudSandbox(threadId)),
+          Effect.flatMap((state) =>
+            Option.isSome(state)
+              ? Effect.succeed({ state: state.value })
+              : Effect.fail(
+                  new SandboxError({
+                    operation: "check-sandbox",
+                    detail: "This thread has no cloud sandbox.",
+                  }),
+                ),
+          ),
+          Effect.catchTags({ CloudThreadError: (error) => toSandboxError(error) }),
+        );
       const toSandboxError = (error: CloudThreads.CloudThreadError) =>
         new SandboxError({
           operation:
@@ -1652,7 +1652,9 @@ export const layerWsRpc = (
                 ? "resume-sandbox"
                 : error.operation === "delete"
                   ? "delete-sandbox"
-                  : "check-sandbox",
+                  : error.operation === "recreate"
+                    ? "create-sandbox"
+                    : "check-sandbox",
           detail: error.detail,
         });
       const listSandboxCloudTargets = Effect.fn("ws.sandbox.listCloudTargets")(function* (
@@ -2918,6 +2920,38 @@ export const layerWsRpc = (
           requireCloudThreads().pipe(
             Effect.flatMap((service) => service.wakeCloudSandbox(input.threadId)),
             Effect.map((state) => ({ state })),
+            Effect.catchTags({ CloudThreadError: toSandboxError }),
+          ),
+        [WS_METHODS.sandboxRecreateCloudSandbox]: (input) =>
+          requireCloudThreads().pipe(
+            Effect.flatMap((service) =>
+              service.recreateCloudSandbox(input.threadId).pipe(
+                Effect.tap((_state) =>
+                  service.getRecord(input.threadId).pipe(
+                    Effect.flatMap((record) =>
+                      Option.isNone(record)
+                        ? Effect.void
+                        : threadManagement
+                            .dispatch({
+                              type: "thread.metadata.update",
+                              commandId: CommandId.make(
+                                `cloud-recreate:${input.threadId}:${record.value.updatedAt}`,
+                              ),
+                              threadId: input.threadId,
+                              cloudWorkspace: {
+                                accountId: record.value.accountId,
+                                providerKind: record.value.providerKind,
+                                workspacePath: record.value.workspacePath,
+                              },
+                            })
+                            .pipe(Effect.ignore),
+                    ),
+                    Effect.ignore,
+                  ),
+                ),
+                Effect.map((state) => ({ state })),
+              ),
+            ),
             Effect.catchTags({ CloudThreadError: toSandboxError }),
           ),
         [WS_METHODS.sandboxPreviewCloudSandboxDelete]: (input) =>
