@@ -433,18 +433,19 @@ const make = Effect.gen(function* () {
       const resolvedAt = yield* DateTime.now;
       const pending = yield* Ref.get(pendingApprovals);
       for (const pendingApproval of pending.values()) {
+        const cancelledRequest: OrchestrationV2RuntimeRequest = {
+          ...pendingApproval.request,
+          status: "cancelled",
+          responseCapability: {
+            type: "not_resumable",
+            reason: "The cloud sandbox stopped before this request was resolved.",
+          },
+          resolvedAt,
+        };
         yield* emit({
           type: "runtime_request.updated",
           driver: base.driver,
-          runtimeRequest: {
-            ...pendingApproval.request,
-            status: "cancelled",
-            responseCapability: {
-              type: "not_resumable",
-              reason: "The cloud sandbox stopped before this request was resolved.",
-            },
-            resolvedAt,
-          },
+          runtimeRequest: cancelledRequest,
         });
         yield* emit({
           type: "turn_item.updated",
@@ -455,6 +456,12 @@ const make = Effect.gen(function* () {
             completedAt: resolvedAt,
             updatedAt: resolvedAt,
           },
+        });
+        yield* Ref.update(resumedApprovals, (current) => {
+          const key = String(pendingApproval.request.id);
+          const existing = current.get(key);
+          if (existing === undefined) return current;
+          return new Map(current).set(key, { ...existing, request: cancelledRequest });
         });
       }
       yield* Ref.set(pendingApprovals, new Map());
@@ -905,6 +912,43 @@ const make = Effect.gen(function* () {
         toolOrdinals: new Map(),
         nextOrdinal: resume.nextItemOrdinal,
       });
+      // Hydrate persisted pending approvals before attach: a client may answer before the host
+      // re-emits them, and a failed attach must be able to cancel them with the turn.
+      const hydratedPending = new Map<
+        string,
+        {
+          readonly request: OrchestrationV2RuntimeRequest;
+          readonly item: Extract<OrchestrationV2TurnItem, { readonly type: "approval_request" }>;
+        }
+      >();
+      for (const approval of resume.approvals) {
+        if (approval.request.status !== "pending") continue;
+        const requestId = String(approval.request.id);
+        const requestKind = approval.request.kind === "command" ? "command" : "file-change";
+        hydratedPending.set(requestId, {
+          request: approval.request,
+          item: approval.item ?? {
+            id: TurnItemId.make(toolItemId(resume.providerTurnId, `approval-${requestId}`)),
+            threadId: input.threadId,
+            runId: resume.runId,
+            nodeId: resume.nodeId,
+            providerThreadId: resume.providerThreadId,
+            providerTurnId: resume.providerTurnId,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: resume.nextItemOrdinal,
+            status: "waiting",
+            title: null,
+            startedAt: approval.request.createdAt,
+            completedAt: null,
+            updatedAt: approval.request.createdAt,
+            type: "approval_request",
+            requestId: approval.request.id,
+            requestKind,
+          },
+        });
+      }
+      yield* Ref.set(pendingApprovals, hydratedPending);
       const opened = yield* ensureConnection(0).pipe(Effect.result);
       if (opened._tag === "Failure") {
         const cloudError =
@@ -950,20 +994,29 @@ const make = Effect.gen(function* () {
           if (approval.request.status !== "pending") continue;
           // The host moved past this request before the crash, but its resolution never landed.
           const resolvedAt = yield* DateTime.now;
+          const cancelledRequest: OrchestrationV2RuntimeRequest = {
+            ...approval.request,
+            status: "cancelled",
+            responseCapability: {
+              type: "not_resumable",
+              reason:
+                "The sandbox host already received this response before the server restarted.",
+            },
+            resolvedAt,
+          };
           yield* emit({
             type: "runtime_request.updated",
             driver: base.driver,
-            runtimeRequest: {
-              ...approval.request,
-              status: "cancelled",
-              responseCapability: {
-                type: "not_resumable",
-                reason:
-                  "The sandbox host already received this response before the server restarted.",
-              },
-              resolvedAt,
-            },
+            runtimeRequest: cancelledRequest,
           });
+          yield* Ref.update(pendingApprovals, (current) => {
+            const next = new Map(current);
+            next.delete(requestId);
+            return next;
+          });
+          yield* Ref.update(resumedApprovals, (current) =>
+            new Map(current).set(requestId, { ...approval, request: cancelledRequest }),
+          );
           if (approval.item !== null) {
             yield* emit({
               type: "turn_item.updated",
@@ -1154,6 +1207,12 @@ const make = Effect.gen(function* () {
             const next = new Map(current);
             next.delete(key);
             return next;
+          });
+          // A later host re-emission must send this accepted decision instead of reopening it.
+          yield* Ref.update(resumedApprovals, (current) => {
+            const existing = current.get(key);
+            if (existing === undefined) return current;
+            return new Map(current).set(key, { ...existing, request: resolved });
           });
           yield* emit({
             type: "runtime_request.updated",

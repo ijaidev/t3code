@@ -991,6 +991,289 @@ describe("cloud thread runtime", () => {
     return result;
   });
 
+  it.effect("keeps a response that arrives before the host re-emits its approval", () => {
+    const result = Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const requestId = "approval-early";
+      const request = approvalRequest(requestId, "pending", now);
+      const item = approvalItem(requestId, requestId, now);
+      const outbound = yield* Queue.unbounded<CloudThreads.CloudHostMessage>();
+      const sent: Array<unknown> = [];
+      const cloud = CloudThreads.CloudThreads.of({
+        prepare: () => Effect.die("unused"),
+        getSandbox: () => Effect.succeedSome(sandbox),
+        getRecord: () => Effect.succeedSome(record),
+        forWorkspace: () => Effect.succeedNone,
+        exec: () => Effect.die("unused"),
+        writeAttachment: () => Effect.succeed(false),
+        openHost: () =>
+          Effect.succeed({
+            sandbox,
+            messages: Stream.fromQueue(outbound),
+            send: (message) => Effect.sync(() => sent.push(message)),
+            close: Effect.void,
+            activeRunId: String(resumeRunId),
+            latestEventType: "turn_started",
+            latestRunId: String(resumeRunId),
+            pendingApprovalIds: [requestId],
+          }),
+        deleteForThread: () => Effect.void,
+        getCloudSandboxState: () => Effect.succeedNone,
+        subscribeCloudSandbox: () => Stream.empty,
+        sleepCloudSandbox: () => Effect.die("unused"),
+        wakeCloudSandbox: () => Effect.die("unused"),
+        previewCloudSandboxDelete: () => Effect.die("unused"),
+        deleteCloudSandbox: () => Effect.die("unused"),
+        verifyCloudSandbox: () => Effect.succeedNone,
+        markCloudSandboxLost: () => Effect.void,
+        recreateCloudSandbox: () => Effect.die("unused"),
+        beginTurn: () => Effect.void,
+        endTurn: () => Effect.void,
+        holdPreview: () => Effect.void,
+        releasePreview: () => Effect.void,
+        sweepIdle: Effect.succeed(0),
+      });
+      return yield* Effect.gen(function* () {
+        const runtimeService = yield* CloudThreadRuntime.CloudThreadRuntime;
+        const runtime = yield* runtimeService.openSession(
+          {
+            ...input,
+            resumeTurn: {
+              runId: resumeRunId,
+              runOrdinal: 1,
+              providerTurnId: resumeProviderTurnId,
+              providerTurnOrdinal: 1,
+              providerThreadId: resumeProviderThreadId,
+              nodeId: resumeNodeId,
+              startedAt: now,
+              nextItemOrdinal: 8,
+              approvals: [{ request, item }],
+            },
+          },
+          baseAdapter,
+        );
+        yield* runtime.respondToRuntimeRequest({
+          requestId: RuntimeRequestId.make(requestId),
+          decision: "accept",
+        });
+        expect(
+          sent.some(
+            (value) =>
+              (value as { type?: string; id?: string; decision?: string }).type ===
+                "approval_response" &&
+              (value as { id?: string }).id === requestId &&
+              (value as { decision?: string }).decision === "accept",
+          ),
+        ).toBe(true);
+
+        yield* Queue.offer(outbound, {
+          type: "approval_request",
+          runId: String(resumeRunId),
+          id: requestId,
+          kind: "command",
+          title: "Run command",
+          prompt: "pwd",
+        });
+        yield* Queue.offer(outbound, {
+          type: "turn_end",
+          runId: String(resumeRunId),
+          status: "completed",
+        });
+        const collected = yield* runtime.events.pipe(
+          Stream.takeUntil((event) => event.type === "turn.terminal"),
+          Stream.runCollect,
+        );
+        const events = [...collected];
+        expect(
+          events.some(
+            (event) =>
+              event.type === "runtime_request.updated" &&
+              event.runtimeRequest.id === requestId &&
+              event.runtimeRequest.status === "pending",
+          ),
+        ).toBe(false);
+        expect(
+          events.some(
+            (event) =>
+              event.type === "runtime_request.updated" &&
+              event.runtimeRequest.id === requestId &&
+              event.runtimeRequest.status === "resolved",
+          ),
+        ).toBe(true);
+        expect(
+          sent.filter(
+            (value) =>
+              (value as { type?: string; id?: string; decision?: string }).type ===
+                "approval_response" &&
+              (value as { id?: string }).id === requestId &&
+              (value as { decision?: string }).decision === "accept",
+          ).length,
+        ).toBeGreaterThanOrEqual(2);
+      }).pipe(Effect.provide(testLayer(cloud)));
+    });
+    return result;
+  });
+
+  it.effect("cancels a persisted pending approval when the sandbox is lost on resume", () => {
+    const result = Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const requestId = "approval-lost";
+      const request = approvalRequest(requestId, "pending", now);
+      const item = approvalItem(requestId, requestId, now);
+      const cloud = CloudThreads.CloudThreads.of({
+        prepare: () => Effect.die("unused"),
+        getSandbox: () => Effect.succeedSome(sandbox),
+        getRecord: () => Effect.succeedSome(record),
+        forWorkspace: () => Effect.succeedNone,
+        exec: () => Effect.die("unused"),
+        writeAttachment: () => Effect.succeed(false),
+        openHost: () =>
+          Effect.fail(
+            new CloudThreads.CloudThreadError({
+              operation: "start-host",
+              detail: "E2B could not find that sandbox. It may have expired or been deleted.",
+              statusCode: 404,
+            }),
+          ),
+        deleteForThread: () => Effect.void,
+        getCloudSandboxState: () => Effect.succeedNone,
+        subscribeCloudSandbox: () => Stream.empty,
+        sleepCloudSandbox: () => Effect.die("unused"),
+        wakeCloudSandbox: () => Effect.die("unused"),
+        previewCloudSandboxDelete: () => Effect.die("unused"),
+        deleteCloudSandbox: () => Effect.die("unused"),
+        verifyCloudSandbox: () => Effect.succeedNone,
+        markCloudSandboxLost: () => Effect.void,
+        recreateCloudSandbox: () => Effect.die("unused"),
+        beginTurn: () => Effect.void,
+        endTurn: () => Effect.void,
+        holdPreview: () => Effect.void,
+        releasePreview: () => Effect.void,
+        sweepIdle: Effect.succeed(0),
+      });
+      return yield* Effect.gen(function* () {
+        const runtimeService = yield* CloudThreadRuntime.CloudThreadRuntime;
+        const runtime = yield* runtimeService.openSession(
+          {
+            ...input,
+            resumeTurn: {
+              runId: resumeRunId,
+              runOrdinal: 1,
+              providerTurnId: resumeProviderTurnId,
+              providerTurnOrdinal: 1,
+              providerThreadId: resumeProviderThreadId,
+              nodeId: resumeNodeId,
+              startedAt: now,
+              nextItemOrdinal: 8,
+              approvals: [{ request, item }],
+            },
+          },
+          baseAdapter,
+        );
+        const collected = yield* runtime.events.pipe(
+          Stream.takeUntil((event) => event.type === "turn.terminal"),
+          Stream.runCollect,
+        );
+        const events = [...collected];
+        expect(
+          events.some(
+            (event) =>
+              event.type === "runtime_request.updated" &&
+              event.runtimeRequest.id === requestId &&
+              event.runtimeRequest.status === "cancelled",
+          ),
+        ).toBe(true);
+        expect(
+          events.some(
+            (event) =>
+              event.type === "turn_item.updated" &&
+              event.turnItem.type === "approval_request" &&
+              event.turnItem.requestId === requestId &&
+              event.turnItem.status === "cancelled",
+          ),
+        ).toBe(true);
+      }).pipe(Effect.provide(testLayer(cloud)));
+    });
+    return result;
+  });
+
+  it.effect("cancels a persisted pending approval when the host lost the turn", () => {
+    const result = Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const requestId = "approval-host-lost";
+      const request = approvalRequest(requestId, "pending", now);
+      const item = approvalItem(requestId, requestId, now);
+      const cloud = CloudThreads.CloudThreads.of({
+        prepare: () => Effect.die("unused"),
+        getSandbox: () => Effect.succeedSome(sandbox),
+        getRecord: () => Effect.succeedSome(record),
+        forWorkspace: () => Effect.succeedNone,
+        exec: () => Effect.die("unused"),
+        writeAttachment: () => Effect.succeed(false),
+        openHost: () =>
+          Effect.succeed({
+            sandbox,
+            messages: Stream.empty,
+            send: () => Effect.void,
+            close: Effect.void,
+            activeRunId: null,
+            latestEventType: "text",
+            latestRunId: String(resumeRunId),
+            pendingApprovalIds: [],
+          }),
+        deleteForThread: () => Effect.void,
+        getCloudSandboxState: () => Effect.succeedNone,
+        subscribeCloudSandbox: () => Stream.empty,
+        sleepCloudSandbox: () => Effect.die("unused"),
+        wakeCloudSandbox: () => Effect.die("unused"),
+        previewCloudSandboxDelete: () => Effect.die("unused"),
+        deleteCloudSandbox: () => Effect.die("unused"),
+        verifyCloudSandbox: () => Effect.succeedNone,
+        markCloudSandboxLost: () => Effect.void,
+        recreateCloudSandbox: () => Effect.die("unused"),
+        beginTurn: () => Effect.void,
+        endTurn: () => Effect.void,
+        holdPreview: () => Effect.void,
+        releasePreview: () => Effect.void,
+        sweepIdle: Effect.succeed(0),
+      });
+      return yield* Effect.gen(function* () {
+        const runtimeService = yield* CloudThreadRuntime.CloudThreadRuntime;
+        const runtime = yield* runtimeService.openSession(
+          {
+            ...input,
+            resumeTurn: {
+              runId: resumeRunId,
+              runOrdinal: 1,
+              providerTurnId: resumeProviderTurnId,
+              providerTurnOrdinal: 1,
+              providerThreadId: resumeProviderThreadId,
+              nodeId: resumeNodeId,
+              startedAt: now,
+              nextItemOrdinal: 8,
+              approvals: [{ request, item }],
+            },
+          },
+          baseAdapter,
+        );
+        const collected = yield* runtime.events.pipe(
+          Stream.takeUntil((event) => event.type === "turn.terminal"),
+          Stream.runCollect,
+        );
+        const events = [...collected];
+        expect(
+          events.some(
+            (event) =>
+              event.type === "runtime_request.updated" &&
+              event.runtimeRequest.id === requestId &&
+              event.runtimeRequest.status === "cancelled",
+          ),
+        ).toBe(true);
+      }).pipe(Effect.provide(testLayer(cloud)));
+    });
+    return result;
+  });
+
   it.effect("fails a rollback when the host cannot persist the reset", () => {
     const result = Effect.gen(function* () {
       const outbound = yield* Queue.unbounded<CloudThreads.CloudHostMessage>();
