@@ -18,7 +18,7 @@ import * as NodeHttp from "node:http";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { EnvironmentHttpApi, type RepositoryIdentity, ThreadId } from "@t3tools/contracts";
+import { EnvironmentHttpApi, type RepositoryIdentity } from "@t3tools/contracts";
 import * as FeatureFlags from "@t3tools/shared/FeatureFlags";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Cause from "effect/Cause";
@@ -108,6 +108,7 @@ import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as DeviceService from "./device/DeviceService.ts";
 import * as CloudThreadRuntime from "./sandbox/CloudThreadRuntime.ts";
 import * as CloudThreadStore from "./sandbox/CloudThreadStore.ts";
+import * as CloudSandboxPreviewBridge from "./sandbox/CloudSandboxPreviewBridge.ts";
 import * as CloudThreads from "./sandbox/CloudThreads.ts";
 import * as SandboxAccounts from "./sandbox/SandboxAccounts.ts";
 import * as SandboxLifecycle from "./sandbox/SandboxLifecycle.ts";
@@ -582,6 +583,11 @@ const layerCloudThreads = CloudThreads.layer.pipe(
   Layer.provide(CloudThreadStore.layer),
 );
 const layerCloudThreadRuntime = CloudThreadRuntime.layer.pipe(Layer.provide(layerCloudThreads));
+// Kept out of `layerSandbox` so CLI commands can build the sandbox layer without previews.
+const layerCloudSandboxPreviewBridge = CloudSandboxPreviewBridge.layer.pipe(
+  Layer.provide(layerCloudThreads),
+  Layer.provide(layerPreview),
+);
 const layerSandbox = Layer.merge(
   Layer.mergeAll(
     layerSandboxStorage,
@@ -603,24 +609,6 @@ const layerSandbox = Layer.merge(
         Effect.repeat(Schedule.spaced("30 seconds")),
         Effect.forkScoped,
       );
-      // A preview on a cloud thread holds its sandbox awake; the preview manager owns open tabs.
-      // CLIs build the sandbox layer without a preview manager, so this bridge is optional.
-      const previews = yield* Effect.serviceOption(PreviewManager.PreviewManager);
-      if (Option.isSome(previews)) {
-        const subscription = yield* previews.value.subscribeEvents;
-        yield* Stream.fromSubscription(subscription).pipe(
-          Stream.runForEach((event) => {
-            const threadId = ThreadId.make(event.threadId);
-            return event.type === "opened"
-              ? cloudThreads.holdPreview(threadId, event.tabId)
-              : event.type === "closed"
-                ? cloudThreads.releasePreview(threadId, event.tabId)
-                : Effect.void;
-          }),
-          Effect.ignore,
-          Effect.forkScoped,
-        );
-      }
     }),
   ).pipe(Layer.provide(layerSandboxLifecycle), Layer.provide(layerCloudThreads)),
 );
@@ -856,7 +844,15 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   Layer.provideMerge(layerSourceControlProviderRegistry),
   Layer.provideMerge(layerGit),
   Layer.provideMerge(layerVcs),
-  Layer.provideMerge(Layer.mergeAll(layerTerminal, layerPreview, layerDevice, layerSandbox)),
+  Layer.provideMerge(
+    Layer.mergeAll(
+      layerTerminal,
+      layerPreview,
+      layerDevice,
+      layerSandbox,
+      layerCloudSandboxPreviewBridge,
+    ),
+  ),
   Layer.provideMerge(layerPersistence),
   Layer.provideMerge(Layer.mergeAll(Keybindings.layer, UsageLimitSources.layer)),
   Layer.provideMerge(ProviderRegistry.layer),

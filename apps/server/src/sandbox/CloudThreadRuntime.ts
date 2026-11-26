@@ -695,84 +695,89 @@ const make = Effect.gen(function* () {
               "Cloud threads need Anthropic credentials. Set ANTHROPIC_API_KEY in this provider's environment, then retry.",
           });
         }
-        // A sleeping sandbox lost its host process; a new host starts after the wake.
-        const before = yield* cloudThreads.getCloudSandboxState(input.threadId);
-        if (Option.isSome(before) && before.value.status === "sleeping") {
-          const existing = yield* Ref.get(connection);
-          if (existing !== null) {
-            yield* existing.close;
-            yield* Ref.set(connection, null);
-          }
-        }
-        const host = yield* ensureConnection();
-        const startedAt = yield* DateTime.now;
-        const started = yield* Deferred.make<void>();
-        yield* Ref.set(waitingForTurnStart, started);
-        const providerTurnId = ProviderTurnId.make(randomId());
-        const providerThreadId = turnInput.providerThread.id;
-        yield* Ref.set(activeTurn, {
-          providerTurnId,
-          runId: turnInput.runId,
-          nodeId: turnInput.rootNodeId,
-          providerThreadId,
-          providerTurnOrdinal: turnInput.providerTurnOrdinal,
-          runOrdinal: turnInput.runOrdinal,
-          startedAt,
-          text: "",
-          toolOrdinals: new Map(),
-          nextOrdinal: 0,
-        });
-        yield* emit({
-          type: "provider_turn.updated",
-          driver: base.driver,
-          providerTurn: {
-            id: providerTurnId,
-            providerThreadId,
-            nodeId: turnInput.rootNodeId,
-            runAttemptId: turnInput.attemptId,
-            nativeTurnRef: null,
-            ordinal: turnInput.providerTurnOrdinal,
-            status: "running",
-            startedAt,
-            completedAt: null,
-          },
-        });
-        const attachments = yield* stageAttachments(threadRecord, turnInput.message.attachments);
+        // Hold the sandbox before host start and attachment staging: either can outlive the
+        // idle timeout, and an active turn must prevent sleep from the first moment.
         yield* cloudThreads.beginTurn(input.threadId);
-        const approvalMode =
-          turnInput.runtimePolicy.runtimeMode === "full-access"
-            ? "none"
-            : turnInput.runtimePolicy.runtimeMode === "auto-accept-edits"
-              ? "edits"
-              : "ask";
-        yield* host
-          .send({
-            type: "turn",
+        return yield* Effect.gen(function* () {
+          // A sleeping sandbox lost its host process; a new host starts after the wake.
+          const before = yield* cloudThreads.getCloudSandboxState(input.threadId);
+          if (Option.isSome(before) && before.value.status === "sleeping") {
+            const existing = yield* Ref.get(connection);
+            if (existing !== null) {
+              yield* existing.close;
+              yield* Ref.set(connection, null);
+            }
+          }
+          const host = yield* ensureConnection();
+          const startedAt = yield* DateTime.now;
+          const started = yield* Deferred.make<void>();
+          yield* Ref.set(waitingForTurnStart, started);
+          const providerTurnId = ProviderTurnId.make(randomId());
+          const providerThreadId = turnInput.providerThread.id;
+          yield* Ref.set(activeTurn, {
+            providerTurnId,
             runId: turnInput.runId,
-            model: turnInput.modelSelection.model,
-            maxTokens: 8192,
-            system: systemPrompt(threadRecord),
-            text: turnInput.message.text,
-            attachments,
-            history: [],
-            approvalMode,
-          })
-          .pipe(
-            Effect.mapError(
-              (error) =>
-                new ProviderAdapter.ProviderAdapterProtocolError({
-                  driver: base.driver,
-                  detail: error.detail,
-                  cause: error,
-                }),
-            ),
-            Effect.onError(() =>
-              Effect.all([Ref.set(activeTurn, null), cloudThreads.endTurn(input.threadId)]).pipe(
-                Effect.asVoid,
+            nodeId: turnInput.rootNodeId,
+            providerThreadId,
+            providerTurnOrdinal: turnInput.providerTurnOrdinal,
+            runOrdinal: turnInput.runOrdinal,
+            startedAt,
+            text: "",
+            toolOrdinals: new Map(),
+            nextOrdinal: 0,
+          });
+          yield* emit({
+            type: "provider_turn.updated",
+            driver: base.driver,
+            providerTurn: {
+              id: providerTurnId,
+              providerThreadId,
+              nodeId: turnInput.rootNodeId,
+              runAttemptId: turnInput.attemptId,
+              nativeTurnRef: null,
+              ordinal: turnInput.providerTurnOrdinal,
+              status: "running",
+              startedAt,
+              completedAt: null,
+            },
+          });
+          const attachments = yield* stageAttachments(threadRecord, turnInput.message.attachments);
+          const approvalMode =
+            turnInput.runtimePolicy.runtimeMode === "full-access"
+              ? "none"
+              : turnInput.runtimePolicy.runtimeMode === "auto-accept-edits"
+                ? "edits"
+                : "ask";
+          yield* host
+            .send({
+              type: "turn",
+              runId: turnInput.runId,
+              model: turnInput.modelSelection.model,
+              maxTokens: 8192,
+              system: systemPrompt(threadRecord),
+              text: turnInput.message.text,
+              attachments,
+              history: [],
+              approvalMode,
+            })
+            .pipe(
+              Effect.mapError(
+                (error) =>
+                  new ProviderAdapter.ProviderAdapterProtocolError({
+                    driver: base.driver,
+                    detail: error.detail,
+                    cause: error,
+                  }),
               ),
+            );
+          yield* Deferred.await(started).pipe(Effect.timeout("20 seconds"), Effect.ignore);
+        }).pipe(
+          Effect.onError(() =>
+            Effect.all([Ref.set(activeTurn, null), cloudThreads.endTurn(input.threadId)]).pipe(
+              Effect.asVoid,
             ),
-          );
-        yield* Deferred.await(started).pipe(Effect.timeout("20 seconds"), Effect.ignore);
+          ),
+        );
       }),
       steerTurn: () =>
         Effect.fail(

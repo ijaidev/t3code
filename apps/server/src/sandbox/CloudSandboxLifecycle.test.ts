@@ -1,5 +1,9 @@
 import {
   type CloudSandboxState,
+  ModelSelection,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ProviderSessionId,
   SandboxInstanceId,
   SandboxProviderAccountId,
   SandboxProviderKind,
@@ -8,6 +12,7 @@ import {
 } from "@t3tools/contracts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import { describe, expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
@@ -19,9 +24,15 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
+import { HttpClient } from "effect/http";
+
+import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 
 import * as ServerConfig from "../config.ts";
+import * as PreviewManager from "../preview/Manager.ts";
 import * as ServerSettingsModule from "../serverSettings.ts";
+import * as CloudSandboxPreviewBridge from "./CloudSandboxPreviewBridge.ts";
+import * as CloudThreadRuntime from "./CloudThreadRuntime.ts";
 import * as CloudThreadStore from "./CloudThreadStore.ts";
 import * as CloudThreads from "./CloudThreads.ts";
 import * as SandboxAccounts from "./SandboxAccounts.ts";
@@ -52,6 +63,8 @@ interface FakeCloud {
   dirtyStatus: string;
   aheadCount: string;
   resumeGate: Deferred.Deferred<void> | null;
+  hostStartGate: Deferred.Deferred<void> | null;
+  hostStartEntered: Deferred.Deferred<void> | null;
 }
 
 const fakeDriver = (state: FakeCloud): SandboxProviderDriver => ({
@@ -97,13 +110,23 @@ const fakeDriver = (state: FakeCloud): SandboxProviderDriver => ({
     }),
   writeFile: () => Effect.void,
   startProcess: (input) =>
-    Effect.sync(() => {
+    Effect.gen(function* () {
+      const entered = state.hostStartEntered;
+      if (entered !== null) yield* Deferred.succeed(entered, undefined);
+      const gate = state.hostStartGate;
+      if (gate !== null) yield* Deferred.await(gate);
       input.onStdout(`${JSON.stringify({ type: "ready", protocolVersion: "1", pid: 1 })}\n`);
       return {
         pid: 1,
-        sendStdin: () => Effect.void,
+        sendStdin: (data: string) =>
+          Effect.sync(() => {
+            const message = JSON.parse(data) as { readonly type?: string };
+            if (message.type === "turn") {
+              input.onStdout(`${JSON.stringify({ type: "turn_started", runId: "run-1" })}\n`);
+            }
+          }),
         kill: Effect.void,
-        wait: Effect.succeed({ exitCode: 0 }),
+        wait: Effect.never,
       };
     }),
 });
@@ -127,6 +150,52 @@ const makeLayer = (driver: SandboxProviderDriver, idleMinutes = 10) => {
     Layer.provide(Layer.mock(SecretResolver.SecretResolver)({})),
   );
 };
+
+const makePreviewLayer = (driver: SandboxProviderDriver) => {
+  const sandbox = makeLayer(driver);
+  const preview = PreviewManager.layer.pipe(
+    Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-cloud-preview-test-" })),
+    Layer.provide(NodeCrypto.layer),
+    Layer.provide(NodeServices.layer),
+  );
+  const bridge = CloudSandboxPreviewBridge.layer.pipe(
+    Layer.provide(sandbox),
+    Layer.provide(preview),
+  );
+  return Layer.mergeAll(sandbox, preview, bridge);
+};
+
+const makeRuntimeLayer = (driver: SandboxProviderDriver) => {
+  const sandbox = makeLayer(driver);
+  return Layer.merge(
+    sandbox,
+    CloudThreadRuntime.layer.pipe(
+      Layer.provide(sandbox),
+      Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-cloud-runtime-test-" })),
+      Layer.provide(NodeServices.layer),
+      Layer.provide(
+        Layer.succeed(
+          HttpClient.HttpClient,
+          HttpClient.make(() => Effect.die("the test never calls the model")),
+        ),
+      ),
+    ),
+  );
+};
+
+const runtimeInstanceId = ProviderInstanceId.make("claudeAgent");
+const runtimeModelSelection: ModelSelection = {
+  instanceId: runtimeInstanceId,
+  model: "claude-sonnet-4-5",
+};
+
+const runtimeBaseAdapter = {
+  instanceId: runtimeInstanceId,
+  driver: ProviderDriverKind.make("claudeAgent"),
+  getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
+  planSelectionTransition: () => Effect.die("unused"),
+  openSession: () => Effect.die("unused"),
+} as unknown as ProviderAdapter.ProviderAdapterV2["Service"];
 
 const connect = SandboxAccounts.SandboxAccounts.pipe(
   Effect.flatMap((accounts) =>
@@ -167,6 +236,8 @@ const makeState = Effect.fn("test.makeState")(function* (
     dirtyStatus: "",
     aheadCount: "0",
     resumeGate: null,
+    hostStartGate: null,
+    hostStartEntered: null,
   };
   return state;
 });
@@ -279,6 +350,99 @@ describe("cloud sandbox lifecycle", () => {
         const released = yield* cloud.getCloudSandboxState(threadId);
         expect(Option.isSome(released) && released.value.canSleep).toBe(true);
       }).pipe(Effect.provide(makeLayer(fakeDriver(fake))));
+    });
+    return test;
+  });
+
+  it.effect("holds the sandbox before the host starts", () => {
+    const test = Effect.gen(function* () {
+      const fake = yield* makeState();
+      return yield* Effect.gen(function* () {
+        yield* connect;
+        yield* prepare;
+        const cloud = yield* CloudThreads.CloudThreads;
+        const runtimeService = yield* CloudThreadRuntime.CloudThreadRuntime;
+        const runtime = yield* runtimeService.openSession(
+          {
+            threadId,
+            providerSessionId: ProviderSessionId.make("session-cloud-hold"),
+            modelSelection: runtimeModelSelection,
+            runtimePolicy: { runtimeMode: "full-access", interactionMode: "default", cwd: null },
+            environment: [{ name: "ANTHROPIC_API_KEY", value: "test-key" }],
+          },
+          runtimeBaseAdapter,
+        );
+        const providerThread = yield* runtime.ensureThread({
+          threadId,
+          modelSelection: runtimeModelSelection,
+          runtimePolicy: { runtimeMode: "full-access", interactionMode: "default", cwd: null },
+        });
+        const entered = yield* Deferred.make<void>();
+        const gate = yield* Deferred.make<void>();
+        fake.hostStartEntered = entered;
+        fake.hostStartGate = gate;
+        const started = yield* runtime
+          .startTurn({
+            appThread: {} as never,
+            threadId,
+            runId: "run-hold" as never,
+            runOrdinal: 1,
+            providerTurnOrdinal: 1,
+            attemptId: "attempt-hold" as never,
+            rootNodeId: "node-hold" as never,
+            providerThread,
+            message: {
+              messageId: "message-hold" as never,
+              text: "stay awake",
+              attachments: [],
+              createdBy: "user",
+              creationSource: "web",
+            },
+            modelSelection: runtimeModelSelection,
+            runtimePolicy: { runtimeMode: "full-access", interactionMode: "default", cwd: null },
+          })
+          .pipe(Effect.forkChild);
+
+        yield* Deferred.await(entered);
+        const refused = yield* Effect.result(cloud.sleepCloudSandbox(threadId));
+        expect(refused._tag).toBe("Failure");
+        if (refused._tag === "Failure") {
+          expect(refused.failure.detail).toContain("active turn");
+        }
+
+        yield* Deferred.succeed(gate, undefined);
+        yield* Fiber.join(started);
+      }).pipe(Effect.provide(makeRuntimeLayer(fakeDriver(fake))));
+    });
+    return test;
+  });
+
+  it.effect("holds a cloud sandbox awake while a preview is open", () => {
+    const test = Effect.gen(function* () {
+      const fake = yield* makeState();
+      return yield* Effect.gen(function* () {
+        yield* connect;
+        yield* prepare;
+        const cloud = yield* CloudThreads.CloudThreads;
+        const previews = yield* PreviewManager.PreviewManager;
+        const states = yield* Queue.unbounded<CloudSandboxState>();
+        yield* Effect.forkScoped(
+          cloud
+            .subscribeCloudSandbox(threadId)
+            .pipe(Stream.runForEach((state) => Queue.offer(states, state))),
+        );
+        expect((yield* Queue.take(states)).canSleep).toBe(true);
+
+        const session = yield* previews.open({ threadId, url: "localhost:5173" });
+        const held = yield* Queue.take(states);
+        expect(held.status).toBe("running");
+        expect(held.sleepDisabledReason).toBe("open-preview");
+        const refused = yield* Effect.result(cloud.sleepCloudSandbox(threadId));
+        expect(refused._tag).toBe("Failure");
+
+        yield* previews.close({ threadId, tabId: session.tabId });
+        expect((yield* Queue.take(states)).canSleep).toBe(true);
+      }).pipe(Effect.provide(makePreviewLayer(fakeDriver(fake))));
     });
     return test;
   });
