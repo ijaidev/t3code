@@ -1,4 +1,9 @@
-import type { SandboxProviderCapabilities, SandboxProviderKind } from "@t3tools/contracts";
+import type {
+  SandboxProviderCapabilities,
+  SandboxProviderKind,
+  SandboxProviderRegion,
+  SandboxProviderSize,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -43,6 +48,10 @@ export interface SandboxProviderCreateInput {
   readonly instanceId: string;
   readonly template: string;
   readonly timeoutMs: number;
+  /** The account's selected provider-declared size; drivers that do not use it ignore it. */
+  readonly size?: SandboxProviderSize;
+  /** The account's selected provider-declared region; drivers that do not use it ignore it. */
+  readonly region?: SandboxProviderRegion;
 }
 
 export interface SandboxProviderExecInput {
@@ -99,7 +108,8 @@ export interface SandboxProviderProcess {
 
 export interface SandboxProviderFoundSandbox {
   readonly providerSandboxId: string;
-  readonly status: "running" | "paused";
+  /** `failed` means the provider reports an errored or deleted sandbox; cleanup may delete it, never adopt it. */
+  readonly status: "running" | "paused" | "failed";
 }
 
 export interface SandboxProviderDriver {

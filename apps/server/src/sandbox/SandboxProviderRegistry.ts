@@ -2,6 +2,7 @@ import { type SandboxProviderKind, type SandboxProviderSummary } from "@t3tools/
 import * as Context from "effect/Context";
 import * as Layer from "effect/Layer";
 
+import { makeDaytonaSandboxProvider } from "./DaytonaSandboxProvider.ts";
 import { makeE2BSandboxProvider } from "./E2BSandboxProvider.ts";
 import type { SandboxProviderDriver } from "./SandboxProvider.ts";
 
@@ -22,4 +23,4 @@ const make = (drivers: ReadonlyArray<SandboxProviderDriver>) =>
 export const layerFromDrivers = (drivers: ReadonlyArray<SandboxProviderDriver>) =>
   Layer.succeed(SandboxProviderRegistry, make(drivers));
 
-export const layer = layerFromDrivers([makeE2BSandboxProvider()]);
+export const layer = layerFromDrivers([makeE2BSandboxProvider(), makeDaytonaSandboxProvider()]);
