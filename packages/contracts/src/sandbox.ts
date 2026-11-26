@@ -234,6 +234,9 @@ export const CloudSandboxSleepDisabledReason = Schema.Literals([
 ]);
 export type CloudSandboxSleepDisabledReason = typeof CloudSandboxSleepDisabledReason.Type;
 
+export const CloudSandboxLossReason = Schema.Literals(["deleted", "external"]);
+export type CloudSandboxLossReason = typeof CloudSandboxLossReason.Type;
+
 /** What every client shows for one cloud thread's sandbox. */
 export const CloudSandboxState = Schema.Struct({
   threadId: ThreadId,
@@ -254,6 +257,8 @@ export const CloudSandboxState = Schema.Struct({
   canDelete: Schema.Boolean,
   /** A lost sandbox keeps its thread; recreating it clones the thread's branch again. */
   canRecreate: Schema.Boolean,
+  /** Why the workspace was lost; absent on older records. */
+  lossReason: Schema.optionalKey(CloudSandboxLossReason),
   /** Why sleep is unavailable even though the sandbox exists. */
   sleepDisabledReason: Schema.optionalKey(CloudSandboxSleepDisabledReason),
   lastError: Schema.optionalKey(Schema.String),
@@ -331,6 +336,8 @@ export class SandboxError extends Schema.TaggedError<
 >()("SandboxError", {
   operation: SandboxOperation,
   detail: Schema.String,
+  /** A provider 404 means the sandbox is gone, not that the request was rejected. */
+  statusCode: Schema.optionalKey(Schema.Int),
 }) {
   override get message(): string {
     return this.detail;

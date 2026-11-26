@@ -66,6 +66,15 @@ export function CloudWorkspaceLostBanner(props: {
     setConfirming(false);
   };
 
+  const lossCopy =
+    state.value.lossReason === "deleted"
+      ? gt("This sandbox was deleted. Unpushed work is gone; the transcript is still here.")
+      : state.value.lossReason === "external"
+        ? gt(
+            "The sandbox was deleted outside T3 Code. Unpushed work is gone; the transcript is still here.",
+          )
+        : gt("This cloud workspace is gone. Unpushed work is lost; the transcript is still here.");
+
   return (
     <>
       <div className="pointer-events-auto mx-auto w-fit max-w-[min(48rem,calc(100%-2rem))] pt-3">
@@ -73,11 +82,7 @@ export function CloudWorkspaceLostBanner(props: {
           <CloudIcon />
           <AlertDescription>
             <AlertTitle>{gt("Cloud workspace lost")}</AlertTitle>
-            <p>
-              {gt(
-                "The sandbox was deleted outside T3 Code. Unpushed work is gone; the transcript is still here.",
-              )}
-            </p>
+            <p>{lossCopy}</p>
           </AlertDescription>
           <AlertAction>
             <Button

@@ -80,6 +80,11 @@ export interface CloudThreadRuntimeResumeTurn {
   readonly startedAt: DateTime.Utc;
   /** The next item position after everything already persisted for this turn. */
   readonly nextItemOrdinal: number;
+  /** Persisted approvals for this turn, so a restart can reconcile them with the host. */
+  readonly approvals: ReadonlyArray<{
+    readonly request: OrchestrationV2RuntimeRequest;
+    readonly item: Extract<OrchestrationV2TurnItem, { readonly type: "approval_request" }> | null;
+  }>;
 }
 
 export interface CloudThreadRuntimeOpenInput {
@@ -249,6 +254,9 @@ const make = Effect.gen(function* () {
           readonly item: Extract<OrchestrationV2TurnItem, { readonly type: "approval_request" }>;
         }
       >
+    >(new Map());
+    const resumedApprovals = yield* Ref.make<
+      ReadonlyMap<string, CloudThreadRuntimeResumeTurn["approvals"][number]>
     >(new Map());
     const waitingForTurnStart = yield* Ref.make<Deferred.Deferred<void> | null>(null);
     const reconnecting = yield* Ref.make(false);
@@ -477,6 +485,12 @@ const make = Effect.gen(function* () {
       message: CloudThreads.CloudHostMessage,
     ) => Effect.Effect<void> = Effect.fn("CloudThreadRuntime.handleHostMessage")(
       function* (host, message) {
+        const active = yield* Ref.get(activeTurn);
+        const messageRunId = typeof message["runId"] === "string" ? message["runId"] : null;
+        // A replayed event from an older turn must never settle or extend the current one.
+        if (active !== null && messageRunId !== null && messageRunId !== String(active.runId)) {
+          return;
+        }
         switch (message.type) {
           case "turn_started": {
             const waiting = yield* Ref.get(waitingForTurnStart);
@@ -613,6 +627,19 @@ const make = Effect.gen(function* () {
             const turn = yield* Ref.get(activeTurn);
             if (turn === null) return;
             const requestId = typeof message["id"] === "string" ? message["id"] : randomId();
+            // A resolution persisted before the crash wins over the host's pending copy. Sending
+            // the stored answer lets the host continue; it must not reopen the projection.
+            const persisted = (yield* Ref.get(resumedApprovals)).get(requestId);
+            if (persisted !== undefined && persisted.request.status !== "pending") {
+              yield* host
+                .send({
+                  type: "approval_response",
+                  id: requestId,
+                  decision: persisted.request.decision ?? "cancel",
+                })
+                .pipe(Effect.ignore);
+              return;
+            }
             const kind = message["kind"] === "command" ? "command" : "file-change";
             const createdAt = yield* DateTime.now;
             const request: OrchestrationV2RuntimeRequest = {
@@ -807,10 +834,28 @@ const make = Effect.gen(function* () {
             yield* Ref.set(connection, null);
           }
           for (let attempt = 0; attempt < 5; attempt += 1) {
+            if (yield* Ref.get(closed)) return;
             const opened = yield* cloudThreads
               .openHost(input.threadId, { since: 0 })
               .pipe(Effect.result);
             if (opened._tag === "Success") {
+              const turn = yield* Ref.get(activeTurn);
+              if (turn === null) {
+                yield* opened.success.close.pipe(Effect.ignore);
+                return;
+              }
+              const sameRun =
+                opened.success.activeRunId === String(turn.runId) ||
+                (opened.success.latestEventType === "turn_end" &&
+                  opened.success.latestRunId === String(turn.runId));
+              if (!sameRun) {
+                yield* opened.success.close.pipe(Effect.ignore);
+                yield* Ref.set(connection, null);
+                yield* failActiveTurn(
+                  "The sandbox host restarted before the turn finished, so its in-flight work was lost.",
+                );
+                return;
+              }
               yield* Ref.set(connection, opened.success);
               yield* Effect.forkDetach(
                 opened.success.messages.pipe(
@@ -831,7 +876,9 @@ const make = Effect.gen(function* () {
               return;
             }
             yield* Effect.sleep(`${Math.min(5_000, 250 * 2 ** attempt)} millis`);
+            if (yield* Ref.get(closed)) return;
           }
+          if (yield* Ref.get(closed)) return;
           yield* failActiveTurn(
             "The cloud sandbox could not be reached after its connection dropped. The turn may have stopped.",
           );
@@ -841,6 +888,10 @@ const make = Effect.gen(function* () {
 
     if (input.resumeTurn !== undefined) {
       const resume = input.resumeTurn;
+      yield* Ref.set(
+        resumedApprovals,
+        new Map(resume.approvals.map((approval) => [String(approval.request.id), approval])),
+      );
       yield* cloudThreads.beginTurn(input.threadId);
       yield* Ref.set(activeTurn, {
         providerTurnId: resume.providerTurnId,
@@ -868,13 +919,64 @@ const make = Effect.gen(function* () {
         }
       } else if (
         opened.success.activeRunId !== String(resume.runId) &&
-        opened.success.latestEventType !== "turn_end"
+        !(
+          opened.success.latestEventType === "turn_end" &&
+          opened.success.latestRunId === String(resume.runId)
+        )
       ) {
         yield* opened.success.close.pipe(Effect.ignore);
         yield* Ref.set(connection, null);
         yield* failActiveTurn(
           "The sandbox host restarted before the turn finished, so its in-flight work was lost.",
         );
+      } else {
+        const hostPending = new Set(opened.success.pendingApprovalIds);
+        for (const approval of resume.approvals) {
+          const requestId = String(approval.request.id);
+          if (hostPending.has(requestId)) {
+            // The host still waits on a request this server already resolved. Send the stored
+            // answer so the turn continues instead of asking again.
+            if (approval.request.status !== "pending") {
+              yield* opened.success
+                .send({
+                  type: "approval_response",
+                  id: requestId,
+                  decision: approval.request.decision ?? "cancel",
+                })
+                .pipe(Effect.ignore);
+            }
+            continue;
+          }
+          if (approval.request.status !== "pending") continue;
+          // The host moved past this request before the crash, but its resolution never landed.
+          const resolvedAt = yield* DateTime.now;
+          yield* emit({
+            type: "runtime_request.updated",
+            driver: base.driver,
+            runtimeRequest: {
+              ...approval.request,
+              status: "cancelled",
+              responseCapability: {
+                type: "not_resumable",
+                reason:
+                  "The sandbox host already received this response before the server restarted.",
+              },
+              resolvedAt,
+            },
+          });
+          if (approval.item !== null) {
+            yield* emit({
+              type: "turn_item.updated",
+              driver: base.driver,
+              turnItem: {
+                ...approval.item,
+                status: "cancelled",
+                completedAt: resolvedAt,
+                updatedAt: resolvedAt,
+              },
+            });
+          }
+        }
       }
     }
 

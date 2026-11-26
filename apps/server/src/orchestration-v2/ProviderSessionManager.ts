@@ -3817,6 +3817,36 @@ export const layerWithOptions = (
                 item.runId === run.id ? Math.max(highest, item.ordinal) : highest,
               0,
             ) + 1;
+          // Recovery reads only pending requests; a restart must also see persisted resolutions.
+          const approvalRecords = yield* projectionStore
+            .getThreadRecords(input.threadId, ["runtimeRequests", "turnItems"], {
+              providerTurnIds: [providerTurn.id],
+              runtimeRequestStatuses: ["pending", "resolved", "expired", "cancelled"],
+              turnItemRunIds: [run.id],
+              turnItemTypes: ["approval_request"],
+            })
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderSessionLookupError({
+                    providerSessionId: providerThread.providerSessionId!,
+                    cause,
+                  }),
+              ),
+            );
+          const approvalItems = new Map<
+            string,
+            Extract<OrchestrationV2TurnItem, { readonly type: "approval_request" }>
+          >();
+          for (const item of approvalRecords.turnItems) {
+            if (item.type === "approval_request") approvalItems.set(String(item.requestId), item);
+          }
+          const approvals = approvalRecords.runtimeRequests
+            .filter((request) => request.kind === "command" || request.kind === "file-change")
+            .map((request) => ({
+              request,
+              item: approvalItems.get(String(request.id)) ?? null,
+            }));
           yield* service.open({
             threadId: input.threadId,
             providerSessionId: providerThread.providerSessionId,
@@ -3835,6 +3865,7 @@ export const layerWithOptions = (
               nodeId: providerTurn.nodeId,
               startedAt: providerTurn.startedAt ?? run.startedAt ?? (yield* DateTime.now),
               nextItemOrdinal,
+              approvals,
             },
           });
         }),

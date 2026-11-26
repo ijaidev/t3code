@@ -178,6 +178,14 @@ export function ThreadCloudSandbox(props: {
   ]
     .filter((part): part is string => part !== null)
     .join(" · ");
+  const lossCopy =
+    sandbox.lossReason === "deleted"
+      ? gt("This sandbox was deleted. Unpushed work is gone; the transcript is still here.")
+      : sandbox.lossReason === "external"
+        ? gt(
+            "The sandbox was deleted outside T3 Code. Unpushed work is gone; the transcript is still here.",
+          )
+        : gt("This cloud workspace is gone. Unpushed work is lost; the transcript is still here.");
 
   return (
     <>
@@ -201,11 +209,7 @@ export function ThreadCloudSandbox(props: {
             </div>
           ) : null}
           {sandbox.status === "lost" ? (
-            <div className="text-muted-foreground">
-              {gt(
-                "This sandbox was deleted outside T3 Code. Unpushed work is gone; the transcript is still here.",
-              )}
-            </div>
+            <div className="text-muted-foreground">{lossCopy}</div>
           ) : null}
           {sandbox.lastError !== undefined ? (
             <div className="text-destructive">{sandbox.lastError}</div>

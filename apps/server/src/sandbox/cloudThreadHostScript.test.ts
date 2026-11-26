@@ -195,6 +195,48 @@ describe("cloud thread host ports", () => {
 });
 
 describe("cloud thread host replay", () => {
+  it("exposes the last run when the daemon dies mid-turn", async () => {
+    const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-cloud-death-"));
+    try {
+      await writeHostScript(root);
+      const first = await startBridge(root, 0);
+      first.send({
+        type: "turn",
+        runId: "run-death",
+        model: "claude-sonnet-4-5",
+        maxTokens: 8192,
+        system: "test",
+        text: "die while working",
+        attachments: [],
+        history: [],
+        approvalMode: "none",
+      });
+      let request: Record<string, unknown> = {};
+      while (request["type"] !== "model_request") request = await first.next();
+      process.kill(Number(first.ready["pid"]), "SIGKILL");
+      await stopBridge(first);
+
+      const second = await startBridge(root, 0);
+      expect(second.ready["activeRunId"]).toBeNull();
+      expect(second.ready["latestRunId"]).toBe("run-death");
+      expect(second.ready["latestEventType"]).not.toBe("turn_end");
+      let replay: Record<string, unknown> = {};
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const message = await second.next();
+        if (message["seq"] !== undefined) {
+          replay = message;
+          break;
+        }
+      }
+      expect(replay["type"]).toBe("turn_started");
+      expect(replay["runId"]).toBe("run-death");
+      await stopBridge(second);
+    } finally {
+      await stopDaemon(root);
+      await NodeFSP.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("keeps a turn alive across a controller drop and replays it once", async () => {
     const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-cloud-replay-"));
     try {

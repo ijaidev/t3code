@@ -347,6 +347,8 @@ class Host:
 
     def ready_message(self):
         entries = self.event_log.all()
+        with self.pending_lock:
+            pending_approval_ids = list(self.pending_approval_messages.keys())
         return {
             "type": "ready",
             "protocolVersion": PROTOCOL_VERSION,
@@ -354,6 +356,8 @@ class Host:
             "latestSeq": self.event_log.latest_seq(),
             "activeRunId": self.active_run,
             "latestEventType": entries[-1].get("type") if entries else None,
+            "latestRunId": entries[-1].get("runId") if entries else None,
+            "pendingApprovalIds": pending_approval_ids,
         }
 
     def attach(self, client, since):
@@ -453,7 +457,13 @@ class Host:
 
     def request_model(self, request):
         request_id = request.pop("requestId")
-        message = {"type": "model_request", "id": request_id, "request": request}
+        message = {
+            "type": "model_request",
+            "id": request_id,
+            "runId": request.get("runId"),
+            "request": request,
+        }
+        request.pop("runId", None)
         with self.pending_lock:
             self.pending_model_messages[request_id] = message
         self.emit(message, persist=False)
@@ -520,6 +530,7 @@ class Host:
                 response = self.request_model(
                     {
                         "requestId": "model-" + str(int(time.time() * 1000)),
+                        "runId": run_id,
                         "model": turn["model"],
                         "max_tokens": turn.get("maxTokens", 8192),
                         "system": turn.get("system", ""),

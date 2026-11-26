@@ -1641,7 +1641,6 @@ export const layerWsRpc = (
                   }),
                 ),
           ),
-          Effect.catchTags({ CloudThreadError: (error) => toSandboxError(error) }),
         );
       const toSandboxError = (error: CloudThreads.CloudThreadError) =>
         new SandboxError({

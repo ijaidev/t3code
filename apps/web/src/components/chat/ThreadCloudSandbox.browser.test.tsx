@@ -120,6 +120,7 @@ it("warns that unpushed work is gone before recreating a lost sandbox", async ()
     canWake: false,
     canDelete: false,
     canRecreate: true,
+    lossReason: "external",
   });
   harness.recreateSandbox.mockClear();
   await using _screen = await render(panel());
@@ -140,4 +141,19 @@ it("warns that unpushed work is gone before recreating a lost sandbox", async ()
     }),
   );
   expect(harness.deleteSandbox).not.toHaveBeenCalled();
+});
+
+it("uses deleted copy after an explicit sandbox delete", async () => {
+  harness.state = sandbox({
+    status: "lost",
+    sandboxId: null,
+    canSleep: false,
+    canWake: false,
+    canDelete: false,
+    canRecreate: true,
+    lossReason: "deleted",
+  });
+  await using screen = await render(panel());
+  await expect.element(page.getByText(/This sandbox was deleted\./)).toBeVisible();
+  expect(screen.container.textContent).not.toContain("deleted outside T3 Code");
 });

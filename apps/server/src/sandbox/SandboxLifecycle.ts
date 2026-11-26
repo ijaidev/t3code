@@ -39,7 +39,11 @@ import {
 const DEFAULT_TEST_TIMEOUT_MINUTES = 30;
 
 const toSandboxError = (operation: SandboxOperation, error: SandboxProviderError) =>
-  new SandboxError({ operation, detail: error.detail });
+  new SandboxError({
+    operation,
+    detail: error.detail,
+    ...(error.statusCode === undefined ? {} : { statusCode: error.statusCode }),
+  });
 
 const threadHostError = (error: ThreadHostHandshakeError) =>
   new SandboxError({ operation: "check-sandbox", detail: error.message });
