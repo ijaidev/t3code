@@ -407,6 +407,13 @@ function EnvironmentSandboxProviders(props: {
         ) : null}
         {sandboxes.map((sandbox) => {
           const health = sandbox.lastHealth;
+          const providerCapabilities = providers.find(
+            (provider) => provider.kind === sandbox.providerKind,
+          )?.capabilities;
+          const canPauseResume = providerCapabilities?.pauseResume === true;
+          const pauseDisabledReason = canPauseResume
+            ? undefined
+            : gt("This provider cannot pause sandboxes.");
           return (
             <SettingsRow
               key={sandbox.id}
@@ -456,7 +463,8 @@ function EnvironmentSandboxProviders(props: {
                       <Button
                         size="xs"
                         variant="ghost"
-                        disabled={readOnly || busy}
+                        disabled={readOnly || busy || !canPauseResume}
+                        title={pauseDisabledReason}
                         onClick={() =>
                           void run(
                             () =>
@@ -476,7 +484,8 @@ function EnvironmentSandboxProviders(props: {
                     <Button
                       size="xs"
                       variant="outline"
-                      disabled={readOnly || busy}
+                      disabled={readOnly || busy || !canPauseResume}
+                      title={pauseDisabledReason}
                       onClick={() =>
                         void run(
                           () =>

@@ -1,0 +1,624 @@
+// @effect-diagnostics nodeBuiltinImport:off globalFetch:off globalFetchInEffect:off - This adapter is the HTTP boundary for Daytona's REST and toolbox APIs; the API key must never leave the server.
+import {
+  SandboxProviderKind,
+  type SandboxProviderCapabilities,
+  type SandboxProviderRegion,
+  type SandboxProviderSize,
+} from "@t3tools/contracts";
+import * as NodeCrypto from "node:crypto";
+import * as Clock from "effect/Clock";
+import * as Effect from "effect/Effect";
+
+import {
+  SandboxProviderError,
+  type SandboxProviderAccount,
+  type SandboxProviderDriver,
+  type SandboxProviderExecInput,
+  type SandboxProviderOperation,
+  type SandboxProviderPortAccessInput,
+  type SandboxProviderProcess,
+  type SandboxProviderStartProcessInput,
+  type SandboxProviderWriteFileInput,
+} from "./SandboxProvider.ts";
+
+const DAYTONA_KIND = SandboxProviderKind.make("daytona");
+const DEFAULT_API_URL = "https://app.daytona.io/api";
+const API_REQUEST_TIMEOUT_MS = 60_000;
+const CREATE_READY_TIMEOUT_MS = 120_000;
+const CREATE_POLL_INTERVAL = "500 millis";
+const PROCESS_POLL_INTERVAL = "200 millis";
+const EXEC_TIMEOUT_MS = 120_000;
+const MAX_ERROR_DETAIL_LENGTH = 300;
+const BASE_TEMPLATE = "base";
+
+const capabilities: SandboxProviderCapabilities = {
+  create: true,
+  exec: true,
+  // Daytona's pause is experimental and provider/plan specific. Hiding sleep is safer than
+  // emulating it, and the lifecycle treats pause as an optional capability.
+  pauseResume: false,
+  delete: true,
+  snapshots: false,
+  privatePorts: true,
+  // The toolbox, terminal, and recordings dashboards are never app previews.
+  reservedPorts: [22222, 2280, 33333],
+  sizes: [
+    { id: "small", label: "1 vCPU · 1 GiB", cpuCount: 1, memoryMB: 1024 },
+    { id: "medium", label: "2 vCPU · 4 GiB", cpuCount: 2, memoryMB: 4096 },
+    { id: "large", label: "4 vCPU · 8 GiB", cpuCount: 4, memoryMB: 8192 },
+  ],
+  regions: [
+    { id: "us", label: "United States" },
+    { id: "eu", label: "Europe" },
+  ],
+};
+
+export type DaytonaMethod = "GET" | "POST" | "DELETE";
+
+export interface DaytonaRequest {
+  readonly method: DaytonaMethod;
+  /** An absolute API or toolbox URL. */
+  readonly url: string;
+  readonly apiKey: string;
+  readonly body?: unknown;
+  readonly data?: string | Uint8Array;
+  readonly headers?: Readonly<Record<string, string>>;
+  readonly timeoutMs?: number;
+}
+
+export interface DaytonaResponse {
+  readonly status: number;
+  readonly body: unknown;
+}
+
+/** The slice of Daytona's HTTP API this adapter uses, so tests can run it without a network. */
+export interface DaytonaClient {
+  readonly request: (input: DaytonaRequest) => Promise<DaytonaResponse>;
+}
+
+const asRecord = (value: unknown): Readonly<Record<string, unknown>> =>
+  typeof value === "object" && value !== null ? (value as Readonly<Record<string, unknown>>) : {};
+
+const readString = (value: unknown): string | undefined =>
+  typeof value === "string" && value !== "" ? value : undefined;
+
+const readNumber = (value: unknown): number | undefined =>
+  typeof value === "number" && Number.isFinite(value) ? value : undefined;
+
+const parseBody = (text: string): unknown => {
+  if (text.trim() === "") return undefined;
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return text;
+  }
+};
+
+const errorDetail = (body: unknown, status: number): string => {
+  const record = asRecord(body);
+  const message =
+    readString(record["message"]) ??
+    readString(asRecord(record["error"])["message"]) ??
+    readString(body);
+  return message ?? `Daytona responded with HTTP ${status}.`;
+};
+
+const statusCodeOf = (cause: unknown): number | undefined => {
+  if (cause === null || typeof cause !== "object" || !("statusCode" in cause)) return undefined;
+  const statusCode = (cause as { readonly statusCode?: unknown }).statusCode;
+  return typeof statusCode === "number" ? statusCode : undefined;
+};
+
+const safeDetail = (cause: unknown, apiKey: string): string => {
+  const raw = cause instanceof Error ? cause.message : String(cause);
+  const redacted = apiKey.length > 0 ? raw.replaceAll(apiKey, "[redacted]") : raw;
+  return redacted.slice(0, MAX_ERROR_DETAIL_LENGTH);
+};
+
+const providerError = (
+  account: SandboxProviderAccount,
+  operation: SandboxProviderOperation,
+  cause: unknown,
+): SandboxProviderError => {
+  const statusCode = statusCodeOf(cause);
+  if (statusCode === 401 || statusCode === 403) {
+    return new SandboxProviderError({
+      providerKind: DAYTONA_KIND,
+      operation,
+      detail: "Daytona rejected the API key. Check the key and reconnect the account.",
+      statusCode,
+    });
+  }
+  if (statusCode === 404) {
+    return new SandboxProviderError({
+      providerKind: DAYTONA_KIND,
+      operation,
+      detail: "Daytona could not find that sandbox. It may have expired or been deleted.",
+      statusCode,
+    });
+  }
+  if (statusCode === 429) {
+    return new SandboxProviderError({
+      providerKind: DAYTONA_KIND,
+      operation,
+      detail: "Daytona is rate limiting requests. Try again in a moment.",
+      statusCode,
+    });
+  }
+  return new SandboxProviderError({
+    providerKind: DAYTONA_KIND,
+    operation,
+    detail:
+      safeDetail(cause, account.apiKey) || "Daytona could not complete the request. Try again.",
+    ...(statusCode === undefined ? {} : { statusCode }),
+  });
+};
+
+const attempt = <A>(
+  account: SandboxProviderAccount,
+  operation: SandboxProviderOperation,
+  run: () => Promise<A>,
+) =>
+  Effect.tryPromise({
+    try: run,
+    catch: (cause) => providerError(account, operation, cause),
+  });
+
+const defaultClient: DaytonaClient = {
+  request: async (input) => {
+    const headers: Record<string, string> = {
+      authorization: `Bearer ${input.apiKey}`,
+      ...input.headers,
+    };
+    if (input.body !== undefined) headers["content-type"] = "application/json";
+    const response = await fetch(input.url, {
+      method: input.method,
+      headers,
+      ...(input.data === undefined
+        ? input.body === undefined
+          ? {}
+          : { body: JSON.stringify(input.body) }
+        : { body: input.data }),
+      signal: AbortSignal.timeout(input.timeoutMs ?? API_REQUEST_TIMEOUT_MS),
+    });
+    const body = parseBody(await response.text());
+    if (!response.ok) {
+      throw Object.assign(new Error(errorDetail(body, response.status)), {
+        statusCode: response.status,
+      });
+    }
+    return { status: response.status, body };
+  },
+};
+
+const sandboxState = (value: unknown): string => readString(asRecord(value)["state"]) ?? "unknown";
+
+const PAUSED_STATES = new Set([
+  "paused",
+  "pausing",
+  "stopped",
+  "stopping",
+  "archived",
+  "archiving",
+]);
+const FAILED_STATES = new Set(["destroyed", "destroying", "error", "build_failed", "unknown"]);
+
+const providerStatus = (state: string): "running" | "paused" =>
+  PAUSED_STATES.has(state) ? "paused" : "running";
+
+const shellQuote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
+
+const sessionCommand = (input: {
+  readonly command: string;
+  readonly cwd?: string;
+  readonly envs?: Readonly<Record<string, string>>;
+}): string => {
+  const environment = Object.entries(input.envs ?? {})
+    .map(([key, value]) => `${key}=${shellQuote(value)}`)
+    .join(" ");
+  const command = environment === "" ? input.command : `env ${environment} ${input.command}`;
+  // Daytona sessions have no cwd request field, so enter it before the shell command runs.
+  return input.cwd === undefined ? command : `cd ${shellQuote(input.cwd)} && ${command}`;
+};
+
+const memoryGiB = (size: SandboxProviderSize | undefined): number | undefined =>
+  size === undefined ? undefined : Math.max(1, Math.ceil(size.memoryMB / 1024));
+
+const createBody = (input: {
+  readonly template: string;
+  readonly instanceId: string;
+  readonly size?: SandboxProviderSize;
+  readonly region?: SandboxProviderRegion;
+}): Readonly<Record<string, unknown>> => ({
+  // "base" is the account schema's default template; Daytona picks its default snapshot then.
+  ...(input.template === BASE_TEMPLATE ? {} : { snapshot: input.template }),
+  labels: { "t3.instance": input.instanceId },
+  public: false,
+  // T3 owns sleep and delete for cloud threads; provider lifetime timers must not race them.
+  autoStopInterval: 0,
+  autoDeleteInterval: -1,
+  ...(input.size === undefined ? {} : { cpu: input.size.cpuCount, memory: memoryGiB(input.size) }),
+  ...(input.region === undefined ? {} : { target: input.region.id }),
+});
+
+export const makeDaytonaSandboxProvider = (
+  client: DaytonaClient = defaultClient,
+  apiUrl = DEFAULT_API_URL,
+): SandboxProviderDriver => {
+  const toolboxUrls = new Map<string, string>();
+
+  const request = (
+    account: SandboxProviderAccount,
+    operation: SandboxProviderOperation,
+    method: DaytonaMethod,
+    url: string,
+    options: Omit<DaytonaRequest, "method" | "url" | "apiKey"> = {},
+  ) =>
+    attempt(account, operation, () =>
+      client.request({ method, url, apiKey: account.apiKey, ...options }),
+    );
+
+  const apiUrlFor = (path: string) => `${apiUrl.replace(/\/$/, "")}${path}`;
+
+  const sandboxFrom = (body: unknown): string | undefined => readString(asRecord(body)["id"]);
+
+  const instanceLabels = (instanceId: string): string =>
+    JSON.stringify({ "t3.instance": instanceId });
+
+  const waitUntilRunning = Effect.fn("DaytonaSandboxProvider.waitUntilRunning")(function* (
+    account: SandboxProviderAccount,
+    providerSandboxId: string,
+  ) {
+    const deadline = (yield* Clock.currentTimeMillis) + CREATE_READY_TIMEOUT_MS;
+    while (true) {
+      const response = yield* request(
+        account,
+        "create",
+        "GET",
+        apiUrlFor(`/sandbox/${encodeURIComponent(providerSandboxId)}`),
+      );
+      const state = sandboxState(response.body);
+      if (state === "started" || state === "running") return;
+      if (FAILED_STATES.has(state)) {
+        return yield* new SandboxProviderError({
+          providerKind: DAYTONA_KIND,
+          operation: "create",
+          detail: `Daytona could not start the sandbox (${state}).`,
+        });
+      }
+      if ((yield* Clock.currentTimeMillis) >= deadline) {
+        return yield* new SandboxProviderError({
+          providerKind: DAYTONA_KIND,
+          operation: "create",
+          detail: "Daytona did not finish starting the sandbox in time.",
+        });
+      }
+      yield* Effect.sleep(CREATE_POLL_INTERVAL);
+    }
+  });
+
+  const toolboxUrl = Effect.fn("DaytonaSandboxProvider.toolboxUrl")(function* (
+    account: SandboxProviderAccount,
+    providerSandboxId: string,
+  ) {
+    const cached = toolboxUrls.get(providerSandboxId);
+    if (cached !== undefined) return cached;
+    const response = yield* request(
+      account,
+      "exec",
+      "GET",
+      apiUrlFor(`/sandbox/${encodeURIComponent(providerSandboxId)}/toolbox-proxy-url`),
+    );
+    const url = readString(asRecord(response.body)["url"]);
+    if (url === undefined) {
+      return yield* new SandboxProviderError({
+        providerKind: DAYTONA_KIND,
+        operation: "exec",
+        detail: "Daytona did not return a toolbox URL for this sandbox.",
+      });
+    }
+    toolboxUrls.set(providerSandboxId, url);
+    return url;
+  });
+
+  const toolboxPath = (toolbox: string, providerSandboxId: string, path: string) =>
+    `${toolbox.replace(/\/$/, "")}/${encodeURIComponent(providerSandboxId)}${path}`;
+
+  return {
+    kind: DAYTONA_KIND,
+    label: "Daytona",
+    capabilities,
+    validateCredential: (account) =>
+      request(account, "validate-credential", "GET", apiUrlFor("/sandbox?limit=1")).pipe(
+        Effect.asVoid,
+      ),
+    create: Effect.fn("DaytonaSandboxProvider.create")(function* (input) {
+      const response = yield* request(input.account, "create", "POST", apiUrlFor("/sandbox"), {
+        body: createBody(input),
+        timeoutMs: API_REQUEST_TIMEOUT_MS,
+      });
+      const providerSandboxId = sandboxFrom(response.body);
+      if (providerSandboxId === undefined) {
+        return yield* new SandboxProviderError({
+          providerKind: DAYTONA_KIND,
+          operation: "create",
+          detail: "Daytona did not return the new sandbox id.",
+        });
+      }
+      yield* waitUntilRunning(input.account, providerSandboxId);
+      return { providerSandboxId };
+    }),
+    findCreated: Effect.fn("DaytonaSandboxProvider.findCreated")(function* (
+      account: SandboxProviderAccount,
+      instanceId: string,
+    ) {
+      const found: Array<{ providerSandboxId: string; status: "running" | "paused" }> = [];
+      let cursor: string | undefined;
+      for (let page = 0; page < 10; page += 1) {
+        const query = new URLSearchParams({
+          labels: instanceLabels(instanceId),
+          limit: "200",
+          ...(cursor === undefined ? {} : { cursor }),
+        });
+        const response = yield* request(
+          account,
+          "find-created",
+          "GET",
+          apiUrlFor(`/sandbox?${query.toString()}`),
+        );
+        const body = asRecord(response.body);
+        const items = Array.isArray(body["items"]) ? body["items"] : [];
+        for (const item of items) {
+          const providerSandboxId = readString(asRecord(item)["id"]);
+          if (providerSandboxId === undefined) continue;
+          found.push({
+            providerSandboxId,
+            status: providerStatus(sandboxState(item)),
+          });
+        }
+        const next = readString(body["nextCursor"]);
+        if (next === undefined || next === cursor) break;
+        cursor = next;
+      }
+      return found;
+    }),
+    get: Effect.fn("DaytonaSandboxProvider.get")(function* (
+      account: SandboxProviderAccount,
+      providerSandboxId: string,
+    ) {
+      const response = yield* request(
+        account,
+        "get",
+        "GET",
+        apiUrlFor(`/sandbox/${encodeURIComponent(providerSandboxId)}`),
+      );
+      const state = sandboxState(response.body);
+      if (FAILED_STATES.has(state)) {
+        return yield* new SandboxProviderError({
+          providerKind: DAYTONA_KIND,
+          operation: "get",
+          detail: "Daytona could not find that sandbox. It may have expired or been deleted.",
+          statusCode: 404,
+        });
+      }
+      return { status: providerStatus(state) };
+    }),
+    pause: (_account) =>
+      Effect.fail(
+        new SandboxProviderError({
+          providerKind: DAYTONA_KIND,
+          operation: "pause",
+          detail: "Daytona sandboxes cannot be paused by T3 Code.",
+        }),
+      ),
+    resume: (_account) =>
+      Effect.fail(
+        new SandboxProviderError({
+          providerKind: DAYTONA_KIND,
+          operation: "resume",
+          detail: "Daytona sandboxes cannot be woken after sleeping in T3 Code.",
+        }),
+      ),
+    delete: (account, providerSandboxId) =>
+      request(
+        account,
+        "delete",
+        "DELETE",
+        apiUrlFor(`/sandbox/${encodeURIComponent(providerSandboxId)}`),
+      ).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            toolboxUrls.delete(providerSandboxId);
+          }),
+        ),
+        Effect.asVoid,
+      ),
+    exec: Effect.fn("DaytonaSandboxProvider.exec")(function* (input: SandboxProviderExecInput) {
+      const toolbox = yield* toolboxUrl(input.account, input.providerSandboxId);
+      const response = yield* request(
+        input.account,
+        "exec",
+        "POST",
+        toolboxPath(toolbox, input.providerSandboxId, "/process/execute"),
+        {
+          body: {
+            command: input.command,
+            ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
+            ...(input.envs === undefined ? {} : { envs: input.envs }),
+            timeout: Math.max(1, Math.ceil((input.timeoutMs ?? EXEC_TIMEOUT_MS) / 1000)),
+          },
+          timeoutMs: (input.timeoutMs ?? EXEC_TIMEOUT_MS) + 30_000,
+        },
+      );
+      const body = asRecord(response.body);
+      return {
+        exitCode: readNumber(body["exitCode"]) ?? 0,
+        // The toolbox combines stdout and stderr into `result`.
+        stdout: readString(body["result"]) ?? "",
+        stderr: "",
+      };
+    }),
+    writeFile: Effect.fn("DaytonaSandboxProvider.writeFile")(function* (
+      input: SandboxProviderWriteFileInput,
+    ) {
+      const toolbox = yield* toolboxUrl(input.account, input.providerSandboxId);
+      const path = encodeURIComponent(input.path);
+      yield* request(
+        input.account,
+        "exec",
+        "POST",
+        toolboxPath(toolbox, input.providerSandboxId, `/files/upload-v2?path=${path}`),
+        {
+          data: input.data,
+          headers: { "content-type": "application/octet-stream" },
+        },
+      );
+    }),
+    portAccess: Effect.fn("DaytonaSandboxProvider.portAccess")(function* (
+      input: SandboxProviderPortAccessInput,
+    ) {
+      const response = yield* request(
+        input.account,
+        "exec",
+        "GET",
+        apiUrlFor(
+          `/sandbox/${encodeURIComponent(input.providerSandboxId)}/ports/${input.port}/preview-url`,
+        ),
+      );
+      const body = asRecord(response.body);
+      const url = readString(body["url"]);
+      const token = readString(body["token"]);
+      if (url === undefined || token === undefined) {
+        return yield* new SandboxProviderError({
+          providerKind: DAYTONA_KIND,
+          operation: "exec",
+          detail: "Daytona did not return a private preview token for this sandbox.",
+        });
+      }
+      return {
+        url,
+        headers: { "x-daytona-preview-token": token },
+      };
+    }),
+    startProcess: Effect.fn("DaytonaSandboxProvider.startProcess")(function* (
+      input: SandboxProviderStartProcessInput,
+    ) {
+      const toolbox = yield* toolboxUrl(input.account, input.providerSandboxId);
+      const sessionId = `t3-${NodeCrypto.randomUUID()}`;
+      yield* request(
+        input.account,
+        "exec",
+        "POST",
+        toolboxPath(toolbox, input.providerSandboxId, "/process/session"),
+        { body: { sessionId } },
+      );
+      const started = yield* request(
+        input.account,
+        "exec",
+        "POST",
+        toolboxPath(toolbox, input.providerSandboxId, `/process/session/${sessionId}/exec`),
+        {
+          body: {
+            command: sessionCommand(input),
+            runAsync: true,
+            suppressInputEcho: true,
+          },
+        },
+      );
+      const commandId = readString(asRecord(started.body)["cmdId"]);
+      if (commandId === undefined) {
+        return yield* new SandboxProviderError({
+          providerKind: DAYTONA_KIND,
+          operation: "exec",
+          detail: "Daytona did not return a command id for the sandbox process.",
+        });
+      }
+
+      const commandUrl = toolboxPath(
+        toolbox,
+        input.providerSandboxId,
+        `/process/session/${sessionId}/command/${commandId}`,
+      );
+      const logsUrl = `${commandUrl}/logs`;
+      const inputUrl = `${commandUrl}/input`;
+      const sessionUrl = toolboxPath(
+        toolbox,
+        input.providerSandboxId,
+        `/process/session/${sessionId}`,
+      );
+      let stdoutOffset = 0;
+      let stderrOffset = 0;
+
+      const emit = (next: string, offset: number, write: (data: string) => void): number => {
+        if (next.length > offset) {
+          write(next.slice(offset));
+          return next.length;
+        }
+        if (next.length < offset) {
+          // The provider rotated its log page; replay it rather than silently dropping output.
+          write(next);
+          return next.length;
+        }
+        return offset;
+      };
+
+      const readLogs = Effect.gen(function* () {
+        const response = yield* request(input.account, "exec", "GET", logsUrl);
+        const body = asRecord(response.body);
+        const stdout = readString(body["stdout"]);
+        const stderr = readString(body["stderr"]);
+        if (stdout !== undefined) {
+          stdoutOffset = emit(stdout, stdoutOffset, input.onStdout);
+        }
+        if (stderr !== undefined) {
+          stderrOffset = emit(stderr, stderrOffset, input.onStderr);
+        }
+      }).pipe(
+        Effect.catchIf(
+          (error) => error.statusCode === 404,
+          () => Effect.void,
+        ),
+      );
+
+      const deleteSession = request(input.account, "exec", "DELETE", sessionUrl).pipe(
+        Effect.catchIf(
+          (error) => error.statusCode === 404,
+          () => Effect.void,
+        ),
+        Effect.asVoid,
+      );
+
+      const process: SandboxProviderProcess = {
+        pid: 0,
+        sendStdin: (data) =>
+          request(input.account, "exec", "POST", inputUrl, {
+            body: { data },
+          }).pipe(Effect.asVoid),
+        kill: deleteSession,
+        wait: Effect.gen(function* () {
+          while (true) {
+            yield* readLogs;
+            const command = yield* request(input.account, "exec", "GET", commandUrl).pipe(
+              Effect.catchIf(
+                (error) => error.statusCode === 404,
+                () => Effect.succeed({ status: 404, body: undefined }),
+              ),
+            );
+            const exitCode = readNumber(asRecord(command.body)["exitCode"]);
+            if (exitCode !== undefined) {
+              yield* readLogs;
+              yield* deleteSession;
+              return { exitCode };
+            }
+            if (command.status === 404) {
+              yield* deleteSession;
+              return { exitCode: 1 };
+            }
+            yield* Effect.sleep(PROCESS_POLL_INTERVAL);
+          }
+        }),
+      };
+      return process;
+    }),
+  };
+};

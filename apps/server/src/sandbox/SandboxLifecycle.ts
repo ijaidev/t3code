@@ -280,6 +280,8 @@ const make = Effect.gen(function* () {
             instanceId: id,
             template: account.template,
             timeoutMs: (input.timeoutMinutes ?? DEFAULT_TEST_TIMEOUT_MINUTES) * 60_000,
+            ...(size === null ? {} : { size }),
+            ...(region === null ? {} : { region }),
           })
           .pipe(Effect.result);
         if (created._tag === "Failure") {
