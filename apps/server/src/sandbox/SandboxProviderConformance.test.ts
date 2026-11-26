@@ -70,7 +70,11 @@ interface HarnessState {
   lastLogsHeaders: Readonly<Record<string, string>> | null;
   followCalls: number;
   followChunks: Array<string>;
+  followScripts: Array<Array<string>>;
   followClosed: boolean;
+  exitAfterFollowCalls: number;
+  growingLogs: boolean;
+  exitAfterLogsRequests: number;
   session: {
     stdout: string;
     stderr: string;
@@ -103,7 +107,11 @@ const makeState = (): HarnessState => ({
   lastLogsHeaders: null,
   followCalls: 0,
   followChunks: [],
+  followScripts: [],
   followClosed: false,
+  exitAfterFollowCalls: 0,
+  growingLogs: false,
+  exitAfterLogsRequests: 0,
   session: null,
 });
 
@@ -408,6 +416,16 @@ const makeDaytonaHarness = (): ProviderHarness => {
       if (path.endsWith("/logs")) {
         state.logsRequests += 1;
         state.lastLogsHeaders = input.headers ?? null;
+        if (state.growingLogs) {
+          const count =
+            state.exitAfterLogsRequests > 0
+              ? Math.min(state.logsRequests, state.exitAfterLogsRequests)
+              : state.logsRequests;
+          return respond(
+            200,
+            Array.from({ length: count }, (_, index) => `line-${index + 1}\n`).join(""),
+          );
+        }
         const session = state.session;
         if (state.plainTextLogs) {
           return respond(200, `${session?.stdout ?? ""}${session?.stderr ?? ""}`);
@@ -426,10 +444,12 @@ const makeDaytonaHarness = (): ProviderHarness => {
       }
 
       if (path.includes("/process/session/") && path.includes("/command/")) {
+        const waitForFollow = state.followCalls < state.exitAfterFollowCalls;
+        const waitForLogs = state.logsRequests < state.exitAfterLogsRequests;
         return respond(200, {
           id: "cmd-1",
           command: "python3 -u host.py",
-          exitCode: state.session?.exitCode ?? 0,
+          ...(waitForFollow || waitForLogs ? {} : { exitCode: state.session?.exitCode ?? 0 }),
         });
       }
 
@@ -438,7 +458,8 @@ const makeDaytonaHarness = (): ProviderHarness => {
     followLogs: async (input) => {
       state.followCalls += 1;
       if (state.disableFollowLogs) throw new Error("The follow stream is unavailable.");
-      for (const chunk of state.followChunks) input.onData(chunk);
+      const chunks = state.followScripts[state.followCalls - 1] ?? state.followChunks;
+      for (const chunk of chunks) input.onData(chunk);
       input.onClose();
       return {
         close: () => {
@@ -893,6 +914,52 @@ describe("Daytona failures", () => {
       }).pipe(Effect.provide(daytonaCloudLayer(driver)));
     }),
   );
+
+  it.effect("prefers a running duplicate over a paused sandbox it cannot wake", () =>
+    Effect.gen(function* () {
+      const { driver, account: credentials, state } = makeDaytonaHarness();
+      const accountId = SandboxProviderAccountId.make("daytona-work");
+      yield* Effect.gen(function* () {
+        const accounts = yield* SandboxAccounts.SandboxAccounts;
+        yield* accounts.connect({
+          id: accountId,
+          config: {
+            kind: DAYTONA_KIND,
+            label: "Daytona",
+            apiKey: credentials.apiKey,
+            template: "base",
+            enabled: true,
+          },
+        });
+        const lifecycle = yield* SandboxLifecycle.SandboxLifecycle;
+        const store = yield* SandboxStore.SandboxStore;
+        const record = provisioningRecord("duplicate-record");
+        yield* store.upsert(record);
+        state.sandboxes.push(
+          {
+            instanceId: record.id,
+            providerSandboxId: "daytona-paused",
+            status: "paused",
+          },
+          {
+            instanceId: record.id,
+            providerSandboxId: "daytona-running",
+            status: "running",
+          },
+        );
+
+        yield* lifecycle.reconcile;
+
+        const records = yield* store.list;
+        expect(records).toHaveLength(1);
+        expect(records[0]?.providerSandboxId).toBe("daytona-running");
+        expect(records[0]?.status).toBe("running");
+        expect(state.sandboxes.map((sandbox) => sandbox.providerSandboxId)).toEqual([
+          "daytona-running",
+        ]);
+      }).pipe(Effect.provide(daytonaCloudLayer(driver)));
+    }),
+  );
 });
 
 describe("Daytona adapter", () => {
@@ -980,6 +1047,13 @@ describe("Daytona adapter", () => {
         "line-2\n",
         "line-3\n",
       ];
+      state.session = {
+        stdout: state.followChunks.join(""),
+        stderr: "",
+        exitCode: 0,
+        input: [],
+        deleted: false,
+      };
       const created = yield* driver.create({
         account: credentials,
         instanceId: "instance-1",
@@ -1013,9 +1087,78 @@ describe("Daytona adapter", () => {
       expect(state.session?.input).toEqual(["ping\n"]);
       expect(state.session?.deleted).toBe(true);
       expect(state.followCalls).toBe(1);
-      expect(state.followClosed).toBe(true);
-      // A follow stream must not re-download the full log body on every poll.
-      expect(state.logsRequests).toBe(0);
+      // The follow stream is the log source; at most one final snapshot confirms the tail.
+      expect(state.logsRequests).toBeLessThanOrEqual(1);
+    }),
+  );
+
+  it.live("reconnects when follow closes mid-turn and skips the replayed prefix", () =>
+    Effect.gen(function* () {
+      const { driver, account: credentials, state } = makeDaytonaHarness();
+      const ready = `${JSON.stringify({ type: "ready", protocolVersion: "1", pid: 1 })}\n`;
+      const later = "late-output\n";
+      state.followScripts = [[ready], [ready, later]];
+      state.followChunks = [];
+      state.exitAfterFollowCalls = 2;
+      state.session = {
+        stdout: `${ready}${later}`,
+        stderr: "",
+        exitCode: 0,
+        input: [],
+        deleted: false,
+      };
+      const created = yield* driver.create({
+        account: credentials,
+        instanceId: "instance-1",
+        template: "base",
+        timeoutMs: 60_000,
+      });
+      let stdout = "";
+      const process = yield* driver.startProcess!({
+        account: credentials,
+        providerSandboxId: created.providerSandboxId,
+        command: "python3 -u host.py",
+        onStdout: (data) => {
+          stdout += data;
+        },
+        onStderr: () => {},
+      });
+      const result = yield* process.wait;
+      expect(result.exitCode).toBe(0);
+      expect(state.followCalls).toBe(2);
+      expect(stdout).toBe(`${ready}${later}`);
+      expect(stdout.match(/"type":"ready"/g)).toHaveLength(1);
+      expect(state.session?.deleted).toBe(true);
+    }),
+  );
+
+  it.live("emits only new fallback log lines as the body grows", () =>
+    Effect.gen(function* () {
+      const { driver, account: credentials, state } = makeDaytonaHarness();
+      state.disableFollowLogs = true;
+      state.growingLogs = true;
+      state.exitAfterLogsRequests = 3;
+      const created = yield* driver.create({
+        account: credentials,
+        instanceId: "instance-1",
+        template: "base",
+        timeoutMs: 60_000,
+      });
+      let stdout = "";
+      const process = yield* driver.startProcess!({
+        account: credentials,
+        providerSandboxId: created.providerSandboxId,
+        command: "python3 -u host.py",
+        onStdout: (data) => {
+          stdout += data;
+        },
+        onStderr: () => {},
+      });
+      const result = yield* process.wait;
+      expect(result.exitCode).toBe(0);
+      expect(stdout).toBe("line-1\nline-2\nline-3\n");
+      expect(state.logsRequests).toBe(4);
+      expect(state.session?.deleted).toBe(true);
     }),
   );
 

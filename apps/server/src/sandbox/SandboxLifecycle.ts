@@ -230,11 +230,17 @@ const make = Effect.gen(function* () {
         yield* markFailed(record, `The provider could not be checked: ${found.failure.detail}`);
         continue;
       }
-      const healthy = found.success.filter((sandbox) => sandbox.status !== "failed");
-      const first = healthy[0];
+      const adoptable = found.success.filter(
+        (sandbox) =>
+          sandbox.status !== "failed" &&
+          (sandbox.status !== "paused" || resolved.success.driver.capabilities.pauseResume),
+      );
+      // Prefer a running sandbox over a paused duplicate so a provider without pause
+      // never adopts a sandbox it cannot wake.
+      const first = adoptable.find((sandbox) => sandbox.status === "running") ?? adoptable[0];
       if (first === undefined) {
-        // The provider only reports failed or deleted sandboxes. Delete them so they stop
-        // billing instead of adopting one as a running record.
+        // The provider only reports failed, deleted, or unusable paused sandboxes. Delete them
+        // so they stop billing instead of adopting one as a running record.
         const outcomes = yield* deleteFound(
           resolved.success.driver,
           resolved.success.account,

@@ -31,6 +31,7 @@ const EXEC_TIMEOUT_MS = 120_000;
 const MAX_ERROR_DETAIL_LENGTH = 300;
 const BASE_TEMPLATE = "base";
 const DAYTONA_SDK_VERSION = "0.167.0";
+const MAX_FOLLOW_RECONNECTS = 5;
 
 const capabilities: SandboxProviderCapabilities = {
   create: true,
@@ -280,18 +281,28 @@ const logsObject = (text: string): Readonly<Record<string, unknown>> | null => {
   }
 };
 
-const logsFromBody = (body: unknown): { readonly stdout?: string; readonly stderr?: string } => {
+const LOG_STDOUT_PREFIX = "\u0001\u0001\u0001";
+const LOG_STDERR_PREFIX = "\u0002\u0002\u0002";
+
+const combinedLogs = (text: string): string =>
+  text.replaceAll(LOG_STDOUT_PREFIX, "").replaceAll(LOG_STDERR_PREFIX, "");
+
+const logsFromBody = (
+  body: unknown,
+): { readonly combined?: string; readonly stdout?: string; readonly stderr?: string } => {
   if (typeof body === "string") {
     const parsed = logsObject(body);
-    return parsed === null ? { stdout: body } : logsFromBody(parsed);
+    return parsed === null ? { combined: combinedLogs(body) } : logsFromBody(parsed);
   }
   const record = asRecord(body);
+  const output = readString(record["output"]);
+  if (output !== undefined) {
+    return { combined: combinedLogs(output) };
+  }
   const stdout = readString(record["stdout"]);
   const stderr = readString(record["stderr"]);
-  const output = readString(record["output"]);
-  const combined = stdout ?? output;
   return {
-    ...(combined === undefined ? {} : { stdout: combined }),
+    ...(stdout === undefined ? {} : { stdout }),
     ...(stderr === undefined ? {} : { stderr }),
   };
 };
@@ -637,6 +648,8 @@ export const makeDaytonaSandboxProvider = (
       );
       let stdoutOffset = 0;
       let stderrOffset = 0;
+      let followOffset = 0;
+      let followSeen = 0;
       let followClosed = false;
 
       const emit = (next: string, offset: number, write: (data: string) => void): number => {
@@ -659,11 +672,15 @@ export const makeDaytonaSandboxProvider = (
           parseJson: false,
         });
         const logs = logsFromBody(response.body);
-        if (logs.stdout !== undefined) {
-          stdoutOffset = emit(logs.stdout, stdoutOffset, input.onStdout);
-        }
-        if (logs.stderr !== undefined) {
-          stderrOffset = emit(logs.stderr, stderrOffset, input.onStderr);
+        if (logs.combined !== undefined) {
+          stdoutOffset = emit(logs.combined, stdoutOffset, input.onStdout);
+        } else {
+          if (logs.stdout !== undefined) {
+            stdoutOffset = emit(logs.stdout, stdoutOffset, input.onStdout);
+          }
+          if (logs.stderr !== undefined) {
+            stderrOffset = emit(logs.stderr, stderrOffset, input.onStderr);
+          }
         }
       }).pipe(Effect.ignore);
 
@@ -676,21 +693,33 @@ export const makeDaytonaSandboxProvider = (
       );
 
       const followLogs = client.followLogs;
-      const follow =
-        followLogs === undefined
-          ? null
-          : yield* Effect.tryPromise({
-              try: () =>
-                followLogs({
-                  url: logsUrl,
-                  apiKey: input.account.apiKey,
-                  onData: input.onStdout,
-                  onClose: () => {
-                    followClosed = true;
-                  },
-                }),
-              catch: (cause) => providerError(input.account, "exec", cause),
-            }).pipe(Effect.orElseSucceed(() => null));
+      const startFollow = (): Effect.Effect<DaytonaLogFollow | null> => {
+        if (followLogs === undefined) return Effect.succeed(null);
+        followClosed = false;
+        followSeen = 0;
+        return Effect.tryPromise({
+          try: () =>
+            followLogs({
+              url: logsUrl,
+              apiKey: input.account.apiKey,
+              onData: (data) => {
+                // A reconnect replays the retained log from the start. Skip the prefix this
+                // process already emitted and forward only the new suffix.
+                const start = Math.max(0, followOffset - followSeen);
+                followSeen += data.length;
+                if (start >= data.length) return;
+                const next = data.slice(start);
+                followOffset += next.length;
+                input.onStdout(next);
+              },
+              onClose: () => {
+                followClosed = true;
+              },
+            }),
+          catch: (cause) => providerError(input.account, "exec", cause),
+        }).pipe(Effect.orElseSucceed(() => null));
+      };
+      let follow = yield* startFollow();
 
       const waitForFollowClose = Effect.gen(function* () {
         for (let attempt = 0; attempt < 40; attempt += 1) {
@@ -708,10 +737,8 @@ export const makeDaytonaSandboxProvider = (
         kill: deleteSession,
         wait: Effect.gen(function* () {
           let delayMs = 250;
+          let reconnectAttempts = 0;
           while (true) {
-            if (follow === null) {
-              yield* readLogs;
-            }
             const command = yield* request(input.account, "exec", "GET", commandUrl).pipe(
               Effect.catchIf(
                 (error) => error.statusCode === 404,
@@ -720,12 +747,17 @@ export const makeDaytonaSandboxProvider = (
             );
             const exitCode = readNumber(asRecord(command.body)["exitCode"]);
             if (exitCode !== undefined) {
-              if (follow === null) {
+              if (follow !== null && followClosed) {
+                // The stream dropped before the process finished; read the remaining tail.
+                stdoutOffset = Math.max(stdoutOffset, followOffset);
                 yield* readLogs;
-              } else {
+                follow.close();
+              } else if (follow !== null) {
                 // The follow stream delivers the final frames before it closes.
                 yield* waitForFollowClose;
                 follow.close();
+              } else {
+                yield* readLogs;
               }
               yield* deleteSession;
               return { exitCode };
@@ -734,6 +766,21 @@ export const makeDaytonaSandboxProvider = (
               follow?.close();
               yield* deleteSession;
               return { exitCode: 1 };
+            }
+            if (follow !== null && followClosed) {
+              follow.close();
+              follow = null;
+              // Keep the HTTP fallback from replaying output the follow stream already sent.
+              stdoutOffset = Math.max(stdoutOffset, followOffset);
+              reconnectAttempts += 1;
+              if (reconnectAttempts <= MAX_FOLLOW_RECONNECTS) {
+                yield* Effect.sleep(`${delayMs} millis`);
+                follow = yield* startFollow();
+                delayMs = follow === null ? Math.min(delayMs * 2, 2_000) : 250;
+              }
+            }
+            if (follow === null) {
+              yield* readLogs;
             }
             yield* Effect.sleep(`${delayMs} millis`);
             delayMs = Math.min(delayMs * 2, 2_000);
