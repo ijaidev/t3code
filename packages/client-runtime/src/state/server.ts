@@ -1573,6 +1573,36 @@ export function createServerEnvironmentAtoms<R, E>(
       scheduler: sandboxScheduler,
       concurrency: sandboxConcurrency,
     }),
+    cloudSandboxState: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:sandbox:cloud-sandbox-state",
+      tag: WS_METHODS.sandboxSubscribeCloudSandbox,
+      // Each event is a full state, so a batched chunk may drop the intermediate waking state.
+      transform: (stream) => stream.pipe(Stream.rechunk(1)),
+    }),
+    sleepCloudSandbox: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:sandbox:sleep-cloud-sandbox",
+      tag: WS_METHODS.sandboxSleepCloudSandbox,
+      scheduler: sandboxScheduler,
+      concurrency: sandboxConcurrency,
+    }),
+    wakeCloudSandbox: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:sandbox:wake-cloud-sandbox",
+      tag: WS_METHODS.sandboxWakeCloudSandbox,
+      scheduler: sandboxScheduler,
+      concurrency: sandboxConcurrency,
+    }),
+    previewCloudSandboxDelete: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:sandbox:preview-cloud-sandbox-delete",
+      tag: WS_METHODS.sandboxPreviewCloudSandboxDelete,
+      scheduler: sandboxScheduler,
+      concurrency: sandboxConcurrency,
+    }),
+    deleteCloudSandbox: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:sandbox:delete-cloud-sandbox",
+      tag: WS_METHODS.sandboxDeleteCloudSandbox,
+      scheduler: sandboxScheduler,
+      concurrency: sandboxConcurrency,
+    }),
     runStorageCleanup: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:run-storage-cleanup",
       tag: WS_METHODS.serverRunStorageCleanup,

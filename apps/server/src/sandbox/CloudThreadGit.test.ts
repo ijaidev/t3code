@@ -11,6 +11,7 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
 import * as Ref from "effect/Ref";
 
 import type * as SourceControlProvider from "@t3tools/source-control-core/server/SourceControlProvider";
@@ -154,6 +155,17 @@ const testLayer = (state: FakeState) => {
     writeAttachment: () => Effect.succeed(false),
     openHost: () => Effect.die("unused"),
     deleteForThread: () => Effect.void,
+    getCloudSandboxState: () => Effect.succeedNone,
+    subscribeCloudSandbox: () => Stream.empty,
+    sleepCloudSandbox: () => Effect.die("unused"),
+    wakeCloudSandbox: () => Effect.die("unused"),
+    previewCloudSandboxDelete: () => Effect.die("unused"),
+    deleteCloudSandbox: () => Effect.die("unused"),
+    beginTurn: () => Effect.void,
+    endTurn: () => Effect.void,
+    holdPreview: () => Effect.void,
+    releasePreview: () => Effect.void,
+    sweepIdle: Effect.succeed(0),
   });
   const registry = Layer.succeed(SourceControlProviderRegistry.SourceControlProviderRegistry, {
     resolveHandle: () =>
