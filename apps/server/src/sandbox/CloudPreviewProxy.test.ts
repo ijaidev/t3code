@@ -9,6 +9,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as NodeHttp from "node:http";
+import * as NodeNet from "node:net";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -136,6 +137,33 @@ const bootstrapPreview = async (
   return { origin, cookie, response };
 };
 
+const rawRequest = (port: number, target: string, upgrade = false): Promise<string> =>
+  new Promise((resolve) => {
+    const socket = NodeNet.connect(port, "127.0.0.1");
+    let data = "";
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(data);
+    };
+    socket.setEncoding("utf8");
+    socket.setTimeout(2_000, finish);
+    socket.on("data", (chunk) => {
+      data += chunk;
+    });
+    socket.on("close", finish);
+    socket.on("error", finish);
+    socket.write(
+      `GET ${target} HTTP/1.1\r\nHost: localhost\r\nConnection: ${upgrade ? "Upgrade" : "close"}\r\n${
+        upgrade
+          ? "Upgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n"
+          : ""
+      }\r\n`,
+    );
+  });
+
 const authorizedFetch = (
   origin: string,
   path: string,
@@ -196,6 +224,16 @@ describe("cloud preview proxy", () => {
       expect(entry.url).not.toContain("e2b");
       expect(entry.url).toContain("localhost");
       expect(entry.url).toContain("t3-preview=");
+
+      const localPort = Number(new URL(entry.url).port);
+      const malformedTarget = yield* Effect.promise(() => rawRequest(localPort, "http://["));
+      expect(malformedTarget === "" || malformedTarget.startsWith("HTTP/1.1 400")).toBe(true);
+      const malformedPort = yield* Effect.promise(() =>
+        rawRequest(localPort, "http://localhost:999999/"),
+      );
+      expect(malformedPort === "" || malformedPort.startsWith("HTTP/1.1 400")).toBe(true);
+      const malformedUpgrade = yield* Effect.promise(() => rawRequest(localPort, "http://[", true));
+      expect(malformedUpgrade === "" || malformedUpgrade.startsWith("HTTP/1.1 400")).toBe(true);
 
       const boot = yield* Effect.promise(() => bootstrapPreview(entry.url));
       expect(boot.response.status).toBe(302);

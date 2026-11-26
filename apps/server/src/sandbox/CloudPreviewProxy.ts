@@ -116,11 +116,13 @@ export class CloudPreviewProxy extends Context.Service<
 
 const entryKey = (threadId: ThreadId, port: number) => `${threadId}\u0000${port}`;
 
-const previewRequestUrl = (request: NodeHttp.IncomingMessage): URL =>
-  new URL(request.url ?? "/", "http://localhost");
-
-const previewToken = (request: NodeHttp.IncomingMessage): string | null =>
-  previewRequestUrl(request).searchParams.get(PREVIEW_TOKEN_PARAM);
+const previewRequestUrl = (request: NodeHttp.IncomingMessage): URL | null => {
+  try {
+    return new URL(request.url ?? "/", "http://localhost");
+  } catch {
+    return null;
+  }
+};
 
 const cookieValue = (header: string | undefined, name: string): string | null => {
   if (header === undefined) return null;
@@ -133,12 +135,17 @@ const cookieValue = (header: string | undefined, name: string): string | null =>
 };
 
 const authorization = (entry: ProxyEntry, request: NodeHttp.IncomingMessage) => {
+  const url = previewRequestUrl(request);
+  if (url === null) return "invalid" as const;
   if (cookieValue(request.headers.cookie, entry.cookieName) === entry.token) return "ok" as const;
-  return previewToken(request) === entry.token ? ("bootstrap" as const) : ("denied" as const);
+  return url.searchParams.get(PREVIEW_TOKEN_PARAM) === entry.token
+    ? ("bootstrap" as const)
+    : ("denied" as const);
 };
 
-const cleanPreviewPath = (request: NodeHttp.IncomingMessage): string => {
+const cleanPreviewPath = (request: NodeHttp.IncomingMessage): string | null => {
   const url = previewRequestUrl(request);
+  if (url === null) return null;
   url.searchParams.delete(PREVIEW_TOKEN_PARAM);
   return `${url.pathname}${url.search}`;
 };
@@ -220,15 +227,13 @@ const proxyHttpRequest = (
   access: PortAccess,
   request: NodeHttp.IncomingMessage,
   response: NodeHttp.ServerResponse,
+  path: string,
   onUpstreamError: (error: unknown) => void,
 ) =>
   new Promise<void>((resolve) => {
     const upstream = new URL(access.url);
     const transport = upstream.protocol === "https:" ? NodeHttps : NodeHttp;
-    const target = new URL(
-      `${upstream.pathname.replace(/\/$/, "")}${cleanPreviewPath(request)}`,
-      upstream,
-    );
+    const target = new URL(`${upstream.pathname.replace(/\/$/, "")}${path}`, upstream);
     const outgoing = transport.request(
       {
         protocol: target.protocol,
@@ -269,12 +274,10 @@ const proxyWebSocket = (
   request: NodeHttp.IncomingMessage,
   socket: NodeStream.Duplex,
   head: Buffer,
+  path: string,
 ) => {
   const upstream = new URL(access.url);
-  const target = new URL(
-    `${upstream.pathname.replace(/\/$/, "")}${cleanPreviewPath(request)}`,
-    upstream,
-  );
+  const target = new URL(`${upstream.pathname.replace(/\/$/, "")}${path}`, upstream);
   target.protocol = upstream.protocol === "https:" ? "wss:" : "ws:";
   const protocols = webSocketProtocols(request.headers["sec-websocket-protocol"]);
   const headers = forwardedRequestHeaders(request, entry, access);
@@ -399,8 +402,17 @@ export const make = Effect.gen(function* CloudPreviewProxyMake() {
     response: NodeHttp.ServerResponse,
   ) => {
     const authorized = authorization(entry, request);
+    if (authorized === "invalid") {
+      writeError(response, 400, "Bad preview request.");
+      return;
+    }
     if (authorized === "denied") {
       writeError(response, 401, "Preview access denied.");
+      return;
+    }
+    const path = cleanPreviewPath(request);
+    if (path === null) {
+      writeError(response, 400, "Bad preview request.");
       return;
     }
     if (authorized === "bootstrap") {
@@ -409,7 +421,7 @@ export const make = Effect.gen(function* CloudPreviewProxyMake() {
         return;
       }
       response.writeHead(302, {
-        location: cleanPreviewPath(request) || "/",
+        location: path || "/",
         "set-cookie": `${entry.cookieName}=${entry.token}; Path=/; HttpOnly; SameSite=Lax`,
         "cache-control": "private, no-store",
         "referrer-policy": "no-referrer",
@@ -423,7 +435,7 @@ export const make = Effect.gen(function* CloudPreviewProxyMake() {
           Effect.catch(() => readAccess(entry, true)),
         );
         yield* Effect.promise(() =>
-          proxyHttpRequest(entry, access, request, response, (cause) => {
+          proxyHttpRequest(entry, access, request, response, path, (cause) => {
             void runPromise(
               Effect.logWarning("Sandbox preview request failed", {
                 threadId: entry.threadId,
@@ -452,8 +464,18 @@ export const make = Effect.gen(function* CloudPreviewProxyMake() {
     socket: NodeStream.Duplex,
     head: Buffer,
   ) => {
-    if (authorization(entry, request) === "denied") {
+    const authorized = authorization(entry, request);
+    if (authorized === "invalid") {
+      socket.end("HTTP/1.1 400 Bad Request\r\ncontent-type: text/plain\r\n\r\n");
+      return;
+    }
+    if (authorized === "denied") {
       socket.end("HTTP/1.1 401 Unauthorized\r\ncontent-type: text/plain\r\n\r\n");
+      return;
+    }
+    const path = cleanPreviewPath(request);
+    if (path === null) {
+      socket.end("HTTP/1.1 400 Bad Request\r\ncontent-type: text/plain\r\n\r\n");
       return;
     }
     void runPromise(
@@ -461,7 +483,7 @@ export const make = Effect.gen(function* CloudPreviewProxyMake() {
         const access = yield* readAccess(entry, false).pipe(
           Effect.catch(() => readAccess(entry, true)),
         );
-        yield* Effect.sync(() => proxyWebSocket(entry, access, request, socket, head));
+        yield* Effect.sync(() => proxyWebSocket(entry, access, request, socket, head, path));
       }).pipe(
         Effect.catch((error) => {
           socket.end("HTTP/1.1 502 Bad Gateway\r\ncontent-type: text/plain\r\n\r\n");
