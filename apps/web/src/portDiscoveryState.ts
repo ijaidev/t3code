@@ -3,6 +3,8 @@ import {
   PREVIEW_URL_MAX_LENGTH,
   type DiscoveredLocalServer,
   type EnvironmentId,
+  type SandboxPreviewUnavailable,
+  type SandboxPreviewUnavailableReason,
   type ThreadId,
 } from "@t3tools/contracts";
 import { isLoopbackHost } from "@t3tools/shared/preview";
@@ -11,10 +13,12 @@ import { previewEnvironment } from "./state/preview";
 import { useEnvironmentQuery } from "./state/query";
 
 const EMPTY_PORTS: ReadonlyArray<DiscoveredLocalServer> = Object.freeze([]);
+const EMPTY_UNAVAILABLE: ReadonlyArray<SandboxPreviewUnavailable> = Object.freeze([]);
 
 interface DiscoveredPortsState {
   readonly servers: ReadonlyArray<DiscoveredLocalServer>;
   readonly configuredUrlProbing: boolean;
+  readonly sandboxPreviewUnavailable: ReadonlyArray<SandboxPreviewUnavailable>;
 }
 
 export function boundConfiguredLocalServerUrls(
@@ -63,6 +67,7 @@ export function useDiscoveredPortsState(
   return {
     servers: query.data?.servers ?? EMPTY_PORTS,
     configuredUrlProbing: query.data?.configuredUrlProbing === true,
+    sandboxPreviewUnavailable: query.data?.sandboxPreviewUnavailable ?? EMPTY_UNAVAILABLE,
   };
 }
 
@@ -77,4 +82,15 @@ export function useThreadDiscoveredPorts(input: {
           port.terminal?.threadId === input.threadId || port.agent?.threadId === input.threadId,
       )
     : EMPTY_PORTS;
+}
+
+export function useThreadSandboxPreviewUnavailable(input: {
+  readonly environmentId: EnvironmentId | null;
+  readonly threadId: ThreadId | null;
+}): SandboxPreviewUnavailableReason | null {
+  const state = useDiscoveredPortsState(input.environmentId);
+  return (
+    state.sandboxPreviewUnavailable.find((entry) => entry.threadId === input.threadId)?.reason ??
+    null
+  );
 }

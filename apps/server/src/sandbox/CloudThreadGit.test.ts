@@ -73,6 +73,9 @@ interface FakeState {
     ReadonlyArray<{ command: string; envs?: Readonly<Record<string, string>> }>
   >;
   statusBranch: string;
+  readonly listRequests: Array<Record<string, unknown>>;
+  readonly createRequests: Array<Record<string, unknown>>;
+  forkPullRequest: boolean;
   remoteRefExists: boolean;
   localRefExists: boolean;
   localHasUpstream: boolean;
@@ -82,9 +85,20 @@ interface FakeState {
 const fakeProvider = (state: FakeState): SourceControlProvider.SourceControlProvider["Service"] =>
   ({
     kind: SourceControlProviderKind.make("github"),
-    listChangeRequests: () => Effect.sync(() => (state.openPullRequests > 0 ? [pullRequest] : [])),
-    createChangeRequest: (input: unknown) =>
+    listChangeRequests: (input: Record<string, unknown>) =>
       Effect.sync(() => {
+        state.listRequests.push(input);
+        return state.openPullRequests > 0
+          ? [
+              state.forkPullRequest
+                ? { ...pullRequest, headRepositoryNameWithOwner: "other/private" }
+                : pullRequest,
+            ]
+          : [];
+      }),
+    createChangeRequest: (input: Record<string, unknown>) =>
+      Effect.sync(() => {
+        state.createRequests.push(input);
         state.openPullRequests += 1;
         return input;
       }),
@@ -213,6 +227,9 @@ const makeState = (overrides: Partial<FakeState> = {}) =>
         ReadonlyArray<{ command: string; envs?: Readonly<Record<string, string>> }>
       >([]),
       statusBranch: "feature",
+      listRequests: [],
+      createRequests: [],
+      forkPullRequest: false,
       remoteRefExists: false,
       localRefExists: false,
       localHasUpstream: true,
@@ -222,6 +239,61 @@ const makeState = (overrides: Partial<FakeState> = {}) =>
   });
 
 describe("cloud thread git", () => {
+  it.effect("fetches before deciding a cloud pull is up to date", () => {
+    const run = Effect.gen(function* () {
+      const state = yield* makeState();
+      return yield* Effect.gen(function* () {
+        const git = yield* CloudThreadGit.CloudThreadGit;
+        const result = yield* git.pullCurrentBranch(record.workspacePath);
+        expect(result.status).toBe("skipped_up_to_date");
+        const execs = yield* Ref.get(state.execs);
+        expect(execs[0]?.command).toContain("git fetch --prune origin");
+      }).pipe(Effect.provide(testLayer(state)));
+    });
+    return run;
+  });
+
+  it.effect("pins PR lookup and creation to the recorded repository", () => {
+    const run = Effect.gen(function* () {
+      const state = yield* makeState();
+      return yield* Effect.gen(function* () {
+        const git = yield* CloudThreadGit.CloudThreadGit;
+        yield* git.runStackedAction(
+          {
+            actionId: "action-repository",
+            cwd: record.workspacePath,
+            action: "commit_push_pr",
+            commitMessage: "Update cloud thread",
+          },
+          {},
+        );
+        expect(state.listRequests[0]).toMatchObject({
+          headSelector: "acme:feature",
+          repository: "acme/private",
+          preferContext: true,
+        });
+        expect(state.createRequests[0]).toMatchObject({
+          headSelector: "acme:feature",
+          source: { owner: "acme", refName: "feature" },
+          preferContext: true,
+        });
+      }).pipe(Effect.provide(testLayer(state)));
+    });
+    return run;
+  });
+
+  it.effect("ignores a fork pull request with the same head branch", () => {
+    const run = Effect.gen(function* () {
+      const state = yield* makeState({ openPullRequests: 1, forkPullRequest: true });
+      return yield* Effect.gen(function* () {
+        const git = yield* CloudThreadGit.CloudThreadGit;
+        const remote = yield* git.remoteStatus(record.workspacePath);
+        expect(remote.pr).toBeNull();
+      }).pipe(Effect.provide(testLayer(state)));
+    });
+    return run;
+  });
+
   it.effect("switches to a remote ref by creating a local tracking branch", () => {
     const run = Effect.gen(function* () {
       const state = yield* makeState({ remoteRefExists: true, localRefExists: false });

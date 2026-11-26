@@ -279,7 +279,22 @@ export const makeCloudCheckpointOps = (
       command,
       undefined,
       60_000,
-    ).pipe(Effect.asVoid);
+    ).pipe(
+      Effect.flatMap((result) =>
+        result.exitCode === 0
+          ? Effect.void
+          : gitFailure({
+              operation: "CloudCheckpointOps.deleteCheckpointRefs",
+              cwd: input.cwd,
+              command: "git update-ref -d",
+              exitCode: result.exitCode,
+              detail:
+                result.stderr.trim() ||
+                result.stdout.trim() ||
+                "The sandbox could not delete checkpoint refs.",
+            }),
+      ),
+    );
   };
 
   return {

@@ -58,6 +58,9 @@ const service = (
         if (input.command.includes("--name-status")) {
           return { exitCode: 0, stdout: "M\0src/a.ts\0", stderr: "" };
         }
+        if (input.command.includes("--name-only")) {
+          return { exitCode: 0, stdout: "src/a.ts\0", stderr: "" };
+        }
         if (input.command.includes("--numstat")) {
           return { exitCode: 0, stdout: "2\t1\tsrc/a.ts\0", stderr: "" };
         }
@@ -245,6 +248,92 @@ describe("cloud review", () => {
           newPath: "file.txt",
         });
         expect(contents).toEqual({ oldContents: "old\n", newContents: "new\n" });
+
+        NodeFS.writeFileSync(NodePath.join(repo, "untracked.txt"), "hello\n");
+        const untrackedPreview = yield* review.getDiffPreview({
+          cwd: repo,
+          sourceKind: "working-tree",
+        });
+        expect(
+          untrackedPreview.sources[0]?.files?.some((file) => file.path === "untracked.txt"),
+        ).toBe(true);
+        expect(untrackedPreview.sources[0]?.diff).toContain("+hello");
+        const untrackedContents = yield* review.getDiffFileContents({
+          cwd: repo,
+          sourceKind: "working-tree",
+          changeType: "new",
+          baseRef: "HEAD",
+          headRef: null,
+          oldPath: "untracked.txt",
+          newPath: "untracked.txt",
+        });
+        expect(untrackedContents).toEqual({ oldContents: "", newContents: "hello\n" });
+
+        NodeFS.writeFileSync(NodePath.join(repo, "file.txt"), "committed\n");
+        git("add", "file.txt");
+        git(
+          "-c",
+          "user.name=Test",
+          "-c",
+          "user.email=test@example.com",
+          "commit",
+          "-m",
+          "update file",
+        );
+        const commits = yield* review.getBranchCommits({ cwd: repo, baseRef: "HEAD~1" });
+        expect(commits.commits[0]?.subject).toBe("update file");
+        NodeFS.writeFileSync(NodePath.join(repo, "file.txt"), "working\n");
+        const branchContents = yield* review.getDiffFileContents({
+          cwd: repo,
+          sourceKind: "branch-range",
+          changeType: "change",
+          baseRef: "HEAD~1",
+          headRef: "HEAD",
+          oldPath: "file.txt",
+          newPath: "file.txt",
+        });
+        expect(branchContents).toEqual({
+          oldContents: "old\n",
+          newContents: "committed\n",
+        });
+
+        const absolute = yield* Effect.flip(
+          review.getDiffFileContents({
+            cwd: repo,
+            sourceKind: "working-tree",
+            changeType: "change",
+            baseRef: "HEAD",
+            headRef: null,
+            oldPath: "/etc/passwd",
+            newPath: "/etc/passwd",
+          }),
+        );
+        expect(absolute._tag).toBe("GitCommandError");
+        const parent = yield* Effect.flip(
+          review.getDiffFileContents({
+            cwd: repo,
+            sourceKind: "working-tree",
+            changeType: "change",
+            baseRef: "HEAD",
+            headRef: null,
+            oldPath: "../outside",
+            newPath: "../outside",
+          }),
+        );
+        expect(parent._tag).toBe("GitCommandError");
+        NodeFS.symlinkSync("/etc/passwd", NodePath.join(repo, "link.txt"));
+        const symlink = yield* Effect.flip(
+          review.getDiffFileContents({
+            cwd: repo,
+            sourceKind: "working-tree",
+            changeType: "new",
+            baseRef: "HEAD",
+            headRef: null,
+            oldPath: "link.txt",
+            newPath: "link.txt",
+          }),
+        );
+        expect(symlink._tag).toBe("GitCommandError");
       } finally {
         NodeFS.rmSync(repo, { recursive: true, force: true });
       }

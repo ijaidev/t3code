@@ -38,6 +38,7 @@ import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 
 import { resolveAttachmentPath } from "../attachmentStore.ts";
 import * as ServerConfig from "../config.ts";
+import * as CloudThreadPorts from "./CloudThreadPorts.ts";
 import * as CloudThreadStore from "./CloudThreadStore.ts";
 import * as CloudThreads from "./CloudThreads.ts";
 
@@ -188,6 +189,7 @@ export class CloudThreadRuntime extends Context.Service<
 
 const make = Effect.gen(function* () {
   const cloudThreads = yield* CloudThreads.CloudThreads;
+  const cloudThreadPorts = yield* CloudThreadPorts.CloudThreadPorts;
   const fileSystem = yield* FileSystem.FileSystem;
   const http = yield* HttpClient.HttpClient;
   const { attachmentsDir } = yield* ServerConfig.ServerConfig;
@@ -222,7 +224,9 @@ const make = Effect.gen(function* () {
     const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
     const connection = yield* Ref.make<CloudThreads.CloudHostConnection | null>(null);
     const resetHistoryOnConnect = yield* Ref.make(false);
+    const resetAck = yield* Ref.make<Deferred.Deferred<void> | null>(null);
     const activeTurn = yield* Ref.make<ActiveTurn | null>(null);
+    const activeTurnEnd = yield* Ref.make<Deferred.Deferred<void> | null>(null);
     const pendingApprovals = yield* Ref.make<
       ReadonlyMap<
         string,
@@ -246,6 +250,42 @@ const make = Effect.gen(function* () {
 
     const emit = (event: ProviderAdapter.ProviderAdapterV2Event) =>
       Queue.offer(events, event).pipe(Effect.asVoid);
+
+    const noteTurnEnded = Effect.gen(function* () {
+      const ended = yield* Ref.get(activeTurnEnd);
+      if (ended !== null) yield* Deferred.succeed(ended, undefined);
+      yield* Ref.set(activeTurnEnd, null);
+    });
+
+    const resetHistory = Effect.fn("CloudThreadRuntime.resetHistory")(function* (
+      host: CloudThreads.CloudHostConnection,
+    ) {
+      const acknowledged = yield* Deferred.make<void>();
+      yield* Ref.set(resetAck, acknowledged);
+      const sent = yield* Effect.result(
+        host.send({ type: "reset_history" }).pipe(
+          Effect.mapError(
+            () =>
+              new ProviderAdapter.ProviderAdapterRollbackThreadError({
+                driver: base.driver,
+                providerThreadId: ProviderThreadId.make("cloud"),
+              }),
+          ),
+        ),
+      );
+      if (sent._tag === "Failure") {
+        yield* Ref.set(resetAck, null);
+        return yield* sent.failure;
+      }
+      const ack = yield* Deferred.await(acknowledged).pipe(Effect.timeoutOption("10 seconds"));
+      yield* Ref.set(resetAck, null);
+      if (Option.isNone(ack)) {
+        return yield* new ProviderAdapter.ProviderAdapterRollbackThreadError({
+          driver: base.driver,
+          providerThreadId: ProviderThreadId.make("cloud"),
+        });
+      }
+    });
 
     const createdAt = yield* DateTime.now;
     const session: OrchestrationV2ProviderSession = {
@@ -390,6 +430,13 @@ const make = Effect.gen(function* () {
         case "turn_started": {
           const waiting = yield* Ref.get(waitingForTurnStart);
           if (waiting !== null) yield* Deferred.succeed(waiting, undefined);
+          return;
+        }
+        case "ports": {
+          yield* cloudThreadPorts.setPorts(
+            input.threadId,
+            Array.isArray(message["ports"]) ? message["ports"] : [],
+          );
           return;
         }
         case "model_request":
@@ -557,6 +604,11 @@ const make = Effect.gen(function* () {
           yield* emit({ type: "turn_item.updated", driver: base.driver, turnItem: item });
           return;
         }
+        case "history_reset": {
+          const acknowledged = yield* Ref.get(resetAck);
+          if (acknowledged !== null) yield* Deferred.succeed(acknowledged, undefined);
+          return;
+        }
         case "turn_end": {
           const turn = yield* Ref.get(activeTurn);
           if (turn === null) return;
@@ -611,6 +663,7 @@ const make = Effect.gen(function* () {
             });
           }
           yield* Ref.set(activeTurn, null);
+          yield* noteTurnEnded;
           yield* cloudThreads.endTurn(input.threadId);
           return;
         }
@@ -638,9 +691,6 @@ const make = Effect.gen(function* () {
         ),
       );
       yield* Ref.set(connection, opened);
-      if (yield* Ref.getAndSet(resetHistoryOnConnect, false)) {
-        yield* opened.send({ type: "reset_history" }).pipe(Effect.ignore);
-      }
       yield* Effect.forkDetach(
         opened.messages.pipe(
           Stream.runForEach((message) => handleHostMessage(opened, message)),
@@ -652,6 +702,10 @@ const make = Effect.gen(function* () {
           ),
         ),
       );
+      if (yield* Ref.get(resetHistoryOnConnect)) {
+        yield* resetHistory(opened);
+        yield* Ref.set(resetHistoryOnConnect, false);
+      }
       return opened;
     });
 
@@ -842,14 +896,39 @@ const make = Effect.gen(function* () {
       rollbackThread: Effect.fn("CloudThreadRuntime.rollbackThread")(function* ({
         providerThread,
       }) {
-        // The host keeps the model conversation; clear it so rolled-back turns cannot return.
         const host = yield* Ref.get(connection);
+        const turn = yield* Ref.get(activeTurn);
+        if (turn !== null) {
+          const ended = yield* Ref.get(activeTurnEnd);
+          if (host !== null) {
+            yield* host.send({ type: "interrupt" }).pipe(
+              Effect.mapError(
+                () =>
+                  new ProviderAdapter.ProviderAdapterRollbackThreadError({
+                    driver: base.driver,
+                    providerThreadId: providerThread.id,
+                  }),
+              ),
+            );
+            if (ended !== null) {
+              const stopped = yield* Deferred.await(ended).pipe(Effect.timeoutOption("30 seconds"));
+              if (Option.isNone(stopped)) {
+                return yield* new ProviderAdapter.ProviderAdapterRollbackThreadError({
+                  driver: base.driver,
+                  providerThreadId: providerThread.id,
+                });
+              }
+            }
+          }
+        }
         if (host !== null) {
-          yield* host.send({ type: "reset_history" }).pipe(Effect.ignore);
+          // The host keeps the model conversation; clear it so rolled-back turns cannot return.
+          yield* resetHistory(host);
         } else {
           yield* Ref.set(resetHistoryOnConnect, true);
         }
         yield* Ref.set(activeTurn, null);
+        yield* noteTurnEnded;
         yield* Ref.set(pendingApprovals, new Map());
         return { providerThread, messages: [], runtimeRequests: [] };
       }),

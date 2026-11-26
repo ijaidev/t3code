@@ -71,7 +71,7 @@ export function useCommandPalettePortForwardItem(input: {
   const threadServers = useThreadDiscoveredPorts({
     environmentId: threadEnvironmentId,
     threadId: threadEnvironmentId === null ? null : (input.activeThread?.id ?? null),
-  });
+  }).filter((server) => server.sandboxPort !== true);
   if (forwards.length === 0 && sources.length === 0) return null;
 
   const labelOf = (environmentId: EnvironmentId) =>

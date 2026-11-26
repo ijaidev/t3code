@@ -34,7 +34,7 @@ import type * as SourceControlProvider from "@t3tools/source-control-core/server
 import * as CloudRepositoryCredential from "./CloudRepositoryCredential.ts";
 import * as CloudThreadStore from "./CloudThreadStore.ts";
 import * as CloudThreads from "./CloudThreads.ts";
-import { gitCredentialEnvironment } from "./CloudThreads.ts";
+import { credentialTransportAllowed, gitCredentialEnvironment } from "./CloudThreads.ts";
 import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 
@@ -247,21 +247,44 @@ const statusParts = Effect.fn("CloudThreadGit.statusParts")(function* (
   return { parsed, local, provider, defaultBranch };
 });
 
+const repositoryNameForUrl = (url: string): string | null => {
+  try {
+    const path = new URL(url).pathname.replace(/^\/+|\/+$/g, "").replace(/\.git$/i, "");
+    const parts = path.split("/").filter(Boolean);
+    return parts.length >= 2 ? parts.slice(-2).join("/") : null;
+  } catch {
+    const parts = url.split(/[/:]/).filter(Boolean);
+    return parts.length >= 2 ? parts.slice(-2).join("/") : null;
+  }
+};
+
+const pullRequestMatchesRepository = (changeRequest: ChangeRequest, repository: string | null) =>
+  repository === null ||
+  changeRequest.headRepositoryNameWithOwner === undefined ||
+  changeRequest.headRepositoryNameWithOwner === null ||
+  changeRequest.headRepositoryNameWithOwner.toLowerCase() === repository.toLowerCase();
+
 const readPullRequest = (
   record: CloudThreadStore.CloudThreadRecord,
   branch: string,
   provider: Option.Option<ResolvedProvider>,
 ) => {
   if (Option.isNone(provider)) return Effect.succeed(null);
+  const repository = repositoryNameForUrl(record.repositoryUrl);
+  const owner = repository?.split("/")[0];
   return provider.value.provider
     .listChangeRequests({
       cwd: record.workspacePath,
-      headSelector: branch,
+      headSelector: owner === undefined ? branch : `${owner}:${branch}`,
+      ...(repository === null ? {} : { repository }),
+      preferContext: true,
       state: "open",
       limit: 1,
     })
     .pipe(
-      Effect.map((changes) => changes[0] ?? null),
+      Effect.map(
+        (changes) => changes.find((pr) => pullRequestMatchesRepository(pr, repository)) ?? null,
+      ),
       Effect.catch((cause) =>
         Effect.logWarning("Cloud thread pull request lookup failed", {
           threadId: record.threadId,
@@ -485,7 +508,7 @@ const make = Effect.gen(function* () {
     const provider = yield* providerFor(registry, record);
     if (Option.isSome(provider)) {
       const branch = yield* provider.value.provider
-        .getDefaultBranch({ cwd: record.workspacePath })
+        .getDefaultBranch({ cwd: record.workspacePath, preferContext: true })
         .pipe(Effect.orElseSucceed(() => null));
       if (branch !== null) return branch;
     }
@@ -506,13 +529,21 @@ const make = Effect.gen(function* () {
         "No source-control account is connected for this repository. Connect it in Settings → Source control & issues, then retry.",
       );
     }
+    const repository = repositoryNameForUrl(input.record.repositoryUrl);
+    const owner = repository?.split("/")[0];
+    const headSelector = owner === undefined ? input.branch : `${owner}:${input.branch}`;
     const existing = yield* provider.value.provider.listChangeRequests({
       cwd: input.record.workspacePath,
-      headSelector: input.branch,
+      headSelector,
+      ...(repository === null ? {} : { repository }),
+      preferContext: true,
       state: "open",
       limit: 1,
     });
-    if (existing[0] !== undefined) return { status: "opened_existing" as const, pr: existing[0] };
+    const existingPullRequest = existing.find((pr) => pullRequestMatchesRepository(pr, repository));
+    if (existingPullRequest !== undefined) {
+      return { status: "opened_existing" as const, pr: existingPullRequest };
+    }
     const baseBranch = yield* defaultBranchFor(input.record);
     if (input.branch === baseBranch) {
       return yield* failure(
@@ -529,17 +560,25 @@ const make = Effect.gen(function* () {
     yield* provider.value.provider.createChangeRequest({
       cwd: input.record.workspacePath,
       baseRefName: baseBranch,
-      headSelector: input.branch,
+      headSelector,
+      ...(owner === undefined ? {} : { source: { owner, refName: input.branch } }),
+      preferContext: true,
       title: input.title,
       bodyFile: bodyPath,
     });
     const created = yield* provider.value.provider.listChangeRequests({
       cwd: input.record.workspacePath,
-      headSelector: input.branch,
+      headSelector,
+      ...(repository === null ? {} : { repository }),
+      preferContext: true,
       state: "open",
       limit: 1,
     });
-    return { status: "created" as const, ...(created[0] === undefined ? {} : { pr: created[0] }) };
+    const createdPullRequest = created.find((pr) => pullRequestMatchesRepository(pr, repository));
+    return {
+      status: "created" as const,
+      ...(createdPullRequest === undefined ? {} : { pr: createdPullRequest }),
+    };
   }, Effect.scoped);
 
   const runStackedAction: CloudThreadGit["Service"]["runStackedAction"] = Effect.fn(
@@ -689,6 +728,13 @@ const make = Effect.gen(function* () {
           };
         } else {
           const credential = yield* providerCredential(record);
+          if (Option.isSome(credential) && !credentialTransportAllowed(record.repositoryUrl)) {
+            return yield* failure(
+              "CloudThreadGit.push",
+              input.cwd,
+              "HTTP Git remotes cannot receive a sandbox credential. Use an HTTPS or SSH remote.",
+            );
+          }
           const result = yield* cloudThreads
             .exec({
               threadId: record.threadId,
@@ -856,6 +902,32 @@ const make = Effect.gen(function* () {
     "CloudThreadGit.pullCurrentBranch",
   )(function* (cwd) {
     const record = yield* requireRecord(cwd);
+    const credential = yield* providerCredential(record);
+    if (Option.isSome(credential) && !credentialTransportAllowed(record.repositoryUrl)) {
+      return yield* failure(
+        "CloudThreadGit.pull",
+        cwd,
+        "HTTP Git remotes cannot receive a sandbox credential. Use an HTTPS or SSH remote.",
+      );
+    }
+    const envs = Option.isSome(credential) ? gitCredentialEnvironment(credential.value) : undefined;
+    // A stale local tracking ref cannot tell whether the remote advanced.
+    const fetched = yield* cloudThreads
+      .exec({
+        threadId: record.threadId,
+        command: "git fetch --prune origin",
+        cwd: record.workspacePath,
+        ...(envs === undefined ? {} : { envs }),
+        timeoutMs: 5 * 60_000,
+      })
+      .pipe(Effect.mapError((error) => failure("CloudThreadGit.fetch", cwd, error.detail, error)));
+    if (fetched.exitCode !== 0) {
+      return yield* failure(
+        "CloudThreadGit.fetch",
+        cwd,
+        firstLine(fetched.stderr || fetched.stdout) || "The sandbox could not fetch.",
+      );
+    }
     const before = yield* statusParts(registry, cloudThreads, record);
     if (before.parsed.refName === null) {
       return yield* failure("CloudThreadGit.pull", cwd, "Cannot pull on detached HEAD.");
@@ -867,13 +939,12 @@ const make = Effect.gen(function* () {
         upstreamRef: before.parsed.upstreamRef,
       };
     }
-    const credential = yield* providerCredential(record);
     const result = yield* cloudThreads
       .exec({
         threadId: record.threadId,
         command: "git pull --ff-only",
         cwd: record.workspacePath,
-        ...(Option.isSome(credential) ? { envs: gitCredentialEnvironment(credential.value) } : {}),
+        ...(envs === undefined ? {} : { envs }),
         timeoutMs: 5 * 60_000,
       })
       .pipe(Effect.mapError((error) => failure("CloudThreadGit.pull", cwd, error.detail, error)));

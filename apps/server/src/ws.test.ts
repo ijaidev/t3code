@@ -132,6 +132,7 @@ import * as RemoteOpenTargets from "./environment/RemoteOpenTargets.ts";
 import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as ReviewService from "./review/ReviewService.ts";
+import * as CloudThreadPorts from "./sandbox/CloudThreadPorts.ts";
 import * as SandboxAccounts from "./sandbox/SandboxAccounts.ts";
 import * as SandboxLifecycle from "./sandbox/SandboxLifecycle.ts";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
@@ -891,6 +892,10 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(ReviewService.ReviewService)({}),
   Layer.mock(SandboxAccounts.SandboxAccounts)({}),
   Layer.mock(SandboxLifecycle.SandboxLifecycle)({}),
+  Layer.mock(CloudThreadPorts.CloudThreadPorts)({
+    snapshot: Effect.succeed({ servers: [], unavailable: [] }),
+    subscribe: () => Effect.void,
+  }),
   Layer.mock(ScheduledTasks.ScheduledTaskService)({}),
   Workflows.layerDisabled,
   Layer.mock(WorkflowRuntime.WorkflowDefinitions)({}),

@@ -5327,3 +5327,51 @@ it.effect("drops a child's held text once the child is handed to another run", (
     assert.deepEqual(yield* Ref.get(staleWrites), []);
   }),
 );
+
+it.effect("captures a cloud run's first baseline in the sandbox workspace", () => {
+  const threadId = ThreadId.make("thread:run-execution-cloud-baseline");
+  const runId = RunId.make("run:run-execution-cloud-baseline");
+  const scopes = Ref.makeUnsafe<ReadonlyArray<string>>([]);
+  const checkpointScope = {
+    id: CheckpointScopeId.make("checkpoint-scope:run-execution-cloud-baseline"),
+    cwd: "/repo",
+  } as OrchestrationV2CheckpointScope;
+  const run = { id: runId, threadId, ordinal: 1 } as OrchestrationV2Run;
+  const layerTest = RunExecutionService.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        McpAppModelContext.layerEmpty,
+        PreviewAgentActivity.layer,
+        Layer.mock(CheckpointService.CheckpointServiceV2)({
+          captureBaseline: (input) =>
+            Ref.update(scopes, (current) => [...current, input.scope.cwd]).pipe(Effect.asVoid),
+        }),
+        layerTurnItemPositionsTest,
+        mockEventSink({}),
+        IdAllocator.layer,
+        ThreadCommandExecutor.layer,
+        Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
+          ingestNormalized: () => Effect.succeed([]),
+        }),
+        ServerSettings.layerTest(),
+      ),
+    ),
+  );
+  return Effect.gen(function* () {
+    const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
+    const baseline = yield* runExecution.forkBaseline({
+      appThread: {
+        ...rootAppThread(threadId),
+        cloudWorkspace: {
+          accountId: "e2b-work",
+          providerKind: "e2b",
+          workspacePath: "/home/t3/.t3/threads/thread-cloud-baseline",
+        },
+      } as unknown as OrchestrationV2AppThread,
+      run,
+      checkpointScope,
+    });
+    yield* baseline;
+    assert.deepEqual(yield* Ref.get(scopes), ["/home/t3/.t3/threads/thread-cloud-baseline"]);
+  }).pipe(Effect.provide(layerTest));
+});

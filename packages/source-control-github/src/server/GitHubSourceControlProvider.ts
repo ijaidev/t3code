@@ -588,10 +588,24 @@ export const make = Effect.gen(function* () {
       readonly cwd: string;
       readonly host?: string | undefined;
       readonly context?: SourceControlProvider.SourceControlProviderContext | undefined;
+      readonly preferContext?: boolean;
     }) {
       const envRepository = environment.GH_REPO?.trim();
       const hostHint = input.host ?? contextHost(input.context);
       const defaultHost = (hostHint ?? environment.GH_HOST ?? "github.com").toLowerCase();
+      const fromContext = () => {
+        if (!input.context) return null;
+        const remote = normalizeGitRemoteUrl(input.context.remoteUrl);
+        return parseGitHubRepositorySelector(
+          `${hostHint ?? defaultHost}/${remote.slice(remote.indexOf("/") + 1)}`,
+          hostHint ?? defaultHost,
+        );
+      };
+      // Cloud work names its repository explicitly; GH_REPO and the server checkout are unrelated.
+      if (input.preferContext === true) {
+        const preferred = fromContext();
+        if (preferred !== null) return preferred;
+      }
       if (envRepository) {
         const locator = parseGitHubRepositorySelector(envRepository, defaultHost);
         if (locator !== null) return locator;
@@ -603,11 +617,7 @@ export const make = Effect.gen(function* () {
       });
       if (locator !== null) return locator;
       if (input.context) {
-        const remote = normalizeGitRemoteUrl(input.context.remoteUrl);
-        const fallback = parseGitHubRepositorySelector(
-          `${host}/${remote.slice(remote.indexOf("/") + 1)}`,
-          host,
-        );
+        const fallback = fromContext();
         if (fallback !== null) return fallback;
       }
       return yield* failure(
@@ -659,6 +669,7 @@ export const make = Effect.gen(function* () {
     readonly context?: SourceControlProvider.SourceControlProviderContext | undefined;
     readonly host?: string | undefined;
     readonly repository?: string | undefined;
+    readonly preferContext?: boolean;
     readonly allowReserve: boolean;
   }) {
     const base = yield* resolveRepository(input);
@@ -1102,6 +1113,7 @@ export const make = Effect.gen(function* () {
               host: contextHost(input.context),
               context: input.context,
               repository: input.repository,
+              ...(input.preferContext === true ? { preferContext: true } : {}),
               allowReserve,
             }),
           ),
@@ -1320,6 +1332,7 @@ export const make = Effect.gen(function* () {
           cwd: input.cwd,
           host: contextHost(input.context),
           context: input.context,
+          ...(input.preferContext === true ? { preferContext: true } : {}),
         });
         const repository = yield* readRepository(locator);
         const branch = repository.default_branch?.trim() ?? "";

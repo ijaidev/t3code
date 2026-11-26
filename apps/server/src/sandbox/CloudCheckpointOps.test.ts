@@ -124,6 +124,25 @@ describe("cloud checkpoint ops", () => {
     return scenario;
   });
 
+  it.effect("fails when a checkpoint ref cannot be deleted", () => {
+    const scenario = Effect.gen(function* () {
+      const calls = yield* Ref.make<ReadonlyArray<ExecCall>>([]);
+      const ops = CloudCheckpointOps.makeCloudCheckpointOps(
+        service(calls, {
+          "git update-ref -d": { exitCode: 1, stderr: "ref is locked" },
+        }),
+      );
+      const error = yield* ops
+        .deleteCheckpointRefs({
+          cwd: record.workspacePath,
+          checkpointRefs: [checkpointRef],
+        })
+        .pipe(Effect.flip);
+      expect(error._tag).toBe("VcsProcessExitError");
+    });
+    return scenario;
+  });
+
   it.effect("routes a cloud workspace's checkpoint calls to the sandbox", () => {
     const scenario = Effect.gen(function* () {
       const calls = yield* Ref.make<ReadonlyArray<ExecCall>>([]);

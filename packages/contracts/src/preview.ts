@@ -318,6 +318,8 @@ export const DiscoveredLocalServer = Schema.Struct({
   ),
   /** Started by the thread's agent. Older servers omit it. */
   agent: Schema.optionalKey(Schema.NullOr(Schema.Struct({ threadId: ThreadId }))),
+  /** A port in a cloud thread's sandbox, proxied by this environment rather than on it. */
+  sandboxPort: Schema.optionalKey(Schema.Literal(true)),
 });
 export type DiscoveredLocalServer = typeof DiscoveredLocalServer.Type;
 
@@ -348,10 +350,25 @@ export class PreviewStopLocalServerError extends Schema.TaggedError<PreviewStopL
   }
 }
 
+export const SandboxPreviewUnavailableReason = Schema.Literals([
+  "provider-no-private-ports",
+  "sandbox-unavailable",
+  "listener-failed",
+]);
+export type SandboxPreviewUnavailableReason = typeof SandboxPreviewUnavailableReason.Type;
+
+export const SandboxPreviewUnavailable = Schema.Struct({
+  threadId: ThreadId,
+  reason: SandboxPreviewUnavailableReason,
+});
+export type SandboxPreviewUnavailable = typeof SandboxPreviewUnavailable.Type;
+
 export const DiscoveredLocalServerList = Schema.Struct({
   servers: Schema.Array(DiscoveredLocalServer),
   scannedAt: Schema.String,
   configuredUrlProbing: Schema.optional(Schema.Literal(true)),
+  /** A sandbox reported ports but none can be proxied; the reason tells the client why. */
+  sandboxPreviewUnavailable: Schema.optionalKey(Schema.Array(SandboxPreviewUnavailable)),
 });
 export type DiscoveredLocalServerList = typeof DiscoveredLocalServerList.Type;
 

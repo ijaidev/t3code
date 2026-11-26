@@ -199,6 +199,7 @@ describe("cloud threads", () => {
         expect(fake.created).toBe(1);
         const execs = yield* Ref.get(fake.execs);
         expect(execs.some((command) => command.includes("git clone --branch 'main'"))).toBe(true);
+        expect(execs.some((command) => command.includes("--single-branch"))).toBe(false);
         expect(
           execs.some((command) => command.includes("https://github.com/example/public.git")),
         ).toBe(true);
@@ -322,6 +323,38 @@ describe("cloud threads", () => {
     return state;
   });
 
+  it.effect("rejects HTTP remotes before sending them a credential", () => {
+    const state = Effect.gen(function* () {
+      const fake = yield* makeState({ failProbe: true });
+      const driver = fakeDriver(fake);
+      const credential = {
+        resolve: () =>
+          Effect.succeedSome({
+            username: "x-access-token",
+            token: "repo-secret",
+            url: "http://github.com/example/private.git",
+          }),
+      };
+      return yield* Effect.gen(function* () {
+        yield* connect;
+        const cloud = yield* CloudThreads.CloudThreads;
+        const failure = yield* Effect.flip(
+          cloud.prepare({
+            threadId,
+            accountId,
+            cloneUrl: "http://github.com/example/private.git",
+            baseRef: "main",
+            branch: "main",
+          }),
+        );
+        expect(failure.detail).toContain("HTTP Git remotes");
+        const execs = yield* Ref.get(fake.execs);
+        expect(execs.some((command) => command.includes("git clone"))).toBe(false);
+      }).pipe(Effect.provide(testLayer(driver, credential)));
+    });
+    return state;
+  });
+
   it.effect("passes a repository credential only in the clone process environment", () => {
     const state = Effect.gen(function* () {
       const fake = yield* makeState({ failProbe: true });
@@ -357,6 +390,10 @@ describe("cloud threads", () => {
         expect(cloneEnvs[0]?.["GIT_CONFIG_VALUE_0"]).toBe(
           `AUTHORIZATION: basic ${Buffer.from("x-access-token:repo-secret").toString("base64")}`,
         );
+        expect(cloneEnvs[0]?.["GIT_CONFIG_KEY_1"]).toBe("http.followRedirects");
+        expect(cloneEnvs[0]?.["GIT_CONFIG_VALUE_1"]).toBe("false");
+        expect(cloneEnvs[0]?.["GIT_CONFIG_KEY_2"]).toBe("core.hooksPath");
+        expect(cloneEnvs[0]?.["GIT_CONFIG_VALUE_2"]).toBe("/dev/null");
         const record = yield* cloud.getRecord(threadId);
         if (record._tag === "Some") {
           expect(JSON.stringify(record.value)).not.toContain("repo-secret");

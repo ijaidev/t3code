@@ -1,6 +1,6 @@
 import { SourceControlProviderKind } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { assert, describe, it } from "@effect/vitest";
+import { assert, describe, it, vi } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -342,6 +342,38 @@ describe("GitHubSourceControlProvider sandbox credentials", () => {
       assert.deepStrictEqual(probe.appCredentialRepositories, ["acme/private"]);
       assert.deepStrictEqual(probe.personalCredentialCalls, []);
     }).pipe(Effect.provide(probe.layer));
+  });
+});
+
+describe("GitHubSourceControlProvider cloud repository pinning", () => {
+  it.effect("prefers the supplied context over GH_REPO", () => {
+    const paths: string[] = [];
+    const probe = harness({
+      remotes: remotesOutput(["origin", "git@github.com:ijaidev/t3code.git"]),
+      api: {
+        rest: (input) =>
+          Effect.sync(() => {
+            paths.push(input.path);
+            return restResponse({
+              full_name: "acme/web",
+              html_url: "https://github.com/acme/web",
+              ssh_url: "git@github.com:acme/web.git",
+              default_branch: "trunk",
+            });
+          }),
+      },
+    });
+    vi.stubEnv("GH_REPO", "ijaidev/t3code");
+    return Effect.gen(function* () {
+      const provider = yield* GitHubSourceControlProvider.make;
+      const branch = yield* provider.getDefaultBranch({
+        cwd: "/repo",
+        context: githubContext("github.com"),
+        preferContext: true,
+      });
+      assert.strictEqual(branch, "trunk");
+      assert.deepStrictEqual(paths, ["repos/acme/web"]);
+    }).pipe(Effect.provide(probe.layer), Effect.ensuring(Effect.sync(() => vi.unstubAllEnvs())));
   });
 });
 

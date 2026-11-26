@@ -157,10 +157,20 @@ const make = Effect.gen(function* () {
     readonly allowNonZero?: boolean;
   }) {
     const record = yield* recordFor(input.cwd, input.operation);
+    const command =
+      input.maxBytes === undefined
+        ? input.command
+        : [
+            "set -eu",
+            'out=$(mktemp "${TMPDIR:-/tmp}/t3-review.XXXXXX")',
+            "trap 'rm -f \"$out\"' EXIT",
+            `(${input.command}) > "$out"`,
+            `head -c ${Math.max(1, input.maxBytes)} "$out"`,
+          ].join("\n");
     const result = yield* cloudThreads
       .exec({
         threadId: record.threadId,
-        command: input.command,
+        command,
         cwd: input.cwd,
         timeoutMs: 120_000,
       })
@@ -173,9 +183,10 @@ const make = Effect.gen(function* () {
       );
     }
     return {
-      stdout: input.maxBytes === undefined ? result.stdout : result.stdout.slice(0, input.maxBytes),
+      stdout: result.stdout,
       exitCode: result.exitCode,
       stderr: result.stderr,
+      truncated: input.maxBytes !== undefined && Buffer.byteLength(result.stdout) >= input.maxBytes,
     };
   });
 
@@ -293,7 +304,7 @@ const make = Effect.gen(function* () {
         "--no-notes",
         "--format=%H%x00%s%x00%cI",
         `--max-count=${BRANCH_COMMIT_LIMIT + 1}`,
-        `${shellQuote(mergeBase)}..HEAD`,
+        `${mergeBase}..HEAD`,
       ]
         .map(shellQuote)
         .join(" "),
@@ -332,8 +343,8 @@ const make = Effect.gen(function* () {
     }
     const pathArgs = filePaths(input);
     const generatedAt = yield* DateTime.now;
-    const untracked =
-      sourceKind === "working-tree" && input.file === undefined && input.trackedOnly !== true
+    const allUntracked =
+      sourceKind === "working-tree" && input.trackedOnly !== true
         ? yield* exec({
             cwd: input.cwd,
             operation: "CloudReview.getDiffPreview.untracked",
@@ -341,6 +352,10 @@ const make = Effect.gen(function* () {
             maxBytes: METADATA_MAX_BYTES,
           }).pipe(Effect.map((result) => result.stdout.split("\0").filter(Boolean)))
         : [];
+    const untracked =
+      input.file === undefined
+        ? allUntracked
+        : allUntracked.filter((path) => path === input.file!.path);
     const sources: ReviewDiffPreviewSource[] = [];
 
     if (input.commitSha !== undefined || sourceKind === "commit") {
@@ -403,8 +418,14 @@ const make = Effect.gen(function* () {
           : {}),
       });
     } else {
+      const requestedMergeBase =
+        input.mergeBase !== undefined && /^[0-9a-f]{40,64}$/.test(input.mergeBase)
+          ? input.mergeBase
+          : null;
       const mergeBase =
-        sourceKind === "working-tree" ? null : yield* resolveMergeBase(input.cwd, input.baseRef);
+        sourceKind === "working-tree"
+          ? null
+          : (requestedMergeBase ?? (yield* resolveMergeBase(input.cwd, input.baseRef)));
       const sourcesToRead: ReadonlyArray<"working-tree" | "branch-range"> =
         sourceKind === "working-tree"
           ? ["working-tree"]
@@ -420,7 +441,7 @@ const make = Effect.gen(function* () {
           pathArgs,
           untracked: kind === "working-tree" ? untracked : [],
         });
-        const diff =
+        const trackedDiff =
           input.metadataOnly === true && input.file === undefined
             ? ""
             : yield* patch({
@@ -430,6 +451,21 @@ const make = Effect.gen(function* () {
                 pathArgs,
                 ignoreWhitespace: input.ignoreWhitespace === true,
               });
+        const untrackedDiff =
+          kind === "working-tree" && input.metadataOnly !== true
+            ? (yield* Effect.forEach(
+                untracked,
+                (path) =>
+                  exec({
+                    cwd: input.cwd,
+                    operation: "CloudReview.getDiffPreview.untrackedPatch",
+                    command: `git diff --no-index -- /dev/null ${shellQuote(path)}`,
+                    allowNonZero: true,
+                  }).pipe(Effect.map((result) => result.stdout)),
+                { concurrency: 4 },
+              )).join("")
+            : "";
+        const diff = trackedDiff + untrackedDiff;
         sources.push({
           id: kind,
           kind,
@@ -461,10 +497,99 @@ const make = Effect.gen(function* () {
     };
   });
 
+  const assertRelativePath = Effect.fn("CloudReview.assertRelativePath")(function* (
+    cwd: string,
+    operation: string,
+    rawPath: string,
+  ) {
+    if (
+      rawPath === "" ||
+      rawPath.startsWith("/") ||
+      rawPath.includes("\\") ||
+      rawPath.includes("\0") ||
+      rawPath.split("/").includes("..")
+    ) {
+      return yield* section(
+        cwd,
+        operation,
+        "Review file paths must stay inside the sandbox checkout.",
+      );
+    }
+  });
+
+  const resolveWorktreePath = Effect.fn("CloudReview.resolveWorktreePath")(function* (
+    cwd: string,
+    operation: string,
+    rawPath: string,
+  ) {
+    const root = yield* exec({
+      cwd,
+      operation: `${operation}.root`,
+      command: `realpath -- ${shellQuote(cwd)}`,
+      allowNonZero: true,
+    });
+    const target = yield* exec({
+      cwd,
+      operation: `${operation}.target`,
+      command: `realpath -- ${shellQuote(`${cwd}/${rawPath}`)}`,
+      allowNonZero: true,
+    });
+    const rootPath = root.exitCode === 0 ? root.stdout.trim() : cwd;
+    const targetPath = target.exitCode === 0 ? target.stdout.trim() : "";
+    if (targetPath === "" || !(targetPath === rootPath || targetPath.startsWith(`${rootPath}/`))) {
+      return yield* section(
+        cwd,
+        operation,
+        "Review file paths must stay inside the sandbox checkout.",
+      );
+    }
+    return targetPath;
+  });
+
+  const assertPartOfDiff = Effect.fn("CloudReview.assertPartOfDiff")(function* (
+    cwd: string,
+    operation: string,
+    input: ReviewDiffFileContentsInput,
+  ) {
+    const revisions =
+      input.sourceKind === "commit"
+        ? [input.baseRef ?? "HEAD", input.headRef ?? "HEAD"]
+        : input.sourceKind === "branch-range"
+          ? [yield* resolveMergeBase(cwd, input.baseRef ?? undefined)]
+          : ["HEAD"];
+    const changed = yield* exec({
+      cwd,
+      operation: `${operation}.paths`,
+      command: `git diff --name-only -z ${revisions.map(shellQuote).join(" ")} -- ${shellQuote(input.oldPath)} ${shellQuote(input.newPath)}`,
+      allowNonZero: true,
+      maxBytes: METADATA_MAX_BYTES,
+    });
+    const paths = new Set(changed.stdout.split("\0").filter(Boolean));
+    if (paths.has(input.oldPath) || paths.has(input.newPath)) return;
+    if (input.sourceKind === "working-tree") {
+      const untracked = yield* exec({
+        cwd,
+        operation: `${operation}.untracked`,
+        command: `git ls-files --others --exclude-standard -z -- ${shellQuote(input.newPath)}`,
+        allowNonZero: true,
+        maxBytes: METADATA_MAX_BYTES,
+      });
+      if (untracked.stdout.split("\0").includes(input.newPath)) return;
+    }
+    return yield* section(cwd, operation, "This file is not part of the requested diff.");
+  });
+
   const getDiffFileContents: CloudReview["Service"]["getDiffFileContents"] = Effect.fn(
     "CloudReview.getDiffFileContents",
   )(function* (input) {
     yield* recordFor(input.cwd, "CloudReview.getDiffFileContents");
+    yield* assertRelativePath(input.cwd, "CloudReview.getDiffFileContents.old", input.oldPath);
+    yield* assertRelativePath(input.cwd, "CloudReview.getDiffFileContents.new", input.newPath);
+    yield* assertPartOfDiff(input.cwd, "CloudReview.getDiffFileContents", input);
+    const worktreeTarget =
+      input.sourceKind !== "working-tree" || input.changeType === "deleted"
+        ? null
+        : yield* resolveWorktreePath(input.cwd, "CloudReview.getDiffFileContents", input.newPath);
     const readRevision = (revision: string | null, filePath: string) =>
       revision === null
         ? Effect.succeed("")
@@ -475,18 +600,18 @@ const make = Effect.gen(function* () {
             allowNonZero: true,
           }).pipe(Effect.map((result) => (result.exitCode === 0 ? result.stdout : "")));
     const oldContents =
-      input.changeType === "new" ? "" : yield* readRevision(input.baseRef, input.oldPath);
+      input.changeType === "new" ? "" : yield* readRevision(input.baseRef ?? "HEAD", input.oldPath);
     const newContents =
       input.changeType === "deleted"
         ? ""
-        : input.sourceKind === "commit"
-          ? yield* readRevision(input.headRef, input.newPath)
-          : yield* exec({
+        : input.sourceKind === "working-tree"
+          ? yield* exec({
               cwd: input.cwd,
               operation: "CloudReview.getDiffFileContents.worktree",
-              command: `cat ${shellQuote(input.newPath)}`,
+              command: `cat ${shellQuote(worktreeTarget ?? input.newPath)}`,
               allowNonZero: true,
-            }).pipe(Effect.map((result) => (result.exitCode === 0 ? result.stdout : "")));
+            }).pipe(Effect.map((result) => (result.exitCode === 0 ? result.stdout : "")))
+          : yield* readRevision(input.headRef ?? "HEAD", input.newPath);
     return { oldContents, newContents };
   });
 

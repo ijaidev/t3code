@@ -61,6 +61,15 @@ through `/api/preview/tunnel` on the environment's own origin:
   cannot authenticate to SOCKS5, the local listener restricts access to the current OS user where
   the platform allows (Linux `/proc/net/tcp`).
 
+## Sandbox previews stay behind the environment
+
+A cloud thread's sandbox ports are proxied by a loopback listener on the controlling server. The
+thread's port list points at that listener, so web, desktop, and mobile reuse the existing preview
+pane and auth. The first navigation carries a per-preview ticket that the listener exchanges for an
+HTTP-only cookie, so every later request and WebSocket is authenticated. Provider URLs and traffic
+tokens never leave the server; sandboxes are created with private traffic so the provider URL fails
+without that token.
+
 ## Access and process ownership are separate
 
 - Tailscale supplies an endpoint for normal pairing; auth remains the environment's responsibility.

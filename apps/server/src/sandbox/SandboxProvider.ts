@@ -68,6 +68,18 @@ export interface SandboxProviderWriteFileInput {
   readonly data: string | Uint8Array;
 }
 
+export interface SandboxProviderPortAccessInput {
+  readonly account: SandboxProviderAccount;
+  readonly providerSandboxId: string;
+  readonly port: number;
+}
+
+/** A private HTTP endpoint for one sandbox port. The token stays on the controlling server. */
+export interface SandboxProviderPortAccess {
+  readonly url: string;
+  readonly headers: Readonly<Record<string, string>>;
+}
+
 export interface SandboxProviderStartProcessInput {
   readonly account: SandboxProviderAccount;
   readonly providerSandboxId: string;
@@ -132,4 +144,11 @@ export interface SandboxProviderDriver {
   readonly startProcess?: (
     input: SandboxProviderStartProcessInput,
   ) => Effect.Effect<SandboxProviderProcess, SandboxProviderError>;
+  /**
+   * Resolves a private HTTP endpoint for a port. Drivers without it cannot show sandbox previews;
+   * the controlling server proxies requests so provider URLs never reach a client.
+   */
+  readonly portAccess?: (
+    input: SandboxProviderPortAccessInput,
+  ) => Effect.Effect<SandboxProviderPortAccess, SandboxProviderError>;
 }

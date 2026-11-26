@@ -21,6 +21,7 @@ const client = (overrides: Partial<E2BClient> = {}): E2BClient => ({
   create: async () => ({ sandboxId: "e2b-sandbox-1" }),
   connect: async () =>
     ({
+      getHost: (port: number) => `3000-${port}.e2b.app`,
       commands: {
         run: async () => ({ exitCode: 0, stdout: "ok", stderr: "" }),
       },
@@ -44,6 +45,7 @@ describe("E2B sandbox provider", () => {
       delete: true,
       snapshots: true,
       privatePorts: true,
+      reservedPorts: [49983, 50005],
     });
     expect(driver.capabilities.sizes.length).toBeGreaterThan(0);
     expect(driver.capabilities.regions.length).toBeGreaterThan(0);
@@ -89,6 +91,7 @@ describe("E2B sandbox provider", () => {
               timeoutMs: 30_000,
               idempotencyKey: "instance-1",
               metadata: { "t3.instance": "instance-1" },
+              network: { allowPublicTraffic: false, maskRequestHost: "localhost:${PORT}" },
             },
           },
           { getInfo: { sandboxId: "e2b-sandbox-1", apiKey: "e2b_secret_key" } },
@@ -128,6 +131,34 @@ describe("E2B sandbox provider", () => {
       expect(failure.statusCode).toBe(401);
       expect(failure.detail).toContain("rejected the API key");
       expect(failure.detail).not.toContain(account.apiKey);
+    }),
+  );
+
+  it.effect("returns a private port endpoint with the token kept server-side", () =>
+    Effect.gen(function* () {
+      const driver = makeE2BSandboxProvider(
+        client({
+          connect: async (input) => {
+            expect(input).toEqual({ sandboxId: "e2b-sandbox-1", apiKey: "e2b_secret_key" });
+            return {
+              getHost: (port: number) => `3000-${port}.e2b.app`,
+              trafficAccessToken: "traffic-token",
+              commands: { run: async () => ({ exitCode: 0, stdout: "", stderr: "" }) },
+              files: { write: async () => ({}) },
+            } as unknown as E2BSandboxHandle;
+          },
+        }),
+      );
+      const access = yield* driver.portAccess!({
+        account,
+        providerSandboxId: "e2b-sandbox-1",
+        port: 5173,
+      });
+      expect(access).toEqual({
+        url: "https://3000-5173.e2b.app",
+        headers: { "e2b-traffic-access-token": "traffic-token" },
+      });
+      expect(JSON.stringify(access)).not.toContain(account.apiKey);
     }),
   );
 

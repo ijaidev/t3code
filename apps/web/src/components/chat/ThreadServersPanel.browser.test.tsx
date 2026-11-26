@@ -3,6 +3,12 @@ import { expect, it, vi } from "vite-plus/test";
 import { page } from "vite-plus/test/browser";
 
 const shell = vi.hoisted(() => ({ openExternal: vi.fn(async (_url: string) => undefined) }));
+const discovery = vi.hoisted(() => ({
+  servers: [] as ReadonlyArray<DiscoveredLocalServer>,
+}));
+const preview = vi.hoisted(() => ({
+  openDiscoveredPort: vi.fn(async () => ({ _tag: "Success" }) as never),
+}));
 
 vi.mock("~/env", () => ({ isElectron: true }));
 vi.mock(import("../../state/portForwards"), async (importOriginal) => ({
@@ -33,21 +39,25 @@ vi.mock(import("../../localApi"), async (importOriginal) => ({
   readLocalApi: (() => ({ shell })) as never,
 }));
 
+discovery.servers = Array.from(
+  { length: 10 },
+  (_, index) =>
+    ({
+      pid: index,
+      port: 3000 + index,
+      url: `http://localhost:${3000 + index}`,
+      terminal: null,
+      processName: "node",
+    }) as DiscoveredLocalServer,
+);
+
 vi.mock(import("../../portDiscoveryState"), async (importOriginal) => ({
   ...(await importOriginal()),
-  useThreadDiscoveredPorts: () =>
-    Array.from(
-      { length: 10 },
-      (_, index) =>
-        ({
-          pid: index,
-          port: 3000 + index,
-          url: `http://localhost:${3000 + index}`,
-          terminal: null,
-          processName: "node",
-        }) as DiscoveredLocalServer,
-    ),
+  useThreadDiscoveredPorts: () => discovery.servers,
+  useThreadSandboxPreviewUnavailable: () => null,
 }));
+
+vi.mock(import("../preview/openDiscoveredPort"), () => preview);
 
 import { render } from "../../../test/render";
 import { ThreadServersPanel } from "./ThreadServersPanel";
@@ -87,5 +97,36 @@ it("opens a remote server in the system browser through the forward a modified c
   await page.getByText("localhost:3000", { exact: true }).click({ modifiers: ["ControlOrMeta"] });
   await vi.waitFor(() =>
     expect(shell.openExternal).toHaveBeenCalledWith("http://localhost:45000/"),
+  );
+});
+
+it("opens a sandbox port in the preview instead of forwarding its port", async () => {
+  shell.openExternal.mockClear();
+  preview.openDiscoveredPort.mockClear();
+  discovery.servers = [
+    {
+      pid: null,
+      port: 5173,
+      url: "http://localhost:49173/?t3-preview=secret",
+      terminal: null,
+      processName: null,
+      agent: { threadId: ThreadId.make("a") },
+      sandboxPort: true,
+    } as DiscoveredLocalServer,
+  ];
+  await using _screen = await render(panel("a"));
+  await page.getByText("localhost:5173", { exact: true }).click({ modifiers: ["ControlOrMeta"] });
+  await vi.waitFor(() => expect(preview.openDiscoveredPort).toHaveBeenCalledTimes(1));
+  expect(shell.openExternal).not.toHaveBeenCalled();
+  discovery.servers = Array.from(
+    { length: 10 },
+    (_, index) =>
+      ({
+        pid: index,
+        port: 3000 + index,
+        url: `http://localhost:${3000 + index}`,
+        terminal: null,
+        processName: "node",
+      }) as DiscoveredLocalServer,
   );
 });

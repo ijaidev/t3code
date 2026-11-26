@@ -21,6 +21,7 @@ import * as Stream from "effect/Stream";
 
 import * as ServerSettings from "../serverSettings.ts";
 import * as CloudRepositoryCredential from "./CloudRepositoryCredential.ts";
+import * as CloudThreadPorts from "./CloudThreadPorts.ts";
 import * as CloudThreadStore from "./CloudThreadStore.ts";
 import * as SandboxAccounts from "./SandboxAccounts.ts";
 import * as SandboxLifecycle from "./SandboxLifecycle.ts";
@@ -101,18 +102,32 @@ const shellQuote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
  * Git reads this header from the process environment. Keeping it out of the command line and
  * config means neither the sandbox filesystem nor a snapshot can retain it.
  */
+export const credentialTransportAllowed = (url: string): boolean => {
+  try {
+    return new URL(url).protocol === "https:";
+  } catch {
+    return false;
+  }
+};
+
 export const gitCredentialEnvironment = (credential: {
   readonly username: string;
   readonly token: string;
   readonly url: string;
 }): Readonly<Record<string, string>> => ({
   GIT_TERMINAL_PROMPT: "0",
-  GIT_CONFIG_COUNT: "1",
+  GIT_CONFIG_COUNT: "3",
   GIT_CONFIG_KEY_0: `http.${credential.url}.extraheader`,
   GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${Buffer.from(
     `${credential.username}:${credential.token}`,
     "utf8",
   ).toString("base64")}`,
+  // Never follow a redirect that could downgrade the credentialed request, and never run a
+  // hook or helper the workspace can replace while the credential is in the environment.
+  GIT_CONFIG_KEY_1: "http.followRedirects",
+  GIT_CONFIG_VALUE_1: "false",
+  GIT_CONFIG_KEY_2: "core.hooksPath",
+  GIT_CONFIG_VALUE_2: "/dev/null",
 });
 
 /** `git clone --branch` takes a branch name, not a remote-tracking ref. */
@@ -201,6 +216,14 @@ const make = Effect.gen(function* () {
   const lifecycle = yield* SandboxLifecycle.SandboxLifecycle;
   const store = yield* SandboxStore.SandboxStore;
   const cloudThreads = yield* CloudThreadStore.CloudThreadStore;
+  const cloudThreadPorts = yield* Effect.serviceOption(CloudThreadPorts.CloudThreadPorts);
+
+  const clearPorts = (threadId: ThreadId) =>
+    Option.match(cloudThreadPorts, {
+      onNone: () => Effect.void,
+      onSome: (ports) => ports.clear(threadId),
+    });
+
   const settingsService = yield* ServerSettings.ServerSettingsService;
 
   const lifecycleLock = yield* Semaphore.make(1);
@@ -699,6 +722,7 @@ const make = Effect.gen(function* () {
         const sandbox = yield* getSandbox(input.threadId);
         if (Option.isNone(sandbox)) {
           yield* markCloudLost(input.threadId);
+          yield* clearPorts(input.threadId);
           yield* notify(input.threadId);
           return yield* requireCloudSandboxState(input.threadId);
         }
@@ -757,6 +781,7 @@ const make = Effect.gen(function* () {
           return next;
         });
         yield* markCloudLost(input.threadId);
+        yield* clearPorts(input.threadId);
         yield* notify(input.threadId);
         return yield* requireCloudSandboxState(input.threadId);
       }),
@@ -785,6 +810,7 @@ const make = Effect.gen(function* () {
       return next;
     });
     yield* cloudThreads.remove(threadId).pipe(Effect.ignore);
+    yield* clearPorts(threadId);
     yield* notify(threadId);
   });
 
@@ -904,6 +930,7 @@ const make = Effect.gen(function* () {
           .deleteThreadSandbox({ sandboxId: stale.value.id })
           .pipe(Effect.orElseSucceed(() => undefined));
         yield* cloudThreads.remove(input.threadId).pipe(Effect.ignore);
+        yield* clearPorts(input.threadId);
       }
       const sandbox = yield* lifecycle
         .createThreadSandbox({
@@ -986,6 +1013,11 @@ const make = Effect.gen(function* () {
           probe.exitCode === 0
             ? Option.none<CloudRepositoryCredential.CloudRepositoryCredential>()
             : yield* credentials.resolve(input.cloneUrl);
+        if (Option.isSome(credential) && !credentialTransportAllowed(input.cloneUrl)) {
+          return yield* cleanup(
+            "HTTP Git remotes cannot receive a sandbox credential. Use an HTTPS or SSH remote.",
+          );
+        }
         const credentialHint =
           probe.exitCode !== 0 && Option.isNone(credential)
             ? " If this repository is private, connect its GitHub App installation in Settings → Source control & issues."
@@ -995,7 +1027,7 @@ const make = Effect.gen(function* () {
           : undefined;
         const clone = [
           "set -eu",
-          `git clone --branch ${shellQuote(cloudBranchName(input.baseRef))} --single-branch --no-tags ${shellQuote(input.cloneUrl)} ${shellQuote(workspacePath)}`,
+          `git clone --branch ${shellQuote(cloudBranchName(input.baseRef))} --no-tags ${shellQuote(input.cloneUrl)} ${shellQuote(workspacePath)}`,
         ].join("\n");
         yield* run(sandbox, driver, account, clone, "clone", undefined, gitEnv).pipe(
           Effect.catchTags({

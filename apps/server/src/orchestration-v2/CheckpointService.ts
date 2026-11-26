@@ -200,7 +200,10 @@ export interface CheckpointServiceV2Shape {
      * one budget, so many repositories delay a turn no longer than one. A repository that misses
      * the budget has no baseline this turn.
      */
-    readonly thread?: Pick<OrchestrationV2AppThread, "projectId" | "worktreePath">;
+    readonly thread?: Pick<
+      OrchestrationV2AppThread,
+      "projectId" | "worktreePath" | "cloudWorkspace"
+    >;
   }) => Effect.Effect<void, CheckpointServiceV2Error>;
   readonly materializeBaselineCheckpoint: (input: {
     readonly scope: OrchestrationV2CheckpointScope;
@@ -1124,7 +1127,7 @@ export const layer: Layer.Layer<
       "CheckpointService.captureBaseline",
     )(function* (input) {
       const repositories =
-        input.thread === undefined
+        input.thread === undefined || input.thread.cloudWorkspace != null
           ? []
           : yield* repositoryScopes({ rootScope: input.scope, ...input.thread });
       if (repositories.length === 0) {

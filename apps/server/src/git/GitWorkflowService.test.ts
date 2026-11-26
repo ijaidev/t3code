@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Ref from "effect/Ref";
 
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -12,6 +13,7 @@ import * as GitManager from "./GitManager.ts";
 import * as GitWorkflowService from "./GitWorkflowService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
+import * as CloudThreadGit from "../sandbox/CloudThreadGit.ts";
 
 it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GitWorkflowService", (it) => {
   it.effect("finds a name among the refs of every namespace", () =>
@@ -79,4 +81,49 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GitWorkflowServi
       ),
     ),
   );
+});
+
+it.effect("serializes cloud branch-changing actions per workspace", () => {
+  const cwd = "/home/t3/.t3/threads/thread-cloud-lock";
+  return Effect.gen(function* () {
+    const active = yield* Ref.make(0);
+    const maxActive = yield* Ref.make(0);
+    const run = () =>
+      Effect.gen(function* () {
+        const current = yield* Ref.updateAndGet(active, (value) => value + 1);
+        yield* Ref.update(maxActive, (value) => Math.max(value, current));
+        yield* Effect.yieldNow;
+        yield* Ref.update(active, (value) => value - 1);
+        return {} as never;
+      });
+    const cloud = Layer.succeed(CloudThreadGit.CloudThreadGit, {
+      forCwd: () => Effect.succeedSome({ threadId: "thread-cloud-lock" }),
+      runStackedAction: run,
+      createRef: run,
+      switchRef: run,
+    } as unknown as CloudThreadGit.CloudThreadGit["Service"]);
+    const layer = GitWorkflowService.layer.pipe(
+      Layer.provide(Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({})),
+      Layer.provide(Layer.mock(GitManager.GitManager)({})),
+      Layer.provide(cloud),
+      Layer.provideMerge(GitVcsDriver.layer),
+      Layer.provideMerge(VcsProcess.layer),
+      Layer.provideMerge(NodeCrypto.layer),
+      Layer.provide(
+        ServerConfig.layerTest(process.cwd(), { prefix: "t3-git-workflow-cloud-lock-" }),
+      ),
+      Layer.provide(NodeServices.layer),
+    );
+    return yield* Effect.gen(function* () {
+      const workflow = yield* GitWorkflowService.GitWorkflowService;
+      yield* Effect.all(
+        [
+          workflow.runStackedAction({ actionId: "a", cwd, action: "commit" } as never),
+          workflow.runStackedAction({ actionId: "b", cwd, action: "commit" } as never),
+        ],
+        { concurrency: 2 },
+      );
+      assert.strictEqual(yield* Ref.get(maxActive), 1);
+    }).pipe(Effect.provide(layer));
+  });
 });

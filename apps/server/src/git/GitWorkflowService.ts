@@ -32,6 +32,7 @@ import {
 } from "@t3tools/contracts";
 
 import { trimAsciiWhitespace } from "@t3tools/contracts";
+import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as GitManager from "./GitManager.ts";
 import * as CloudThreadGit from "../sandbox/CloudThreadGit.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
@@ -205,6 +206,7 @@ export const make = Effect.gen(function* () {
   const git = yield* GitVcsDriver.GitVcsDriver;
   const gitManager = yield* GitManager.GitManager;
   const cloud = yield* Effect.serviceOption(CloudThreadGit.CloudThreadGit);
+  const cloudLocks = yield* KeyedLock.make<string>();
   const fileSystem = yield* FileSystem.FileSystem;
 
   const cloudRecord = (cwd: string) =>
@@ -514,7 +516,7 @@ export const make = Effect.gen(function* () {
       return cloudRecord(input.cwd).pipe(
         Effect.flatMap((record) =>
           Option.isSome(record) && Option.isSome(cloud)
-            ? cloud.value.runStackedAction(input, options)
+            ? cloudLocks.withLock(input.cwd, cloud.value.runStackedAction(input, options))
             : ensureGit("GitWorkflowService.runStackedAction", input.cwd).pipe(
                 Effect.flatMap((handle) =>
                   withCheckoutLease(
@@ -651,7 +653,7 @@ export const make = Effect.gen(function* () {
       return cloudRecord(input.cwd).pipe(
         Effect.flatMap((record) =>
           Option.isSome(record) && Option.isSome(cloud)
-            ? cloud.value.createRef(input).pipe(
+            ? cloudLocks.withLock(input.cwd, cloud.value.createRef(input)).pipe(
                 Effect.mapError((error) =>
                   error._tag === "GitCommandError"
                     ? error
@@ -677,7 +679,7 @@ export const make = Effect.gen(function* () {
       return cloudRecord(input.cwd).pipe(
         Effect.flatMap((record) =>
           Option.isSome(record) && Option.isSome(cloud)
-            ? cloud.value.switchRef(input).pipe(
+            ? cloudLocks.withLock(input.cwd, cloud.value.switchRef(input)).pipe(
                 Effect.mapError((error) =>
                   error._tag === "GitCommandError"
                     ? error
