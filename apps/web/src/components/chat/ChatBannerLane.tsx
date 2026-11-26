@@ -10,6 +10,7 @@ import {
   dismissProviderStatusBannerForSession,
   ProviderStatusBanner,
 } from "./ProviderStatusBanner";
+import { CloudWorkspaceLostBanner } from "./CloudWorkspaceLostBanner";
 import { dismissThreadErrorBannerForSession, ThreadErrorBanner } from "./ThreadErrorBanner";
 
 /**
@@ -22,6 +23,8 @@ export function ChatBannerLane(props: {
   providerStatusDismissalKey: string | null;
   onOpenProviderSetup: (instanceId: ProviderInstanceId) => void;
   threadId: ThreadId;
+  /** Cloud threads alone can lose their sandbox workspace. */
+  cloudThread: boolean;
   threadError: string | null;
   threadErrorClass: OrchestrationV2ProviderFailureClass | null;
   threadErrorCode: string | null;
@@ -43,6 +46,9 @@ export function ChatBannerLane(props: {
   } = props;
   return (
     <div className="chat-banner-lane pointer-events-none absolute top-0 z-30 flex flex-col">
+      {props.cloudThread ? (
+        <CloudWorkspaceLostBanner environmentId={props.environmentId} threadId={props.threadId} />
+      ) : null}
       <ProviderStatusBanner
         environmentId={props.environmentId}
         status={providerStatus}

@@ -281,6 +281,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.sandboxSubscribeCloudSandbox]: "sandbox",
   [WS_METHODS.sandboxSleepCloudSandbox]: "sandbox",
   [WS_METHODS.sandboxWakeCloudSandbox]: "sandbox",
+  [WS_METHODS.sandboxRecreateCloudSandbox]: "sandbox",
   [WS_METHODS.sandboxPreviewCloudSandboxDelete]: "sandbox",
   [WS_METHODS.sandboxDeleteCloudSandbox]: "sandbox",
   [WS_METHODS.subscribeServerConfig]: "server",

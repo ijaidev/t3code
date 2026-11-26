@@ -51,10 +51,13 @@ export class CloudThreadError extends Schema.TaggedError<
     "pause",
     "resume",
     "delete",
+    "recreate",
     "resolve",
   ]),
   threadId: Schema.optional(ThreadId),
   detail: Schema.String,
+  /** A provider 404 means the sandbox is gone, not that the request was rejected. */
+  statusCode: Schema.optional(Schema.Number),
   cause: Schema.optional(Schema.Defect()),
 }) {
   override get message(): string {
@@ -86,6 +89,14 @@ export interface CloudHostConnection {
   readonly messages: Stream.Stream<CloudHostMessage>;
   readonly send: (message: unknown) => Effect.Effect<void, CloudThreadError>;
   readonly close: Effect.Effect<void>;
+  /** The host's running turn; null after it settles or when the host restarted. */
+  readonly activeRunId: string | null;
+  /** The last durable host event, so a settled turn can still be replayed. */
+  readonly latestEventType: string | null;
+  /** The run that produced the last durable event. */
+  readonly latestRunId: string | null;
+  /** Approvals the host is still waiting on, so a resume can reconcile persisted state. */
+  readonly pendingApprovalIds: ReadonlyArray<string>;
 }
 
 export interface CloudThreadPrepareInput {
@@ -94,6 +105,11 @@ export interface CloudThreadPrepareInput {
   readonly cloneUrl: string;
   readonly baseRef: string;
   readonly branch: string;
+  /**
+   * A fresh thread clones its base ref. Recreating a lost sandbox tries the thread's
+   * pushed branch first and falls back to the base ref on the same branch.
+   */
+  readonly startFrom?: "base" | "branch";
 }
 
 const shellQuote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
@@ -140,6 +156,41 @@ const cloudBranchName = (baseRef: string) => {
     : withoutRefPrefix;
 };
 
+export interface CloudCloneCommandInput {
+  readonly cloneUrl: string;
+  readonly baseRef: string;
+  readonly branch: string;
+  readonly workspacePath: string;
+  readonly startFrom?: "base" | "branch";
+}
+
+/**
+ * A fresh thread clones its base ref. Recreating a lost sandbox tries the thread's
+ * pushed branch first and falls back to the base ref on the same branch name.
+ */
+export const cloudCloneCommand = (input: CloudCloneCommandInput): string => {
+  const baseBranch = shellQuote(cloudBranchName(input.baseRef));
+  const threadBranch = shellQuote(cloudBranchName(input.branch));
+  const cloneInto = shellQuote(input.workspacePath);
+  const cloneFromBase = `git clone --branch ${baseBranch} --no-tags ${shellQuote(input.cloneUrl)} ${cloneInto}`;
+  const cloneFromThreadBranch = `git clone --branch ${threadBranch} --no-tags ${shellQuote(input.cloneUrl)} ${cloneInto}`;
+  if (input.startFrom !== "branch") {
+    return ["set -eu", cloneFromBase].join("\n");
+  }
+  if (cloudBranchName(input.branch) === cloudBranchName(input.baseRef)) {
+    return ["set -eu", cloneFromThreadBranch].join("\n");
+  }
+  return [
+    "set -eu",
+    `if git ls-remote --heads ${shellQuote(input.cloneUrl)} ${shellQuote(`refs/heads/${cloudBranchName(input.branch)}`)} | grep -q .; then`,
+    `  ${cloneFromThreadBranch}`,
+    "else",
+    `  ${cloneFromBase}`,
+    `  git -C ${shellQuote(input.workspacePath)} checkout -b ${threadBranch}`,
+    "fi",
+  ].join("\n");
+};
+
 const firstLine = (value: string) => value.trim().split("\n")[0] ?? value.trim();
 
 const asRecord = (value: unknown): Record<string, unknown> =>
@@ -177,8 +228,21 @@ export class CloudThreads extends Context.Service<
       path: string,
       data: Uint8Array,
     ) => Effect.Effect<boolean>;
-    readonly openHost: (threadId: ThreadId) => Effect.Effect<CloudHostConnection, CloudThreadError>;
+    readonly openHost: (
+      threadId: ThreadId,
+      options?: { readonly since?: number | "latest" },
+    ) => Effect.Effect<CloudHostConnection, CloudThreadError>;
     readonly deleteForThread: (threadId: ThreadId) => Effect.Effect<void, CloudThreadError>;
+    /** Checks the provider so an externally deleted sandbox becomes a lost workspace. */
+    readonly verifyCloudSandbox: (
+      threadId: ThreadId,
+    ) => Effect.Effect<Option.Option<CloudSandboxState>>;
+    /** Marks a sandbox lost after the provider proves it is gone. */
+    readonly markCloudSandboxLost: (
+      threadId: ThreadId,
+      detail: string,
+      expectedSandboxId?: SandboxTestSandbox["id"],
+    ) => Effect.Effect<void>;
     readonly getCloudSandboxState: (
       threadId: ThreadId,
     ) => Effect.Effect<Option.Option<CloudSandboxState>>;
@@ -189,6 +253,9 @@ export class CloudThreads extends Context.Service<
       threadId: ThreadId,
     ) => Effect.Effect<CloudSandboxState, CloudThreadError>;
     readonly wakeCloudSandbox: (
+      threadId: ThreadId,
+    ) => Effect.Effect<CloudSandboxState, CloudThreadError>;
+    readonly recreateCloudSandbox: (
       threadId: ThreadId,
     ) => Effect.Effect<CloudSandboxState, CloudThreadError>;
     readonly previewCloudSandboxDelete: (
@@ -345,6 +412,7 @@ const make = Effect.gen(function* () {
               operation,
               threadId: sandbox.threadId,
               detail: error.detail,
+              statusCode: error.statusCode,
             }),
         ),
       );
@@ -386,6 +454,7 @@ const make = Effect.gen(function* () {
               operation: "exec",
               threadId: input.threadId,
               detail: error.detail,
+              statusCode: error.statusCode,
             }),
         ),
       );
@@ -477,6 +546,7 @@ const make = Effect.gen(function* () {
       status !== "provisioning" &&
       status !== "deleting" &&
       status !== "lost";
+    const canRecreate = status === "lost" && record !== null;
 
     return Option.some<CloudSandboxState>({
       threadId,
@@ -494,6 +564,10 @@ const make = Effect.gen(function* () {
       canSleep,
       canWake,
       canDelete,
+      canRecreate,
+      ...(status === "lost" && record?.lossReason !== undefined
+        ? { lossReason: record.lossReason }
+        : {}),
       ...(sleepDisabledReason === undefined ? {} : { sleepDisabledReason }),
       ...(sandbox?.lastError !== undefined
         ? { lastError: sandbox.lastError }
@@ -646,11 +720,17 @@ const make = Effect.gen(function* () {
       return next;
     });
     if (resumed._tag === "Failure") {
+      if (resumed.failure.statusCode === 404) {
+        yield* markCloudSandboxLost(threadId, resumed.failure.detail, sandbox.id);
+      }
       yield* notify(threadId);
       return yield* new CloudThreadError({
         operation: "resume",
         threadId,
         detail: resumed.failure.detail,
+        ...(resumed.failure.statusCode === undefined
+          ? {}
+          : { statusCode: resumed.failure.statusCode }),
       });
     }
     const { sleepingSince: _sleepingSince, ...awake } = resumed.success.sandbox;
@@ -701,7 +781,11 @@ const make = Effect.gen(function* () {
     );
   });
 
-  const markCloudLost = Effect.fnUntraced(function* (threadId: ThreadId) {
+  const markCloudLost = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    detail?: string,
+    reason?: "deleted" | "external",
+  ) {
     const record = yield* getRecord(threadId);
     if (Option.isNone(record) || record.value.status === "lost") return;
     const { lastError: _lastError, ...rest } = record.value;
@@ -709,9 +793,56 @@ const make = Effect.gen(function* () {
       .upsert({
         ...rest,
         status: "lost",
+        ...(reason === undefined ? {} : { lossReason: reason }),
+        ...(detail === undefined ? {} : { lastError: detail }),
         updatedAt: DateTime.formatIso(yield* DateTime.now),
       })
       .pipe(Effect.ignore);
+  });
+
+  const markCloudSandboxLost: CloudThreads["Service"]["markCloudSandboxLost"] = Effect.fn(
+    "CloudThreads.markCloudSandboxLost",
+  )(function* (threadId, detail, expectedSandboxId) {
+    const sandbox = yield* getSandbox(threadId);
+    // A recreate can replace the sandbox while a provider check is in flight. Only the sandbox
+    // that was observed may be marked lost.
+    if (
+      expectedSandboxId !== undefined &&
+      (Option.isNone(sandbox) || sandbox.value.id !== expectedSandboxId)
+    ) {
+      return;
+    }
+    if (Option.isSome(sandbox)) {
+      yield* store.remove(sandbox.value.id).pipe(Effect.ignore);
+    }
+    yield* Ref.update(activity, (current) => {
+      const next = new Map(current);
+      next.delete(threadId);
+      return next;
+    });
+    yield* markCloudLost(threadId, detail, "external");
+    yield* clearPorts(threadId);
+    yield* notify(threadId);
+  });
+
+  const verifyCloudSandbox: CloudThreads["Service"]["verifyCloudSandbox"] = Effect.fn(
+    "CloudThreads.verifyCloudSandbox",
+  )(function* (threadId) {
+    const sandbox = yield* getSandbox(threadId);
+    if (Option.isNone(sandbox)) return yield* getCloudSandboxState(threadId);
+    const current = sandbox.value;
+    if (current.providerSandboxId === null || current.status === "provisioning") {
+      return yield* getCloudSandboxState(threadId);
+    }
+    const resolved = yield* accounts.resolve(current.accountId).pipe(Effect.result);
+    if (resolved._tag === "Failure") return yield* getCloudSandboxState(threadId);
+    const found = yield* resolved.success.driver
+      .get(resolved.success.account, current.providerSandboxId)
+      .pipe(Effect.result);
+    if (found._tag === "Failure" && found.failure.statusCode === 404) {
+      yield* markCloudSandboxLost(threadId, found.failure.detail, current.id);
+    }
+    return yield* getCloudSandboxState(threadId);
   });
 
   const deleteCloudSandbox: CloudThreads["Service"]["deleteCloudSandbox"] = Effect.fn(
@@ -721,7 +852,7 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const sandbox = yield* getSandbox(input.threadId);
         if (Option.isNone(sandbox)) {
-          yield* markCloudLost(input.threadId);
+          yield* markCloudLost(input.threadId, undefined, "deleted");
           yield* clearPorts(input.threadId);
           yield* notify(input.threadId);
           return yield* requireCloudSandboxState(input.threadId);
@@ -780,10 +911,83 @@ const make = Effect.gen(function* () {
           next.delete(input.threadId);
           return next;
         });
-        yield* markCloudLost(input.threadId);
+        yield* markCloudLost(input.threadId, undefined, "deleted");
         yield* clearPorts(input.threadId);
         yield* notify(input.threadId);
         return yield* requireCloudSandboxState(input.threadId);
+      }),
+    );
+  });
+
+  const recreateCloudSandbox: CloudThreads["Service"]["recreateCloudSandbox"] = Effect.fn(
+    "CloudThreads.recreateCloudSandbox",
+  )(function* (threadId) {
+    return yield* lifecycleLock.withPermits(1)(
+      Effect.gen(function* () {
+        const record = yield* getRecord(threadId);
+        if (Option.isNone(record)) {
+          return yield* new CloudThreadError({
+            operation: "recreate",
+            threadId,
+            detail: "This thread has no cloud sandbox to recreate.",
+          });
+        }
+        if (record.value.status !== "lost") {
+          return yield* new CloudThreadError({
+            operation: "recreate",
+            threadId,
+            detail: "Only a lost cloud sandbox can be recreated.",
+          });
+        }
+        const stale = yield* getSandbox(threadId);
+        if (Option.isSome(stale)) {
+          yield* lifecycle
+            .deleteThreadSandbox({ sandboxId: stale.value.id })
+            .pipe(Effect.orElseSucceed(() => undefined));
+          yield* store.remove(stale.value.id).pipe(Effect.ignore);
+        }
+        const lost = record.value;
+        const { lastError: _lastError, ...rest } = lost;
+        yield* cloudThreads
+          .upsert({
+            ...rest,
+            status: "provisioning",
+            updatedAt: DateTime.formatIso(yield* DateTime.now),
+          })
+          .pipe(
+            Effect.mapError(
+              (error) =>
+                new CloudThreadError({
+                  operation: "recreate",
+                  threadId,
+                  detail: error.message,
+                  cause: error,
+                }),
+            ),
+          );
+        yield* notify(threadId);
+        const recreated = yield* prepare({
+          threadId,
+          accountId: lost.accountId,
+          cloneUrl: lost.repositoryUrl,
+          baseRef: lost.baseRef,
+          branch: lost.branch,
+          startFrom: "branch",
+        }).pipe(Effect.result);
+        if (recreated._tag === "Failure") {
+          // The old transcript keeps a workspace-lost state the user can retry from.
+          yield* cloudThreads
+            .upsert({
+              ...rest,
+              status: "lost",
+              lastError: recreated.failure.detail,
+              updatedAt: DateTime.formatIso(yield* DateTime.now),
+            })
+            .pipe(Effect.ignore);
+          yield* notify(threadId);
+          return yield* recreated.failure;
+        }
+        return yield* requireCloudSandboxState(threadId);
       }),
     );
   });
@@ -875,12 +1079,22 @@ const make = Effect.gen(function* () {
       ),
     );
 
+  const presentVerifiedState = (threadId: ThreadId) =>
+    verifyCloudSandbox(threadId).pipe(
+      Effect.map((state): ReadonlyArray<CloudSandboxState> =>
+        Option.isSome(state) ? [state.value] : [],
+      ),
+    );
+
   const subscribeCloudSandbox: CloudThreads["Service"]["subscribeCloudSandbox"] = (threadId) =>
     Stream.unwrap(
       PubSub.subscribe(notifications).pipe(
         Effect.map((subscription) =>
           Stream.concat(
-            Stream.fromEffect(presentState(threadId)).pipe(Stream.flatMap(Stream.fromIterable)),
+            // A thread opens through this subscription, so the provider is checked here once.
+            Stream.fromEffect(presentVerifiedState(threadId)).pipe(
+              Stream.flatMap(Stream.fromIterable),
+            ),
             Stream.fromSubscription(subscription).pipe(
               Stream.filter((changed) => changed === threadId),
               Stream.mapEffect(() => presentState(threadId)),
@@ -1025,10 +1239,13 @@ const make = Effect.gen(function* () {
         const gitEnv = Option.isSome(credential)
           ? gitCredentialEnvironment(credential.value)
           : undefined;
-        const clone = [
-          "set -eu",
-          `git clone --branch ${shellQuote(cloudBranchName(input.baseRef))} --no-tags ${shellQuote(input.cloneUrl)} ${shellQuote(workspacePath)}`,
-        ].join("\n");
+        const clone = cloudCloneCommand({
+          cloneUrl: input.cloneUrl,
+          baseRef: input.baseRef,
+          branch: input.branch,
+          workspacePath,
+          ...(input.startFrom === undefined ? {} : { startFrom: input.startFrom }),
+        });
         yield* run(sandbox, driver, account, clone, "clone", undefined, gitEnv).pipe(
           Effect.catchTags({
             CloudThreadError: (error) =>
@@ -1095,7 +1312,7 @@ const make = Effect.gen(function* () {
   });
 
   const openHost: CloudThreads["Service"]["openHost"] = Effect.fn("CloudThreads.openHost")(
-    function* (threadId) {
+    function* (threadId, options) {
       // Waking blocks here, so a turn starts only after the sandbox is running again.
       yield* wakeCloudSandbox(threadId);
       const sandbox = yield* requireSandbox(threadId);
@@ -1115,7 +1332,8 @@ const make = Effect.gen(function* () {
         });
       }
       const home = yield* run(sandbox, driver, account, 'printf %s "$HOME"', "start-host");
-      const hostPath = `${home.stdout.trim()}/${HOST_SCRIPT_PATH}`;
+      const homePath = home.stdout.trim();
+      const hostPath = `${homePath}/${HOST_SCRIPT_PATH}`;
       const writeFile = driver.writeFile;
       if (writeFile === undefined) {
         return yield* new CloudThreadError({
@@ -1137,9 +1355,11 @@ const make = Effect.gen(function* () {
               operation: "start-host",
               threadId,
               detail: error.detail,
+              statusCode: error.statusCode,
             }),
         ),
       );
+      const since = options?.since ?? "latest";
       const messages = yield* Queue.unbounded<CloudHostMessage>();
       let pending = "";
       const onOutput = (data: string) => {
@@ -1155,10 +1375,10 @@ const make = Effect.gen(function* () {
         .startProcess({
           account,
           providerSandboxId: sandbox.providerSandboxId,
-          command: `python3 -u ${shellQuote(hostPath)}`,
+          command: `python3 -u ${shellQuote(hostPath)} --connect ${typeof since === "number" ? since : "latest"}`,
           ...(sandbox.threadId === undefined
             ? {}
-            : { cwd: `${home.stdout.trim()}/${THREADS_DIR}/${sandbox.threadId}` }),
+            : { cwd: `${homePath}/${THREADS_DIR}/${sandbox.threadId}` }),
           onStdout: onOutput,
           onStderr: (data) => {
             for (const line of data.split("\n")) {
@@ -1175,8 +1395,17 @@ const make = Effect.gen(function* () {
                 operation: "start-host",
                 threadId,
                 detail: error.detail,
+                statusCode: error.statusCode,
               }),
           ),
+          Effect.catchTags({
+            CloudThreadError: (error) =>
+              error.statusCode === 404
+                ? markCloudSandboxLost(threadId, error.detail, sandbox.id).pipe(
+                    Effect.andThen(Effect.fail(error)),
+                  )
+                : Effect.fail(error),
+          }),
         );
       yield* Effect.forkDetach(
         process.wait.pipe(
@@ -1197,10 +1426,15 @@ const make = Effect.gen(function* () {
                   operation: "send",
                   threadId,
                   detail: error.detail,
+                  statusCode: error.statusCode,
                 }),
             ),
           ),
         close: process.kill.pipe(Effect.ignore, Effect.andThen(Queue.shutdown(messages))),
+        activeRunId: null,
+        latestEventType: null,
+        latestRunId: null,
+        pendingApprovalIds: [],
       };
       // The host announces itself before accepting a turn.
       const ready = yield* connection.messages.pipe(
@@ -1225,7 +1459,24 @@ const make = Effect.gen(function* () {
           detail: `The sandbox thread host speaks protocol ${String(handshake.value["protocolVersion"] ?? "unknown")}; this server needs ${THREAD_HOST_PROTOCOL_VERSION}.`,
         });
       }
-      return connection;
+      const activeRunId =
+        typeof handshake.value["activeRunId"] === "string" ? handshake.value["activeRunId"] : null;
+      const latestEventType =
+        typeof handshake.value["latestEventType"] === "string"
+          ? handshake.value["latestEventType"]
+          : null;
+      const latestRunId =
+        typeof handshake.value["latestRunId"] === "string" ? handshake.value["latestRunId"] : null;
+      const pendingApprovalIds = Array.isArray(handshake.value["pendingApprovalIds"])
+        ? handshake.value["pendingApprovalIds"].filter((id): id is string => typeof id === "string")
+        : [];
+      return {
+        ...connection,
+        activeRunId,
+        latestEventType,
+        latestRunId,
+        pendingApprovalIds,
+      };
     },
   );
 
@@ -1238,10 +1489,13 @@ const make = Effect.gen(function* () {
     writeAttachment,
     openHost,
     deleteForThread,
+    verifyCloudSandbox,
+    markCloudSandboxLost,
     getCloudSandboxState,
     subscribeCloudSandbox,
     sleepCloudSandbox,
     wakeCloudSandbox,
+    recreateCloudSandbox,
     previewCloudSandboxDelete,
     deleteCloudSandbox,
     beginTurn,

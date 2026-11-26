@@ -14,6 +14,7 @@ import {
   type OrchestrationV2ProviderSession,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2RestartCancelledBackgroundWork,
+  type OrchestrationV2Run,
   type OrchestrationV2TurnItem,
   type Project,
   ProjectId,
@@ -63,6 +64,7 @@ import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
+import * as CloudThreadRuntime from "../sandbox/CloudThreadRuntime.ts";
 import * as CommandOutputHub from "./CommandOutputHub.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import {
@@ -687,6 +689,7 @@ function layerTest(input: {
   readonly serverSettingsLayer?: ReturnType<typeof ServerSettings.layerTest>;
   readonly projectServiceLayer?: Layer.Layer<ProjectService.ProjectService>;
   readonly installationGateLayer?: Layer.Layer<ProviderInstallationGate.ProviderInstallationGate>;
+  readonly cloudRuntimeLayer?: Layer.Layer<CloudThreadRuntime.CloudThreadRuntime>;
 }) {
   const layerConfiguredEventSink =
     input.flakyReleaseWrites !== undefined
@@ -783,9 +786,12 @@ function layerTest(input: {
           layerProviderEventIngestorTest,
           layerConfiguredMcpRegistry,
           layerTestStores,
-          input.installationGateLayer ?? ProviderInstallationGate.layer,
+          ...(input.installationGateLayer === undefined
+            ? [ProviderInstallationGate.layer]
+            : [input.installationGateLayer]),
           ...(input.serverSettingsLayer === undefined ? [] : [input.serverSettingsLayer]),
           ...(input.projectServiceLayer === undefined ? [] : [input.projectServiceLayer]),
+          ...(input.cloudRuntimeLayer === undefined ? [] : [input.cloudRuntimeLayer]),
         ),
       ),
     ),
@@ -6042,3 +6048,261 @@ it.effect("ProviderSessionManagerV2 gives a delegated child its project's device
     assert.isTrue(child?.capabilities?.has("device"));
   }),
 );
+
+it.effect("resumes one cloud turn, starts no new turn, and stays busy until it settles", () => {
+  return Effect.gen(function* () {
+    const testState = yield* Ref.make(emptyState);
+    const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
+    const openCount = yield* Ref.make(0);
+    const startTurnCount = yield* Ref.make(0);
+    const terminalSeen = yield* Deferred.make<void>();
+    const resumedApprovalStatuses = yield* Ref.make<ReadonlyArray<string>>([]);
+    const cloudRuntime = CloudThreadRuntime.CloudThreadRuntime.of({
+      hasThread: () => Effect.succeed(true),
+      openSession: (input: CloudThreadRuntime.CloudThreadRuntimeOpenInput) =>
+        Effect.gen(function* () {
+          yield* Ref.update(openCount, (count) => count + 1);
+          yield* Ref.set(
+            resumedApprovalStatuses,
+            (input.resumeTurn?.approvals ?? []).map((approval) => approval.request.status),
+          );
+          const now = yield* DateTime.now;
+          const session = {
+            ...makeProviderSession({ providerSessionId: input.providerSessionId, now }),
+          };
+          return {
+            instanceId: modelSelection.instanceId,
+            driver: CODEX_DRIVER,
+            providerSessionId: input.providerSessionId,
+            providerSession: session,
+            events: Stream.fromQueue(events).pipe(
+              Stream.tap((event) =>
+                event.type === "turn.terminal"
+                  ? Deferred.succeed(terminalSeen, undefined)
+                  : Effect.void,
+              ),
+            ),
+            ensureThread: () => Effect.die("unused ensureThread"),
+            resumeThread: ({ providerThread }) => Effect.succeed(providerThread),
+            startTurn: () =>
+              Ref.update(startTurnCount, (count) => count + 1).pipe(
+                Effect.andThen(Effect.die("a resume must not start a turn")),
+              ),
+            steerTurn: () => Effect.die("unused steerTurn"),
+            interruptTurn: () => Effect.void,
+            respondToRuntimeRequest: () => Effect.void,
+            readThreadSnapshot: () => Effect.die("unused readThreadSnapshot"),
+            rollbackThread: () => Effect.die("unused rollbackThread"),
+            forkThread: () => Effect.die("unused forkThread"),
+          } satisfies ProviderAdapter.ProviderAdapterV2SessionRuntime;
+        }),
+    } as unknown as CloudThreadRuntime.CloudThreadRuntime["Service"]);
+    const cloudRuntimeLayer = Layer.succeed(CloudThreadRuntime.CloudThreadRuntime, cloudRuntime);
+
+    return yield* Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread-provider-session-manager-cloud-resume");
+      const providerSessionId = yield* idAllocator.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId,
+      });
+      const providerThread = makeProviderThread({ idAllocator, threadId, providerSessionId, now });
+      const runId = idAllocator.derive.run({ threadId, ordinal: 1 });
+      const attemptId = idAllocator.derive.runAttempt({ runId, attemptOrdinal: 1 });
+      const rootNodeId = idAllocator.derive.rootNode({ runId });
+      const providerTurnId = idAllocator.derive.providerTurn({
+        driver: CODEX_DRIVER,
+        nativeTurnId: "cloud-resume-turn",
+      });
+      const requestId = yield* idAllocator.allocate.runtimeRequest({
+        driver: CODEX_DRIVER,
+        nativeRequestId: "cloud-resume-approval",
+      });
+      const created = yield* makeThreadCreatedEvent({ idAllocator, threadId, now });
+      const run: OrchestrationV2Run = {
+        id: runId,
+        threadId,
+        ordinal: 1,
+        providerInstanceId: modelSelection.instanceId,
+        modelSelection,
+        providerThreadId: providerThread.id,
+        userMessageId: MessageId.make("message-cloud-resume"),
+        rootNodeId,
+        activeAttemptId: attemptId,
+        status: "running",
+        requestedAt: now,
+        startedAt: now,
+        completedAt: null,
+        checkpointId: null,
+        contextHandoffId: null,
+      };
+      yield* eventSink.write({
+        events: [
+          {
+            ...created,
+            payload: {
+              ...created.payload,
+              cloudWorkspace: {
+                accountId: "e2b" as never,
+                providerKind: "e2b" as never,
+                workspacePath: "/home/t3/.t3/threads/thread-cloud-resume",
+              },
+            },
+          },
+          {
+            id: yield* idAllocator.allocate.event({ threadId }),
+            type: "provider-thread.updated",
+            threadId,
+            driver: CODEX_DRIVER,
+            occurredAt: now,
+            payload: providerThread,
+          },
+          {
+            id: yield* idAllocator.allocate.event({ threadId }),
+            type: "run.updated",
+            threadId,
+            runId,
+            occurredAt: now,
+            payload: run,
+          },
+          {
+            id: yield* idAllocator.allocate.event({ threadId }),
+            type: "run-attempt.updated",
+            threadId,
+            runId,
+            occurredAt: now,
+            payload: {
+              id: attemptId,
+              runId,
+              attemptOrdinal: 1,
+              rootNodeId,
+              providerInstanceId: modelSelection.instanceId,
+              providerThreadId: providerThread.id,
+              providerTurnId,
+              reason: "initial",
+              status: "running",
+              startedAt: now,
+              completedAt: null,
+            },
+          },
+          {
+            id: yield* idAllocator.allocate.event({ threadId }),
+            type: "provider-turn.updated",
+            threadId,
+            runId,
+            driver: CODEX_DRIVER,
+            occurredAt: now,
+            payload: {
+              id: providerTurnId,
+              providerThreadId: providerThread.id,
+              nodeId: rootNodeId,
+              runAttemptId: attemptId,
+              nativeTurnRef: null,
+              ordinal: 1,
+              status: "running",
+              startedAt: now,
+              completedAt: null,
+            },
+          },
+          {
+            id: yield* idAllocator.allocate.event({ threadId }),
+            type: "runtime-request.updated",
+            threadId,
+            nodeId: rootNodeId,
+            driver: CODEX_DRIVER,
+            occurredAt: now,
+            payload: {
+              id: requestId,
+              nodeId: rootNodeId,
+              providerTurnId,
+              nativeRequestRef: null,
+              kind: "command",
+              status: "resolved",
+              responseCapability: { type: "live", providerSessionId },
+              createdAt: now,
+              resolvedAt: now,
+              decision: "accept",
+            },
+          },
+          {
+            id: yield* idAllocator.allocate.event({ threadId }),
+            type: "turn-item.updated",
+            threadId,
+            runId,
+            nodeId: rootNodeId,
+            occurredAt: now,
+            payload: {
+              id: TurnItemId.make("turn-item-cloud-resume-approval"),
+              threadId,
+              runId,
+              nodeId: rootNodeId,
+              providerThreadId: providerThread.id,
+              providerTurnId,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal: 2,
+              status: "completed",
+              title: "Run command",
+              startedAt: now,
+              completedAt: now,
+              updatedAt: now,
+              type: "approval_request",
+              requestId,
+              requestKind: "command",
+              prompt: "pwd",
+            },
+          },
+        ],
+      });
+
+      const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+      const resumeProjection = yield* projectionStore.getRuntimeRecoveryProjection(threadId);
+      assert.isNotNull(resumeProjection.thread.cloudWorkspace);
+      assert.equal(resumeProjection.runs.find((run) => run.id === runId)?.status, "running");
+      assert.equal(
+        resumeProjection.providerTurns.find((turn) => turn.id === providerTurnId)?.status,
+        "running",
+      );
+      yield* manager.resumeCloudTurn({ threadId, runId });
+      assert.equal(yield* Ref.get(openCount), 1);
+      assert.equal(yield* Ref.get(startTurnCount), 0);
+      assert.deepEqual(yield* Ref.get(resumedApprovalStatuses), ["resolved"]);
+      assert.isTrue(yield* manager.isLive(providerSessionId));
+      yield* TestClock.adjust("2 seconds");
+      assert.isTrue(
+        yield* manager.isLive(providerSessionId),
+        "the reattached turn must keep its session busy",
+      );
+
+      yield* Queue.offer(events, {
+        type: "turn.terminal",
+        driver: CODEX_DRIVER,
+        providerThreadId: providerThread.id,
+        providerTurnId,
+        runOrdinal: 1,
+        status: "completed",
+        failure: null,
+        threadDisposition: "reusable",
+      });
+      yield* Deferred.await(terminalSeen);
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust("1 second");
+      }
+      assert.isFalse(yield* manager.isLive(providerSessionId));
+      assert.equal(yield* Ref.get(openCount), 1);
+      assert.equal(yield* Ref.get(startTurnCount), 0);
+    }).pipe(
+      Effect.provide(
+        layerTest({
+          state: testState,
+          idleTimeoutMs: 1_000,
+          cloudRuntimeLayer,
+        }),
+      ),
+    );
+  });
+});

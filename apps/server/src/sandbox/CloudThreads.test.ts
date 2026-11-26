@@ -43,11 +43,13 @@ interface FakeState {
   readonly execs: Ref.Ref<ReadonlyArray<string>>;
   readonly execEnvs: Ref.Ref<ReadonlyArray<Readonly<Record<string, string>> | undefined>>;
   readonly writes: Ref.Ref<ReadonlyArray<string>>;
+  readonly processCommands: Ref.Ref<ReadonlyArray<string>>;
   failClone: boolean;
   failProbe: boolean;
   failWrite: boolean;
   hostProtocolVersion: string;
   created: number;
+  lost: boolean;
 }
 
 const fakeDriver = (state: FakeState): SandboxProviderDriver => ({
@@ -61,7 +63,17 @@ const fakeDriver = (state: FakeState): SandboxProviderDriver => ({
       return { providerSandboxId: `e2b-${state.created}` };
     }),
   findCreated: () => Effect.succeed([]),
-  get: () => Effect.succeed({ status: "running" as const }),
+  get: () =>
+    state.lost
+      ? Effect.fail(
+          new SandboxProviderError({
+            providerKind: E2B,
+            operation: "get",
+            detail: "E2B could not find that sandbox. It may have expired or been deleted.",
+            statusCode: 404,
+          }),
+        )
+      : Effect.succeed({ status: "running" as const }),
   pause: () => Effect.void,
   resume: () => Effect.void,
   delete: () => Ref.update(state.calls, (calls) => [...calls, "delete"]).pipe(Effect.asVoid),
@@ -103,7 +115,8 @@ const fakeDriver = (state: FakeState): SandboxProviderDriver => ({
       ),
     ),
   startProcess: (input) =>
-    Effect.sync(() => {
+    Effect.gen(function* () {
+      yield* Ref.update(state.processCommands, (commands) => [...commands, input.command]);
       input.onStdout(
         `${JSON.stringify({
           type: "ready",
@@ -170,11 +183,13 @@ const makeState = (overrides: Partial<FakeState> = {}) =>
       execs: yield* Ref.make<ReadonlyArray<string>>([]),
       execEnvs: yield* Ref.make<ReadonlyArray<Readonly<Record<string, string>> | undefined>>([]),
       writes: yield* Ref.make<ReadonlyArray<string>>([]),
+      processCommands: yield* Ref.make<ReadonlyArray<string>>([]),
       failClone: false,
       failProbe: false,
       failWrite: false,
-      hostProtocolVersion: "1",
+      hostProtocolVersion: "2",
       created: 0,
+      lost: false,
       ...overrides,
     } satisfies FakeState;
   });
@@ -422,6 +437,71 @@ describe("cloud threads", () => {
         if (opened._tag === "Failure") {
           expect(opened.failure.detail).toContain("999");
         }
+      }).pipe(Effect.provide(testLayer(driver)));
+    });
+    return state;
+  });
+
+  it.effect("keeps a lost sandbox's record and recreates it from the thread's branch", () => {
+    const state = Effect.gen(function* () {
+      const fake = yield* makeState();
+      const driver = fakeDriver(fake);
+      return yield* Effect.gen(function* () {
+        yield* connect;
+        const cloud = yield* CloudThreads.CloudThreads;
+        yield* cloud.prepare({
+          threadId,
+          accountId,
+          cloneUrl: "https://github.com/example/public.git",
+          baseRef: "refs/remotes/origin/main",
+          branch: "t3/feature",
+        });
+        fake.lost = true;
+        const verified = yield* cloud.verifyCloudSandbox(threadId);
+        expect(Option.isSome(verified) && verified.value.status).toBe("lost");
+        expect(Option.isSome(verified) && verified.value.canRecreate).toBe(true);
+        const record = yield* cloud.getRecord(threadId);
+        expect(Option.isSome(record) && record.value.status).toBe("lost");
+        const sandbox = yield* cloud.getSandbox(threadId);
+        expect(Option.isNone(sandbox)).toBe(true);
+
+        fake.lost = false;
+        const recreated = yield* cloud.recreateCloudSandbox(threadId);
+        expect(recreated.status).toBe("running");
+        expect(fake.created).toBe(2);
+        const execs = yield* Ref.get(fake.execs);
+        const fromBranch = execs.find(
+          (command) =>
+            command.includes("refs/heads/t3/feature") &&
+            command.includes("checkout -b 't3/feature'"),
+        );
+        expect(fromBranch).toBeTruthy();
+        const ready = yield* cloud.getRecord(threadId);
+        expect(Option.isSome(ready) && ready.value.status).toBe("ready");
+      }).pipe(Effect.provide(testLayer(driver)));
+    });
+    return state;
+  });
+
+  it.effect("opens the host at the requested replay cursor", () => {
+    const state = Effect.gen(function* () {
+      const fake = yield* makeState();
+      const driver = fakeDriver(fake);
+      return yield* Effect.gen(function* () {
+        yield* connect;
+        const cloud = yield* CloudThreads.CloudThreads;
+        yield* cloud.prepare({
+          threadId,
+          accountId,
+          cloneUrl: "https://github.com/example/public.git",
+          baseRef: "main",
+          branch: "main",
+        });
+        yield* cloud.openHost(threadId, { since: 0 });
+        yield* cloud.openHost(threadId);
+        const commands = yield* Ref.get(fake.processCommands);
+        expect(commands.some((command) => command.includes("--connect 0"))).toBe(true);
+        expect(commands.some((command) => command.includes("--connect latest"))).toBe(true);
       }).pipe(Effect.provide(testLayer(driver)));
     });
     return state;

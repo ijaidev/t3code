@@ -38,7 +38,7 @@ import * as CloudThreadRuntime from "./CloudThreadRuntime.ts";
 import * as CloudThreadStore from "./CloudThreadStore.ts";
 import * as CloudThreads from "./CloudThreads.ts";
 import * as SandboxAccounts from "./SandboxAccounts.ts";
-import { type SandboxProviderDriver } from "./SandboxProvider.ts";
+import { SandboxProviderError, type SandboxProviderDriver } from "./SandboxProvider.ts";
 import * as SandboxLifecycle from "./SandboxLifecycle.ts";
 import * as SandboxStore from "./SandboxStore.ts";
 
@@ -67,6 +67,9 @@ interface FakeCloud {
   resumeGate: Deferred.Deferred<void> | null;
   hostStartGate: Deferred.Deferred<void> | null;
   hostStartEntered: Deferred.Deferred<void> | null;
+  missing: boolean;
+  getGate: Deferred.Deferred<void> | null;
+  getEntered: Deferred.Deferred<void> | null;
 }
 
 const fakeDriver = (state: FakeCloud): SandboxProviderDriver => ({
@@ -81,13 +84,40 @@ const fakeDriver = (state: FakeCloud): SandboxProviderDriver => ({
       return { providerSandboxId: `e2b-${state.created}` };
     }),
   findCreated: () => Effect.succeed([]),
-  get: () => Effect.succeed({ status: state.paused ? ("paused" as const) : ("running" as const) }),
+  get: () =>
+    Effect.gen(function* () {
+      const entered = state.getEntered;
+      if (entered !== null) yield* Deferred.succeed(entered, undefined);
+      const gate = state.getGate;
+      if (gate !== null) yield* Deferred.await(gate);
+      if (state.missing) {
+        return yield* new SandboxProviderError({
+          providerKind: E2B,
+          operation: "get",
+          detail: "E2B could not find that sandbox. It may have expired or been deleted.",
+          statusCode: 404,
+        });
+      }
+      return { status: state.paused ? ("paused" as const) : ("running" as const) };
+    }),
   pause: () =>
     Effect.sync(() => {
       state.paused = true;
     }).pipe(Effect.andThen(Ref.update(state.calls, (calls) => [...calls, "pause"])), Effect.asVoid),
   resume: () =>
     (state.resumeGate === null ? Effect.void : Deferred.await(state.resumeGate)).pipe(
+      Effect.andThen(
+        state.missing
+          ? Effect.fail(
+              new SandboxProviderError({
+                providerKind: E2B,
+                operation: "resume",
+                detail: "E2B could not find that sandbox. It may have expired or been deleted.",
+                statusCode: 404,
+              }),
+            )
+          : Effect.void,
+      ),
       Effect.andThen(
         Effect.sync(() => {
           state.paused = false;
@@ -117,14 +147,16 @@ const fakeDriver = (state: FakeCloud): SandboxProviderDriver => ({
       if (entered !== null) yield* Deferred.succeed(entered, undefined);
       const gate = state.hostStartGate;
       if (gate !== null) yield* Deferred.await(gate);
-      input.onStdout(`${JSON.stringify({ type: "ready", protocolVersion: "1", pid: 1 })}\n`);
+      input.onStdout(`${JSON.stringify({ type: "ready", protocolVersion: "2", pid: 1 })}\n`);
       return {
         pid: 1,
         sendStdin: (data: string) =>
           Effect.sync(() => {
-            const message = JSON.parse(data) as { readonly type?: string };
+            const message = JSON.parse(data) as { readonly type?: string; readonly runId?: string };
             if (message.type === "turn") {
-              input.onStdout(`${JSON.stringify({ type: "turn_started", runId: "run-1" })}\n`);
+              input.onStdout(
+                `${JSON.stringify({ type: "turn_started", runId: message.runId ?? "run-1" })}\n`,
+              );
             }
           }),
         kill: Effect.void,
@@ -262,6 +294,9 @@ const makeState = Effect.fn("test.makeState")(function* (
     resumeGate: null,
     hostStartGate: null,
     hostStartEntered: null,
+    missing: false,
+    getGate: null,
+    getEntered: null,
   };
   return state;
 });
@@ -531,6 +566,8 @@ describe("cloud sandbox lifecycle", () => {
           acknowledgedUnpushedChanges: true,
         });
         expect(deleted.status).toBe("lost");
+        expect(deleted.lossReason).toBe("deleted");
+        expect(deleted.canRecreate).toBe(true);
         expect(deleted.sandboxId).toBeNull();
         expect(deleted.providerLabel).toBe("E2B");
         expect(deleted.size?.id).toBe("small");
@@ -549,6 +586,91 @@ describe("cloud sandbox lifecycle", () => {
     });
     return test;
   });
+
+  it.effect("checks the provider when a thread subscribes and surfaces an external loss", () => {
+    const test = Effect.gen(function* () {
+      const fake = yield* makeState();
+      return yield* Effect.gen(function* () {
+        yield* connect;
+        yield* prepare;
+        fake.missing = true;
+        const cloud = yield* CloudThreads.CloudThreads;
+        const first = yield* cloud.subscribeCloudSandbox(threadId).pipe(Stream.runHead);
+        expect(Option.isSome(first)).toBe(true);
+        if (Option.isSome(first)) {
+          expect(first.value.status).toBe("lost");
+          expect(first.value.canRecreate).toBe(true);
+          expect(first.value.lossReason).toBe("external");
+        }
+        const record = yield* cloud.getRecord(threadId);
+        expect(Option.isSome(record) && record.value.status).toBe("lost");
+        const sandbox = yield* cloud.getSandbox(threadId);
+        expect(Option.isNone(sandbox)).toBe(true);
+      }).pipe(Effect.provide(makeLayer(fakeDriver(fake))));
+    });
+    return test;
+  });
+
+  it.effect("marks a sandbox lost when waking it receives a provider 404", () => {
+    const test = Effect.gen(function* () {
+      const fake = yield* makeState();
+      return yield* Effect.gen(function* () {
+        yield* connect;
+        yield* prepare;
+        const cloud = yield* CloudThreads.CloudThreads;
+        yield* cloud.sleepCloudSandbox(threadId);
+        fake.missing = true;
+        const failure = yield* Effect.flip(cloud.wakeCloudSandbox(threadId));
+        expect(failure.operation).toBe("resume");
+        expect(failure.statusCode).toBe(404);
+        const state = yield* cloud.getCloudSandboxState(threadId);
+        expect(Option.isSome(state) && state.value.status).toBe("lost");
+        expect(Option.isSome(state) && state.value.canRecreate).toBe(true);
+        expect(Option.isSome(state) && state.value.lossReason).toBe("external");
+      }).pipe(Effect.provide(makeLayer(fakeDriver(fake))));
+    });
+    return test;
+  });
+
+  it.effect(
+    "does not mark a recreated sandbox lost when an older provider check returns 404",
+    () => {
+      const test = Effect.gen(function* () {
+        const fake = yield* makeState();
+        return yield* Effect.gen(function* () {
+          yield* connect;
+          const oldSandbox = yield* prepare;
+          const cloud = yield* CloudThreads.CloudThreads;
+          const cloudStore = yield* CloudThreadStore.CloudThreadStore;
+          const record = yield* cloudStore.get(threadId);
+          if (Option.isNone(record)) throw new Error("missing cloud record");
+          yield* cloudStore.upsert({ ...record.value, status: "lost", lossReason: "deleted" });
+
+          const entered = yield* Deferred.make<void>();
+          const gate = yield* Deferred.make<void>();
+          fake.missing = true;
+          fake.getEntered = entered;
+          fake.getGate = gate;
+          const verification = yield* Effect.forkChild(cloud.verifyCloudSandbox(threadId));
+          yield* Deferred.await(entered);
+
+          const recreated = yield* cloud.recreateCloudSandbox(threadId);
+          expect(recreated.status).toBe("running");
+          yield* Deferred.succeed(gate, undefined);
+          const verified = yield* Fiber.join(verification);
+          expect(Option.isSome(verified) && verified.value.status).toBe("running");
+          const current = yield* cloud.getSandbox(threadId);
+          expect(Option.isSome(current)).toBe(true);
+          if (Option.isSome(current)) {
+            expect(current.value.id).not.toBe(oldSandbox.id);
+          }
+          const after = yield* cloud.getRecord(threadId);
+          expect(Option.isSome(after) && after.value.status).toBe("ready");
+        }).pipe(Effect.provide(makeLayer(fakeDriver(fake))));
+      });
+      return test;
+    },
+  );
 
   it.effect("hides sleep with a reason on a provider without pause, but still deletes", () => {
     const test = Effect.gen(function* () {

@@ -3450,6 +3450,14 @@
     }
   ],
   "1b1131295f62c44c": "O processo do provedor não existe mais. Interrompa ou reinicie a thread filha para responder.",
+  "66d606fa31ccb153": "The sandbox could not be recreated",
+  "25d0be29bc61c55c": "This sandbox was deleted. Unpushed work is gone; the transcript is still here.",
+  "23bbe3d9843bcf61": "The sandbox was deleted outside T3 Code. Unpushed work is gone; the transcript is still here.",
+  "0d5dbec4e08f4775": "This cloud workspace is gone. Unpushed work is lost; the transcript is still here.",
+  "9c356d3604f7f010": "Cloud workspace lost",
+  "00245a015dec7ea6": "Recreate sandbox",
+  "d0a54b753e7c8ece": "Recreate this cloud sandbox?",
+  "352d3c38898fe8d5": "This clones the thread's branch into a new sandbox. Unpushed work from the lost sandbox is gone.",
   "da66023072c473d1": [
     "Não foi possível carregar a saída: ",
     {

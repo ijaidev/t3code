@@ -41,6 +41,10 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     cause: Schema.optional(Schema.Literal("provider_exit")),
   }),
   Schema.Struct({
+    type: Schema.Literal("cloud-thread.resume"),
+    runId: RunId,
+  }),
+  Schema.Struct({
     type: Schema.Literal("provider-session.detach"),
     providerSessionId: ProviderSessionId,
     detail: Schema.optional(Schema.String),
@@ -143,6 +147,7 @@ export type OrchestrationEffectRequestV2 = typeof OrchestrationEffectRequestV2.T
 
 export const REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS = [
   "provider-runtime.continue",
+  "cloud-thread.resume",
   "provider-session.detach",
   "provider-thread.rollback",
   "checkpoint.capture",

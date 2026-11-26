@@ -3,7 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-export const THREAD_HOST_PROTOCOL_VERSION = "1";
+export const THREAD_HOST_PROTOCOL_VERSION = "2";
 const THREAD_HOST_REQUIRED_CAPABILITIES = ["exec", "filesystem", "git", "ports"] as const;
 
 // POSIX shell keeps the first host bootstrap free of a runtime the template may not preinstall.

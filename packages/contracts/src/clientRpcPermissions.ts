@@ -36,6 +36,7 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   // A cloud sandbox's lifecycle changes billable compute, so it needs thread control.
   [WS_METHODS.sandboxSleepCloudSandbox]: AuthOrchestrationOperateScope,
   [WS_METHODS.sandboxWakeCloudSandbox]: AuthOrchestrationOperateScope,
+  [WS_METHODS.sandboxRecreateCloudSandbox]: AuthOrchestrationOperateScope,
   [WS_METHODS.sandboxPreviewCloudSandboxDelete]: AuthOrchestrationOperateScope,
   [WS_METHODS.sandboxDeleteCloudSandbox]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverRunStorageCleanup]: AuthSettingsWriteScope,

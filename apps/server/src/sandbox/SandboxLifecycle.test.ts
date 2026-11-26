@@ -199,7 +199,7 @@ const state = (overrides: Partial<FakeDriverState> = {}) =>
       failDelete: false,
       handshake: JSON.stringify({
         kind: "t3-thread-host",
-        protocolVersion: "1",
+        protocolVersion: "2",
         capabilities: ["exec", "filesystem", "git", "ports"],
       }),
       ...overrides,

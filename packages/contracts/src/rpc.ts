@@ -642,6 +642,7 @@ export const WS_METHODS = {
   sandboxSubscribeCloudSandbox: "sandbox.subscribeCloudSandbox",
   sandboxSleepCloudSandbox: "sandbox.sleepCloudSandbox",
   sandboxWakeCloudSandbox: "sandbox.wakeCloudSandbox",
+  sandboxRecreateCloudSandbox: "sandbox.recreateCloudSandbox",
   sandboxPreviewCloudSandboxDelete: "sandbox.previewCloudSandboxDelete",
   sandboxDeleteCloudSandbox: "sandbox.deleteCloudSandbox",
   serverDiscoverSourceControl: "server.discoverSourceControl",
@@ -1154,6 +1155,12 @@ const WsSandboxSleepCloudSandboxRpc = Rpc.make(WS_METHODS.sandboxSleepCloudSandb
 });
 
 const WsSandboxWakeCloudSandboxRpc = Rpc.make(WS_METHODS.sandboxWakeCloudSandbox, {
+  payload: CloudSandboxThreadInput,
+  success: CloudSandboxStateResult,
+  error: SandboxRpcError,
+});
+
+const WsSandboxRecreateCloudSandboxRpc = Rpc.make(WS_METHODS.sandboxRecreateCloudSandbox, {
   payload: CloudSandboxThreadInput,
   success: CloudSandboxStateResult,
   error: SandboxRpcError,
@@ -2664,6 +2671,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsSandboxSubscribeCloudSandboxRpc,
   WsSandboxSleepCloudSandboxRpc,
   WsSandboxWakeCloudSandboxRpc,
+  WsSandboxRecreateCloudSandboxRpc,
   WsSandboxPreviewCloudSandboxDeleteRpc,
   WsSandboxDeleteCloudSandboxRpc,
   WsPeerLinksListRpc,

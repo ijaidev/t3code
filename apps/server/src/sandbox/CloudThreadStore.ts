@@ -39,6 +39,8 @@ export const CloudThreadRecord = Schema.Struct({
   size: Schema.optionalKey(SandboxProviderSize),
   region: Schema.optionalKey(SandboxProviderRegion),
   status: Schema.Literals(["provisioning", "ready", "failed", "lost"]),
+  /** Why a lost workspace is gone; absent on records written before this field. */
+  lossReason: Schema.optionalKey(Schema.Literals(["deleted", "external"])),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   lastError: Schema.optionalKey(Schema.String),

@@ -8,6 +8,7 @@ const harness = vi.hoisted(() => ({
   wake: vi.fn(async () => ({ _tag: "Success" as const, value: {} })),
   previewDelete: vi.fn(async () => ({ _tag: "Success" as const, value: {} })),
   deleteSandbox: vi.fn(async () => ({ _tag: "Success" as const, value: {} })),
+  recreateSandbox: vi.fn(async () => ({ _tag: "Success" as const, value: {} })),
 }));
 
 vi.mock("../../state/server", async () => {
@@ -24,6 +25,7 @@ vi.mock("../../state/server", async () => {
         run: harness.previewDelete,
       },
       deleteCloudSandbox: { permissionAtom: () => permission, run: harness.deleteSandbox },
+      recreateCloudSandbox: { permissionAtom: () => permission, run: harness.recreateSandbox },
     },
   } as never;
 });
@@ -55,6 +57,7 @@ const sandbox = (overrides: Partial<CloudSandboxState> = {}): CloudSandboxState 
   canSleep: true,
   canWake: false,
   canDelete: true,
+  canRecreate: false,
   ...overrides,
 });
 
@@ -107,4 +110,50 @@ it("confirms deletion and names unpushed work", async () => {
       input: { threadId, acknowledgedUnpushedChanges: true },
     }),
   );
+});
+
+it("warns that unpushed work is gone before recreating a lost sandbox", async () => {
+  harness.state = sandbox({
+    status: "lost",
+    sandboxId: null,
+    canSleep: false,
+    canWake: false,
+    canDelete: false,
+    canRecreate: true,
+    lossReason: "external",
+  });
+  harness.recreateSandbox.mockClear();
+  await using _screen = await render(panel());
+  await expect
+    .element(page.getByText(/Unpushed work is gone; the transcript is still here/))
+    .toBeVisible();
+  await page.getByRole("button", { name: "Recreate sandbox" }).click();
+  await expect.element(page.getByText(/Unpushed work from the lost sandbox is gone/)).toBeVisible();
+  const confirm = page
+    .getByRole("alertdialog")
+    .getByRole("button", { name: "Recreate sandbox" })
+    .element();
+  (confirm as HTMLElement).click();
+  await vi.waitFor(() =>
+    expect(harness.recreateSandbox).toHaveBeenCalledWith({
+      environmentId,
+      input: { threadId },
+    }),
+  );
+  expect(harness.deleteSandbox).not.toHaveBeenCalled();
+});
+
+it("uses deleted copy after an explicit sandbox delete", async () => {
+  harness.state = sandbox({
+    status: "lost",
+    sandboxId: null,
+    canSleep: false,
+    canWake: false,
+    canDelete: false,
+    canRecreate: true,
+    lossReason: "deleted",
+  });
+  await using screen = await render(panel());
+  await expect.element(page.getByText(/This sandbox was deleted\./)).toBeVisible();
+  expect(screen.container.textContent).not.toContain("deleted outside T3 Code");
 });
