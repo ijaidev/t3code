@@ -1092,9 +1092,15 @@ export const layer: Layer.Layer<
     ) {
       // Side chats share the parent's worktree; a snapshot would capture the parent's edits.
       if (input.appThread.lineage.sideChat === true) return;
+      // The run's scope is prepared before the sandbox checkout is known. Capture the first
+      // cloud baseline from the sandbox, never from the project's local checkout.
+      const scope =
+        input.appThread.cloudWorkspace === null || input.appThread.cloudWorkspace === undefined
+          ? input.checkpointScope
+          : { ...input.checkpointScope, cwd: input.appThread.cloudWorkspace.workspacePath };
       yield* checkpointService
         .captureBaseline({
-          scope: input.checkpointScope,
+          scope,
           ordinalWithinScope: Math.max(0, input.run.ordinal - 1),
           thread: input.appThread,
         })

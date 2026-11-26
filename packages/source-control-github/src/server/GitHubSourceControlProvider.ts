@@ -2,6 +2,7 @@ import { requireSettingsSecretLiteral, SourceControlProviderKind } from "@t3tool
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Redacted from "effect/Redacted";
 import {
   GraphQL,
   GraphQLClient,
@@ -26,6 +27,7 @@ import { decodeJsonResult } from "@t3tools/shared/schemaJson";
 import { isSshRemoteUrl } from "@t3tools/shared/sourceControl";
 
 import { GH_PROCESS_CONCURRENCY } from "./GitHubCredentials.ts";
+import * as GitHubAppAccess from "./GitHubAppAccess.ts";
 import * as GitHubAppSignIn from "./GitHubAppSignIn.ts";
 import * as GitHubRest from "./GitHubRest.ts";
 import * as GitHubRequestPolicy from "./GitHubRequestPolicy.ts";
@@ -552,6 +554,7 @@ const contextHost = (context: SourceControlProvider.SourceControlProviderContext
 
 export const make = Effect.gen(function* () {
   const api = yield* GitHubRest.GitHubRest;
+  const appAccess = yield* GitHubAppAccess.GitHubAppAccess;
   const sourceControlHost = yield* SourceControlHost.SourceControlHost;
   const process = sourceControlHost.process;
   const environment = yield* HostProcess.Environment;
@@ -585,10 +588,24 @@ export const make = Effect.gen(function* () {
       readonly cwd: string;
       readonly host?: string | undefined;
       readonly context?: SourceControlProvider.SourceControlProviderContext | undefined;
+      readonly preferContext?: boolean;
     }) {
       const envRepository = environment.GH_REPO?.trim();
       const hostHint = input.host ?? contextHost(input.context);
       const defaultHost = (hostHint ?? environment.GH_HOST ?? "github.com").toLowerCase();
+      const fromContext = () => {
+        if (!input.context) return null;
+        const remote = normalizeGitRemoteUrl(input.context.remoteUrl);
+        return parseGitHubRepositorySelector(
+          `${hostHint ?? defaultHost}/${remote.slice(remote.indexOf("/") + 1)}`,
+          hostHint ?? defaultHost,
+        );
+      };
+      // Cloud work names its repository explicitly; GH_REPO and the server checkout are unrelated.
+      if (input.preferContext === true) {
+        const preferred = fromContext();
+        if (preferred !== null) return preferred;
+      }
       if (envRepository) {
         const locator = parseGitHubRepositorySelector(envRepository, defaultHost);
         if (locator !== null) return locator;
@@ -600,11 +617,7 @@ export const make = Effect.gen(function* () {
       });
       if (locator !== null) return locator;
       if (input.context) {
-        const remote = normalizeGitRemoteUrl(input.context.remoteUrl);
-        const fallback = parseGitHubRepositorySelector(
-          `${host}/${remote.slice(remote.indexOf("/") + 1)}`,
-          host,
-        );
+        const fallback = fromContext();
         if (fallback !== null) return fallback;
       }
       return yield* failure(
@@ -656,6 +669,7 @@ export const make = Effect.gen(function* () {
     readonly context?: SourceControlProvider.SourceControlProviderContext | undefined;
     readonly host?: string | undefined;
     readonly repository?: string | undefined;
+    readonly preferContext?: boolean;
     readonly allowReserve: boolean;
   }) {
     const base = yield* resolveRepository(input);
@@ -1099,6 +1113,7 @@ export const make = Effect.gen(function* () {
               host: contextHost(input.context),
               context: input.context,
               repository: input.repository,
+              ...(input.preferContext === true ? { preferContext: true } : {}),
               allowReserve,
             }),
           ),
@@ -1202,6 +1217,79 @@ export const make = Effect.gen(function* () {
           ),
         ),
     ),
+    repositoryCredential: Effect.fn("GitHubSourceControlProvider.repositoryCredential")(
+      function* (input) {
+        const host =
+          contextHost(input.context) ?? environment.GH_HOST?.trim().toLowerCase() ?? "github.com";
+        const fromRepository =
+          input.repository === undefined
+            ? null
+            : parseGitHubRepositorySelector(input.repository, host);
+        const fromContext =
+          input.context === undefined
+            ? null
+            : (() => {
+                const remote = normalizeGitRemoteUrl(input.context.remoteUrl);
+                return parseGitHubRepositorySelector(
+                  `${host}/${remote.slice(remote.indexOf("/") + 1)}`,
+                  host,
+                );
+              })();
+        const locator = fromRepository ?? fromContext;
+        if (locator === null) {
+          return yield* failure(
+            "GitHub needs the repository name before it can provide a sandbox credential.",
+            new GitHubRepositoryLookupError({
+              userFacingDetail:
+                "GitHub needs the repository name before it can provide a sandbox credential.",
+            }),
+          );
+        }
+        // Never read the server's checkout here: a forgotten cwd once scoped sandbox work to
+        // whatever repository the server happened to run in.
+        const held = yield* appAccess
+          .shortLivedCredentialFor(locator.host, `${locator.owner}/${locator.name}`)
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new GitHubFailure({
+                  detail: "GitHub App access could not be checked for this repository.",
+                  cause,
+                }),
+            ),
+          );
+        if (Option.isNone(held)) {
+          return yield* failure(
+            "This repository needs the GitHub App installation for sandbox Git. Reconnect GitHub in Settings → Source control & issues.",
+            new GitHubRepositoryLookupError({
+              userFacingDetail:
+                "This repository needs the GitHub App installation for sandbox Git. Reconnect GitHub in Settings → Source control & issues.",
+            }),
+          );
+        }
+        return {
+          username: "x-access-token",
+          token: Redacted.value(held.value.token),
+        };
+      },
+      (effect, input) =>
+        effect.pipe(
+          Effect.mapError((cause) =>
+            providerError(
+              "repositoryCredential",
+              input.cwd,
+              input.repository === undefined ? undefined : { repository: input.repository },
+            )(
+              cause._tag === "GitHubFailure"
+                ? cause
+                : new GitHubFailure({
+                    detail: "GitHub could not provide a repository credential.",
+                    cause,
+                  }),
+            ),
+          ),
+        ),
+    ),
     createRepository: Effect.fn("GitHubSourceControlProvider.createRepository")(
       function* (input) {
         const locator = parseGitHubRepositorySelector(
@@ -1244,6 +1332,7 @@ export const make = Effect.gen(function* () {
           cwd: input.cwd,
           host: contextHost(input.context),
           context: input.context,
+          ...(input.preferContext === true ? { preferContext: true } : {}),
         });
         const repository = yield* readRepository(locator);
         const branch = repository.default_branch?.trim() ?? "";

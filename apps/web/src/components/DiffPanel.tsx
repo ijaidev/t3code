@@ -276,7 +276,10 @@ export default function DiffPanel({
         }
       : null,
   );
-  const activeCwd = activeThread?.worktreePath ?? activeProject?.workspaceRoot;
+  const activeCwd =
+    activeThread?.cloudWorkspace?.workspacePath ??
+    activeThread?.worktreePath ??
+    activeProject?.workspaceRoot;
   const serverConfig = useAtomValue(
     serverEnvironment.configValueAtom(activeThread?.environmentId ?? null),
   );
@@ -646,6 +649,9 @@ export default function DiffPanel({
           sourceKind: selectedGitSource.kind,
           baseRef: selectedGitSource.baseRef,
           headRef: selectedGitSource.headRef,
+          ...(selectedGitSource.mergeBase === undefined
+            ? {}
+            : { mergeBase: selectedGitSource.mergeBase }),
           cacheKey: selectedGitSource.diffHash,
         })
       : undefined;

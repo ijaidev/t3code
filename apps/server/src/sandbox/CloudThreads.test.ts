@@ -10,10 +10,12 @@ import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretReso
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 
 import * as ServerConfig from "../config.ts";
 import * as ServerSettingsModule from "../serverSettings.ts";
+import * as CloudRepositoryCredential from "./CloudRepositoryCredential.ts";
 import * as CloudThreadStore from "./CloudThreadStore.ts";
 import * as CloudThreads from "./CloudThreads.ts";
 import * as SandboxAccounts from "./SandboxAccounts.ts";
@@ -39,8 +41,10 @@ const capabilities: SandboxProviderCapabilities = {
 interface FakeState {
   readonly calls: Ref.Ref<ReadonlyArray<string>>;
   readonly execs: Ref.Ref<ReadonlyArray<string>>;
+  readonly execEnvs: Ref.Ref<ReadonlyArray<Readonly<Record<string, string>> | undefined>>;
   readonly writes: Ref.Ref<ReadonlyArray<string>>;
   failClone: boolean;
+  failProbe: boolean;
   failWrite: boolean;
   hostProtocolVersion: string;
   created: number;
@@ -64,6 +68,12 @@ const fakeDriver = (state: FakeState): SandboxProviderDriver => ({
   exec: (input) =>
     Effect.gen(function* () {
       yield* Ref.update(state.execs, (execs) => [...execs, input.command]);
+      yield* Ref.update(state.execEnvs, (envs) => [...envs, input.envs]);
+      if (input.command.includes("git ls-remote")) {
+        return state.failProbe
+          ? { exitCode: 128, stdout: "", stderr: "fatal: could not read Username" }
+          : { exitCode: 0, stdout: "", stderr: "" };
+      }
       if (input.command.includes("git clone")) {
         return state.failClone
           ? {
@@ -110,7 +120,12 @@ const fakeDriver = (state: FakeState): SandboxProviderDriver => ({
     }),
 });
 
-const testLayer = (driver: SandboxProviderDriver) => {
+const testLayer = (
+  driver: SandboxProviderDriver,
+  credential: CloudRepositoryCredential.CloudRepositoryCredentialResolver["Service"] = {
+    resolve: () => Effect.succeedNone,
+  },
+) => {
   const accounts = SandboxAccounts.layerFromDrivers([driver]);
   const store = SandboxStore.layer;
   const cloudStore = CloudThreadStore.layer;
@@ -120,6 +135,9 @@ const testLayer = (driver: SandboxProviderDriver) => {
     Layer.provide(store),
     Layer.provide(cloudStore),
     Layer.provide(lifecycle),
+    Layer.provide(
+      Layer.succeed(CloudRepositoryCredential.CloudRepositoryCredentialResolver, credential),
+    ),
   );
   return Layer.mergeAll(accounts, store, cloudStore, lifecycle, cloud).pipe(
     Layer.provideMerge(ServerSettingsModule.layerTest({})),
@@ -150,8 +168,10 @@ const makeState = (overrides: Partial<FakeState> = {}) =>
     return {
       calls: yield* Ref.make<ReadonlyArray<string>>([]),
       execs: yield* Ref.make<ReadonlyArray<string>>([]),
+      execEnvs: yield* Ref.make<ReadonlyArray<Readonly<Record<string, string>> | undefined>>([]),
       writes: yield* Ref.make<ReadonlyArray<string>>([]),
       failClone: false,
+      failProbe: false,
       failWrite: false,
       hostProtocolVersion: "1",
       created: 0,
@@ -179,6 +199,7 @@ describe("cloud threads", () => {
         expect(fake.created).toBe(1);
         const execs = yield* Ref.get(fake.execs);
         expect(execs.some((command) => command.includes("git clone --branch 'main'"))).toBe(true);
+        expect(execs.some((command) => command.includes("--single-branch"))).toBe(false);
         expect(
           execs.some((command) => command.includes("https://github.com/example/public.git")),
         ).toBe(true);
@@ -274,6 +295,110 @@ describe("cloud threads", () => {
         );
         expect(written).toBe(false);
       }).pipe(Effect.provide(testLayer(driver)));
+    });
+    return state;
+  });
+
+  it.effect("does not resolve a credential for a public clone", () => {
+    const state = Effect.gen(function* () {
+      const fake = yield* makeState();
+      const driver = fakeDriver(fake);
+      const resolutions = yield* Ref.make(0);
+      const credential = {
+        resolve: () => Ref.update(resolutions, (count) => count + 1).pipe(Effect.as(Option.none())),
+      };
+      return yield* Effect.gen(function* () {
+        yield* connect;
+        const cloud = yield* CloudThreads.CloudThreads;
+        yield* cloud.prepare({
+          threadId,
+          accountId,
+          cloneUrl: "https://github.com/example/public.git",
+          baseRef: "main",
+          branch: "main",
+        });
+        expect(yield* Ref.get(resolutions)).toBe(0);
+      }).pipe(Effect.provide(testLayer(driver, credential)));
+    });
+    return state;
+  });
+
+  it.effect("rejects HTTP remotes before sending them a credential", () => {
+    const state = Effect.gen(function* () {
+      const fake = yield* makeState({ failProbe: true });
+      const driver = fakeDriver(fake);
+      const credential = {
+        resolve: () =>
+          Effect.succeedSome({
+            username: "x-access-token",
+            token: "repo-secret",
+            url: "http://github.com/example/private.git",
+          }),
+      };
+      return yield* Effect.gen(function* () {
+        yield* connect;
+        const cloud = yield* CloudThreads.CloudThreads;
+        const failure = yield* Effect.flip(
+          cloud.prepare({
+            threadId,
+            accountId,
+            cloneUrl: "http://github.com/example/private.git",
+            baseRef: "main",
+            branch: "main",
+          }),
+        );
+        expect(failure.detail).toContain("HTTP Git remotes");
+        const execs = yield* Ref.get(fake.execs);
+        expect(execs.some((command) => command.includes("git clone"))).toBe(false);
+      }).pipe(Effect.provide(testLayer(driver, credential)));
+    });
+    return state;
+  });
+
+  it.effect("passes a repository credential only in the clone process environment", () => {
+    const state = Effect.gen(function* () {
+      const fake = yield* makeState({ failProbe: true });
+      const driver = fakeDriver(fake);
+      const credential = {
+        resolve: () =>
+          Effect.succeedSome({
+            username: "x-access-token",
+            token: "repo-secret",
+            url: "https://github.com/example/private.git",
+          }),
+      };
+      return yield* Effect.gen(function* () {
+        yield* connect;
+        const cloud = yield* CloudThreads.CloudThreads;
+        yield* cloud.prepare({
+          threadId,
+          accountId,
+          cloneUrl: "https://github.com/example/private.git",
+          baseRef: "main",
+          branch: "main",
+        });
+        const execs = yield* Ref.get(fake.execs);
+        expect(execs.some((command) => command.includes("repo-secret"))).toBe(false);
+        const writes = yield* Ref.get(fake.writes);
+        expect(writes.some((path) => path.includes("repo-secret"))).toBe(false);
+        const envs = yield* Ref.get(fake.execEnvs);
+        const cloneEnvs = envs.filter((entry) => entry?.["GIT_CONFIG_VALUE_0"] !== undefined);
+        expect(cloneEnvs.length).toBe(1);
+        expect(envs.some((entry) => entry?.["GIT_CONFIG_VALUE_0"]?.includes("repo-secret"))).toBe(
+          false,
+        );
+        expect(cloneEnvs[0]?.["GIT_CONFIG_VALUE_0"]).toBe(
+          `AUTHORIZATION: basic ${Buffer.from("x-access-token:repo-secret").toString("base64")}`,
+        );
+        expect(cloneEnvs[0]?.["GIT_CONFIG_KEY_1"]).toBe("http.followRedirects");
+        expect(cloneEnvs[0]?.["GIT_CONFIG_VALUE_1"]).toBe("false");
+        expect(cloneEnvs[0]?.["GIT_CONFIG_KEY_2"]).toBe("core.hooksPath");
+        expect(cloneEnvs[0]?.["GIT_CONFIG_VALUE_2"]).toBe("/dev/null");
+        const record = yield* cloud.getRecord(threadId);
+        if (record._tag === "Some") {
+          expect(JSON.stringify(record.value)).not.toContain("repo-secret");
+        }
+      }).pipe(Effect.provide(testLayer(driver, credential)));
     });
     return state;
   });

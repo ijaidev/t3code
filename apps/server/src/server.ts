@@ -107,6 +107,9 @@ import * as McpSessionRegistry from "./mcp/McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as DeviceService from "./device/DeviceService.ts";
 import * as CloudPreviewProxy from "./sandbox/CloudPreviewProxy.ts";
+import * as CloudRepositoryCredential from "./sandbox/CloudRepositoryCredential.ts";
+import * as CloudReview from "./sandbox/CloudReview.ts";
+import * as CloudThreadGit from "./sandbox/CloudThreadGit.ts";
 import * as CloudThreadPorts from "./sandbox/CloudThreadPorts.ts";
 import * as CloudThreadRuntime from "./sandbox/CloudThreadRuntime.ts";
 import * as CloudThreadStore from "./sandbox/CloudThreadStore.ts";
@@ -492,11 +495,48 @@ const layerGit = Layer.empty.pipe(
   Layer.provideMerge(GitVcsDriver.layer),
 );
 
+const layerSandboxAccounts = SandboxAccounts.layer.pipe(Layer.provide(SecretResolver.layer));
+const layerSandboxStorage = Layer.mergeAll(
+  layerSandboxAccounts,
+  SandboxStore.layer,
+  CloudThreadStore.layer,
+);
+const layerSandboxLifecycle = SandboxLifecycle.layer.pipe(
+  Layer.provide(layerSandboxAccounts),
+  Layer.provide(SandboxStore.layer),
+);
+const layerCloudRepositoryCredential = CloudRepositoryCredential.layer.pipe(
+  Layer.provideMerge(layerSourceControlProviderRegistry),
+);
+const layerCloudPreviewProxy = CloudPreviewProxy.layer.pipe(
+  Layer.provide(layerSandboxAccounts),
+  Layer.provide(SandboxStore.layer),
+);
+const layerCloudThreadPorts = CloudThreadPorts.layer.pipe(Layer.provide(layerCloudPreviewProxy));
+const layerCloudThreads = CloudThreads.layer.pipe(
+  Layer.provide(layerSandboxAccounts),
+  Layer.provide(layerSandboxLifecycle),
+  Layer.provide(SandboxStore.layer),
+  Layer.provide(CloudThreadStore.layer),
+  Layer.provide(layerCloudRepositoryCredential),
+  Layer.provide(layerCloudThreadPorts),
+);
+const layerCloudThreadGit = CloudThreadGit.layer.pipe(
+  Layer.provideMerge(layerCloudThreads),
+  Layer.provideMerge(layerCloudRepositoryCredential),
+  Layer.provideMerge(CloudThreadStore.layer),
+);
+const layerCloudThreadRuntime = CloudThreadRuntime.layer.pipe(
+  Layer.provide(layerCloudThreads),
+  Layer.provide(layerCloudThreadPorts),
+);
+const layerCloudReview = CloudReview.layer.pipe(Layer.provideMerge(layerCloudThreads));
+
 const layerGitWorkflow = GitWorkflowService.layer.pipe(
   Layer.provideMerge(layerVcsDriverRegistry),
   Layer.provideMerge(layerGit),
+  Layer.provideMerge(layerCloudThreadGit),
 );
-
 const layerSourceControlRepositoryService = SourceControlRepositoryService.layer.pipe(
   Layer.provideMerge(GitVcsDriver.layer),
   Layer.provideMerge(layerSourceControlProviderRegistry),
@@ -515,6 +555,7 @@ const layerReview = ReviewService.layer.pipe(
   Layer.provideMerge(layerKnownWorkspaces),
   Layer.provideMerge(GitVcsDriver.layer),
   Layer.provideMerge(layerVcsDriverRegistry),
+  Layer.provideMerge(layerCloudReview),
 );
 
 const layerVcs = Layer.empty.pipe(
@@ -541,7 +582,10 @@ const layerVcs = Layer.empty.pipe(
   ),
 );
 
-const layerCheckpointStore = CheckpointStore.layer.pipe(Layer.provide(layerVcsDriverRegistry));
+const layerCheckpointStore = CheckpointStore.layer.pipe(
+  Layer.provide(layerVcsDriverRegistry),
+  Layer.provide(layerCloudThreads),
+);
 
 const layerPortScanner = PortScanner.layer.pipe(
   Layer.provide(ProcessRunner.layer),
@@ -561,6 +605,11 @@ const layerPreview = Layer.empty.pipe(
   Layer.provideMerge(PreviewManager.layer),
   Layer.provideMerge(layerPortScanner),
 );
+// Kept out of `layerSandbox` so CLI commands can build the sandbox layer without previews.
+const layerCloudSandboxPreviewBridge = CloudSandboxPreviewBridge.layer.pipe(
+  Layer.provide(layerCloudThreads),
+  Layer.provide(layerPreview),
+);
 
 const layerDevice = DeviceService.layer.pipe(
   Layer.provide(layerServerSettings),
@@ -568,37 +617,6 @@ const layerDevice = DeviceService.layer.pipe(
   Layer.provide(NetService.layer),
 );
 
-const layerSandboxAccounts = SandboxAccounts.layer.pipe(Layer.provide(SecretResolver.layer));
-const layerSandboxStorage = Layer.mergeAll(
-  layerSandboxAccounts,
-  SandboxStore.layer,
-  CloudThreadStore.layer,
-);
-const layerSandboxLifecycle = SandboxLifecycle.layer.pipe(
-  Layer.provide(layerSandboxAccounts),
-  Layer.provide(SandboxStore.layer),
-);
-const layerCloudPreviewProxy = CloudPreviewProxy.layer.pipe(
-  Layer.provide(layerSandboxAccounts),
-  Layer.provide(SandboxStore.layer),
-);
-const layerCloudThreadPorts = CloudThreadPorts.layer.pipe(Layer.provide(layerCloudPreviewProxy));
-const layerCloudThreads = CloudThreads.layer.pipe(
-  Layer.provide(layerSandboxAccounts),
-  Layer.provide(layerSandboxLifecycle),
-  Layer.provide(SandboxStore.layer),
-  Layer.provide(CloudThreadStore.layer),
-  Layer.provide(layerCloudThreadPorts),
-);
-const layerCloudThreadRuntime = CloudThreadRuntime.layer.pipe(
-  Layer.provide(layerCloudThreads),
-  Layer.provide(layerCloudThreadPorts),
-);
-// Kept out of `layerSandbox` so CLI commands can build the sandbox layer without previews.
-const layerCloudSandboxPreviewBridge = CloudSandboxPreviewBridge.layer.pipe(
-  Layer.provide(layerCloudThreads),
-  Layer.provide(layerPreview),
-);
 const layerSandbox = Layer.merge(
   Layer.mergeAll(
     layerSandboxStorage,

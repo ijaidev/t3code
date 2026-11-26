@@ -200,7 +200,10 @@ export interface CheckpointServiceV2Shape {
      * one budget, so many repositories delay a turn no longer than one. A repository that misses
      * the budget has no baseline this turn.
      */
-    readonly thread?: Pick<OrchestrationV2AppThread, "projectId" | "worktreePath">;
+    readonly thread?: Pick<
+      OrchestrationV2AppThread,
+      "projectId" | "worktreePath" | "cloudWorkspace"
+    >;
   }) => Effect.Effect<void, CheckpointServiceV2Error>;
   readonly materializeBaselineCheckpoint: (input: {
     readonly scope: OrchestrationV2CheckpointScope;
@@ -270,7 +273,10 @@ export interface CheckpointServiceV2Shape {
    */
   readonly discardRepositorySnapshots: (input: {
     readonly rootScope: OrchestrationV2CheckpointScope;
-    readonly thread: Pick<OrchestrationV2AppThread, "projectId" | "worktreePath">;
+    readonly thread: Pick<
+      OrchestrationV2AppThread,
+      "projectId" | "worktreePath" | "cloudWorkspace"
+    >;
     readonly ordinals: ReadonlyArray<number>;
   }) => Effect.Effect<void>;
 }
@@ -1086,7 +1092,7 @@ export const layer: Layer.Layer<
 
     const discardRepositorySnapshots: CheckpointServiceV2Shape["discardRepositorySnapshots"] =
       Effect.fn("CheckpointService.discardRepositorySnapshots")(function* (input) {
-        if (input.ordinals.length === 0) return;
+        if (input.ordinals.length === 0 || input.thread.cloudWorkspace != null) return;
         const repositories = yield* repositoryScopes({
           rootScope: input.rootScope,
           ...input.thread,
@@ -1121,7 +1127,7 @@ export const layer: Layer.Layer<
       "CheckpointService.captureBaseline",
     )(function* (input) {
       const repositories =
-        input.thread === undefined
+        input.thread === undefined || input.thread.cloudWorkspace != null
           ? []
           : yield* repositoryScopes({ rootScope: input.scope, ...input.thread });
       if (repositories.length === 0) {

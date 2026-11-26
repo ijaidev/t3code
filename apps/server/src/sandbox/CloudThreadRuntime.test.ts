@@ -13,6 +13,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
+import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import { HttpClient } from "effect/http";
 
@@ -127,6 +128,8 @@ describe("cloud thread runtime", () => {
         prepare: () => Effect.die("unused"),
         getSandbox: () => Effect.succeedSome(sandbox),
         getRecord: () => Effect.succeedSome(record),
+        forWorkspace: () => Effect.succeedNone,
+        exec: () => Effect.die("unused"),
         writeAttachment: () => Effect.succeed(false),
         openHost: () =>
           Effect.succeed({
@@ -276,6 +279,8 @@ describe("cloud thread runtime", () => {
         prepare: () => Effect.die("unused"),
         getSandbox: () => Effect.succeedSome(sandbox),
         getRecord: () => Effect.succeedSome(record),
+        forWorkspace: () => Effect.succeedNone,
+        exec: () => Effect.die("unused"),
         writeAttachment: () => Effect.succeed(false),
         openHost: () =>
           Effect.succeed({
@@ -356,6 +361,8 @@ describe("cloud thread runtime", () => {
         prepare: () => Effect.die("unused"),
         getSandbox: () => Effect.succeedSome(sandbox),
         getRecord: () => Effect.succeedSome(record),
+        forWorkspace: () => Effect.succeedNone,
+        exec: () => Effect.die("unused"),
         writeAttachment: () => Effect.succeed(false),
         openHost: () =>
           Effect.succeed({
@@ -445,6 +452,120 @@ describe("cloud thread runtime", () => {
           Stream.runHead,
         );
         expect(Option.isSome(terminal)).toBe(true);
+      }).pipe(Effect.provide(testLayer(cloud)));
+    });
+    return result;
+  });
+
+  it.effect("fails a rollback when the host cannot persist the reset", () => {
+    const result = Effect.gen(function* () {
+      const outbound = yield* Queue.unbounded<CloudThreads.CloudHostMessage>();
+      const turnEnded = yield* Ref.make(false);
+      const resetBeforeTurnEnd = yield* Ref.make(false);
+      const cloud = CloudThreads.CloudThreads.of({
+        prepare: () => Effect.die("unused"),
+        getSandbox: () => Effect.succeedSome(sandbox),
+        getRecord: () => Effect.succeedSome(record),
+        forWorkspace: () => Effect.succeedNone,
+        exec: () => Effect.die("unused"),
+        writeAttachment: () => Effect.succeed(false),
+        openHost: () =>
+          Effect.succeed({
+            sandbox,
+            messages: Stream.fromQueue(outbound),
+            send: (message) =>
+              Effect.suspend(() => {
+                const type =
+                  typeof message === "object" && message !== null && "type" in message
+                    ? (message as { readonly type?: unknown }).type
+                    : undefined;
+                if (type === "turn") {
+                  Queue.offerUnsafe(outbound, { type: "turn_started", runId: "run-1" });
+                  return Effect.void;
+                }
+                if (type === "interrupt") {
+                  return Effect.void;
+                }
+                if (type === "reset_history") {
+                  return Ref.get(turnEnded).pipe(
+                    Effect.flatMap((ended) =>
+                      Ref.set(resetBeforeTurnEnd, !ended).pipe(
+                        Effect.andThen(
+                          Effect.sync(() => {
+                            Queue.offerUnsafe(outbound, {
+                              type: "history_reset",
+                              ok: false,
+                              error: "Could not persist the reset conversation history.",
+                            });
+                          }),
+                        ),
+                      ),
+                    ),
+                  );
+                }
+                return Effect.void;
+              }),
+            close: Effect.void,
+          }),
+        deleteForThread: () => Effect.void,
+        getCloudSandboxState: () => Effect.succeedNone,
+        subscribeCloudSandbox: () => Stream.empty,
+        sleepCloudSandbox: () => Effect.die("unused"),
+        wakeCloudSandbox: () => Effect.die("unused"),
+        previewCloudSandboxDelete: () => Effect.die("unused"),
+        deleteCloudSandbox: () => Effect.die("unused"),
+        beginTurn: () => Effect.void,
+        endTurn: () => Effect.void,
+        holdPreview: () => Effect.void,
+        releasePreview: () => Effect.void,
+        sweepIdle: Effect.succeed(0),
+      });
+      return yield* Effect.gen(function* () {
+        const runtimeService = yield* CloudThreadRuntime.CloudThreadRuntime;
+        const runtime = yield* runtimeService.openSession(input, baseAdapter);
+        const providerThread = yield* runtime.ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy: input.runtimePolicy,
+        });
+        yield* runtime.startTurn({
+          appThread: {} as never,
+          threadId,
+          runId: "run-1" as never,
+          runOrdinal: 1,
+          providerTurnOrdinal: 1,
+          attemptId: "attempt-1" as never,
+          rootNodeId: "node-1" as never,
+          providerThread,
+          message: {
+            messageId: "message-1" as never,
+            text: "hello",
+            attachments: [],
+            createdBy: "user",
+            creationSource: "web",
+          },
+          modelSelection,
+          runtimePolicy: input.runtimePolicy,
+        });
+        const pending = yield* Effect.forkChild(
+          Effect.flip(
+            runtime.rollbackThread({
+              providerThread,
+              target: {
+                type: "thread_start",
+                checkpointId: "checkpoint-1",
+                appRunOrdinal: 0,
+              } as never,
+              providerThreadTurns: [],
+            }),
+          ),
+        );
+        yield* Effect.yieldNow;
+        expect(yield* Ref.get(resetBeforeTurnEnd)).toBe(false);
+        yield* Ref.set(turnEnded, true);
+        Queue.offerUnsafe(outbound, { type: "turn_end", runId: "run-1", status: "cancelled" });
+        const failure = yield* Fiber.join(pending);
+        expect(failure._tag).toBe("ProviderAdapterRollbackThreadError");
       }).pipe(Effect.provide(testLayer(cloud)));
     });
     return result;

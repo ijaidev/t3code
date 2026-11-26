@@ -5171,6 +5171,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 : {}),
             ...(command.branch === undefined ? {} : { branch: command.branch }),
             ...(command.worktreePath === undefined ? {} : { worktreePath: command.worktreePath }),
+            ...(command.cloudWorkspace === undefined
+              ? {}
+              : { cloudWorkspace: command.cloudWorkspace }),
             ...(command.linkedPullRequest === undefined
               ? {}
               : {

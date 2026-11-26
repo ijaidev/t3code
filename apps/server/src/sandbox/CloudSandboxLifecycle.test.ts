@@ -14,6 +14,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
+import * as CloudRepositoryCredential from "./CloudRepositoryCredential.ts";
 import { describe, expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -152,6 +153,11 @@ const makeLayer = (
     Layer.provide(store),
     Layer.provide(cloudStore),
     Layer.provide(lifecycle),
+    Layer.provide(
+      Layer.succeed(CloudRepositoryCredential.CloudRepositoryCredentialResolver, {
+        resolve: () => Effect.succeedNone,
+      }),
+    ),
   );
   return Layer.mergeAll(accounts, store, cloudStore, lifecycle, cloud).pipe(
     Layer.provideMerge(ServerSettingsModule.layerTest({ cloudSandboxIdleMinutes: idleMinutes })),

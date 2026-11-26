@@ -54,6 +54,7 @@ import {
   isBranchHoldCurrent,
   isWorktreeChangeBlocked,
   resolveBranchTriggerLabel,
+  resolveBranchToolbarCwd,
   resolveBranchToolbarPrBranch,
   resolveBranchSelectionTarget,
   resolveBranchToolbarValue,
@@ -170,13 +171,20 @@ export function BranchToolbarBranchSelector({
     activeThreadBranchOverride !== undefined
       ? activeThreadBranchOverride
       : (serverThread?.branch ?? draftThread?.branch ?? null);
+  const activeCloudWorkspacePath = forceNewWorktree
+    ? null
+    : (serverThread?.cloudWorkspace?.workspacePath ?? null);
   const activeWorktreePath = forceNewWorktree
     ? null
     : serverThread
       ? serverThread.worktreePath
       : (draftThread?.worktreePath ?? null);
   const activeProjectCwd = activeProject?.workspaceRoot ?? null;
-  const branchCwd = activeWorktreePath ?? activeProjectCwd;
+  const branchCwd = resolveBranchToolbarCwd({
+    cloudWorkspacePath: activeCloudWorkspacePath,
+    worktreePath: activeWorktreePath,
+    projectCwd: activeProjectCwd,
+  });
   const hasServerThread = serverThread !== null;
   const canUpdateThreadBranch = !hasServerThread || canOperateThread;
   const canChangeThreadBranch = canWriteSourceControl && canUpdateThreadBranch;
@@ -291,8 +299,10 @@ export function BranchToolbarBranchSelector({
   const isSelectingWorktreeBase =
     (effectiveEnvMode === "worktree" || effectiveEnvMode === "cloud") &&
     !envLocked &&
-    !activeWorktreePath;
+    !activeWorktreePath &&
+    activeCloudWorkspacePath === null;
   const isWorktreeChangeBlockedForRef = (refName: VcsRef) =>
+    activeCloudWorkspacePath === null &&
     activeProjectCwd !== null &&
     isWorktreeChangeBlocked({
       runtime: serverSession,
@@ -462,7 +472,13 @@ export function BranchToolbarBranchSelector({
   };
 
   const selectBranch = async (listedRef: VcsRef) => {
-    if (!canUpdateThreadBranch || !branchCwd || !activeProjectCwd || isBranchActionPending) return;
+    if (
+      !canUpdateThreadBranch ||
+      !branchCwd ||
+      (!activeProjectCwd && activeCloudWorkspacePath === null) ||
+      isBranchActionPending
+    )
+      return;
     const selectionId = ++latestSelectionIdRef.current;
 
     let latest = readLatestThreadState();
@@ -483,6 +499,43 @@ export function BranchToolbarBranchSelector({
     // A later pick made while this one was confirming its worktree wins.
     if (selectionId !== latestSelectionIdRef.current) return;
     latest = readLatestThreadState();
+
+    if (activeCloudWorkspacePath !== null) {
+      const selectedBranchName = refName.isRemote
+        ? deriveLocalBranchNameFromRemoteRef(refName.name)
+        : refName.name;
+      runBranchAction(async () => {
+        const previousBranch = resolvedActiveBranch;
+        setOptimisticBranch(selectedBranchName);
+        const checkoutKey = pickerCheckoutKey(environmentId, activeCloudWorkspacePath);
+        pickerCheckouts.set(checkoutKey, null);
+        const checkoutResult = await switchRef({
+          environmentId,
+          input: { cwd: activeCloudWorkspacePath, refName: refName.name },
+        });
+        if (checkoutResult._tag === "Success") {
+          const nextBranchName = checkoutResult.value.refName ?? selectedBranchName;
+          pickerCheckouts.set(checkoutKey, nextBranchName);
+          const applied = setThreadBranch(nextBranchName, null);
+          setOptimisticBranch(applied ? nextBranchName : previousBranch);
+          return;
+        }
+        pickerCheckouts.delete(checkoutKey);
+        setOptimisticBranch(previousBranch);
+        if (!isAtomCommandInterrupted(checkoutResult)) {
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: gt("Failed to switch ref."),
+              description: toBranchActionErrorMessage(squashAtomCommandFailure(checkoutResult)),
+            }),
+          );
+        }
+      });
+      return;
+    }
+
+    if (activeProjectCwd === null) return;
     const selectionTarget = resolveBranchSelectionTarget({
       activeProjectCwd,
       activeProjectCheckoutRoot,

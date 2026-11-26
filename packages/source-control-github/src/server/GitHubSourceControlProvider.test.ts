@@ -1,6 +1,6 @@
 import { SourceControlProviderKind } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { assert, describe, it } from "@effect/vitest";
+import { assert, describe, it, vi } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -23,6 +23,7 @@ import * as GitHubCredentials from "./GitHubCredentials.ts";
 import * as GitHubQuota from "./GitHubQuota.ts";
 import { parseGitHubAuthStatus } from "./gitHubAuthStatus.ts";
 import * as GitHubSourceControlProvider from "./GitHubSourceControlProvider.ts";
+import * as GitHubAppAccess from "./GitHubAppAccess.ts";
 import * as GitHubAppSignIn from "./GitHubAppSignIn.ts";
 
 const appSignedOut = Layer.mock(GitHubAppSignIn.GitHubAppSignIn)({
@@ -166,9 +167,12 @@ function harness(input: {
   readonly resolved?: string;
   readonly gitFailure?: unknown;
   readonly originUrls?: string;
+  readonly appCredential?: boolean;
 }) {
   const git: Array<readonly [string, unknown]> = [];
   const graphqlCalls: Array<GraphQlCall> = [];
+  const appCredentialRepositories: string[] = [];
+  const personalCredentialCalls: string[] = [];
   const record =
     <A>(name: string, value: A) =>
     (args: unknown) =>
@@ -241,15 +245,36 @@ function harness(input: {
       ),
     ),
   );
+  const appAccess = Layer.succeed(GitHubAppAccess.GitHubAppAccess, {
+    reach: () => Effect.succeed("covered" as const),
+    viewer: () => Effect.succeed("acme"),
+    credentialFor: (host) =>
+      Effect.sync(() => {
+        personalCredentialCalls.push(host);
+        return { token: Redacted.make("personal-token"), fingerprint: "github.com:personal" };
+      }),
+    shortLivedCredentialFor: (_host, repository) =>
+      Effect.sync(() => {
+        appCredentialRepositories.push(repository);
+        return input.appCredential === false
+          ? Option.none()
+          : Option.some({
+              token: Redacted.make("app-token"),
+              fingerprint: "github.com:app",
+              source: "app" as const,
+            });
+      }),
+  });
   const layer = Layer.mergeAll(
     host,
     appSignedOut,
+    appAccess,
     Layer.mock(GitHubRest.GitHubRest)(input.api ?? {}),
     policy,
     Layer.succeed(HttpClient.HttpClient, graphQlHttp(graphql, graphqlCalls)),
     NodeServices.layer,
   );
-  return { layer, git, graphqlCalls };
+  return { layer, git, graphqlCalls, appCredentialRepositories, personalCredentialCalls };
 }
 
 const makeProvider = (api: Partial<GitHubRest.GitHubRest["Service"]>) =>
@@ -263,6 +288,93 @@ const githubContext = (host: string) => ({
   },
   remoteName: "origin",
   remoteUrl: `git@${host}:acme/web.git`,
+});
+
+describe("GitHubSourceControlProvider sandbox credentials", () => {
+  it.effect("scopes the credential to the requested repository, not the server checkout", () => {
+    const probe = harness({
+      remotes: remotesOutput(["origin", "git@github.com:ijaidev/t3code.git"]),
+    });
+    return Effect.gen(function* () {
+      const provider = yield* GitHubSourceControlProvider.make;
+      const credential = yield* provider.repositoryCredential!({
+        cwd: "/repo",
+        context: {
+          provider: {
+            kind: SourceControlProviderKind.make("github"),
+            name: "GitHub",
+            baseUrl: "https://github.com",
+          },
+          remoteName: "origin",
+          remoteUrl: "git@github.com:acme/private.git",
+        },
+        repository: "acme/private",
+      });
+      assert.strictEqual(credential.token, "app-token");
+      assert.deepStrictEqual(probe.appCredentialRepositories, ["acme/private"]);
+      assert.deepStrictEqual(probe.personalCredentialCalls, []);
+    }).pipe(Effect.provide(probe.layer));
+  });
+
+  it.effect("fails closed instead of falling back to a saved or personal token", () => {
+    const probe = harness({
+      remotes: remotesOutput(["origin", "git@github.com:ijaidev/t3code.git"]),
+      appCredential: false,
+    });
+    return Effect.gen(function* () {
+      const provider = yield* GitHubSourceControlProvider.make;
+      const error = yield* Effect.flip(
+        provider.repositoryCredential!({
+          cwd: "/repo",
+          context: {
+            provider: {
+              kind: SourceControlProviderKind.make("github"),
+              name: "GitHub",
+              baseUrl: "https://github.com",
+            },
+            remoteName: "origin",
+            remoteUrl: "git@github.com:acme/private.git",
+          },
+          repository: "acme/private",
+        }),
+      );
+      assert.match(error.detail, /GitHub App installation/);
+      assert.deepStrictEqual(probe.appCredentialRepositories, ["acme/private"]);
+      assert.deepStrictEqual(probe.personalCredentialCalls, []);
+    }).pipe(Effect.provide(probe.layer));
+  });
+});
+
+describe("GitHubSourceControlProvider cloud repository pinning", () => {
+  it.effect("prefers the supplied context over GH_REPO", () => {
+    const paths: string[] = [];
+    const probe = harness({
+      remotes: remotesOutput(["origin", "git@github.com:ijaidev/t3code.git"]),
+      api: {
+        rest: (input) =>
+          Effect.sync(() => {
+            paths.push(input.path);
+            return restResponse({
+              full_name: "acme/web",
+              html_url: "https://github.com/acme/web",
+              ssh_url: "git@github.com:acme/web.git",
+              default_branch: "trunk",
+            });
+          }),
+      },
+    });
+    vi.stubEnv("GH_REPO", "ijaidev/t3code");
+    return Effect.gen(function* () {
+      const provider = yield* GitHubSourceControlProvider.make;
+      const branch = yield* provider.getDefaultBranch({
+        cwd: "/repo",
+        context: githubContext("github.com"),
+        preferContext: true,
+      });
+      assert.strictEqual(branch, "trunk");
+      assert.deepStrictEqual(paths, ["repos/acme/web"]);
+    }).pipe(Effect.provide(probe.layer), Effect.ensuring(Effect.sync(() => vi.unstubAllEnvs())));
+  });
 });
 
 describe("GitHubSourceControlProvider repository resolution", () => {

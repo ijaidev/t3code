@@ -50,6 +50,8 @@ export interface SandboxProviderExecInput {
   readonly providerSandboxId: string;
   readonly command: string;
   readonly cwd?: string;
+  /** Process environment for this command only; never written to the sandbox filesystem. */
+  readonly envs?: Readonly<Record<string, string>>;
   readonly timeoutMs?: number;
 }
 

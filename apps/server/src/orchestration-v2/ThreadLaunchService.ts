@@ -643,6 +643,23 @@ const make = Effect.gen(function* () {
           branch: branch ?? strategy.baseRef,
         })
         .pipe(Effect.mapError((error) => mapError(input, "provision-worktree", threadId)(error)));
+      const cloudRecord = yield* cloudThreads.value
+        .getRecord(threadId)
+        .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
+      if (Option.isSome(cloudRecord)) {
+        yield* threads
+          .dispatch({
+            type: "thread.metadata.update",
+            commandId: CommandId.make(`${input.commandId}:cloud-workspace`),
+            threadId,
+            cloudWorkspace: {
+              accountId: cloudRecord.value.accountId,
+              providerKind: cloudRecord.value.providerKind,
+              workspacePath: cloudRecord.value.workspacePath,
+            },
+          })
+          .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
+      }
       prepared = true;
       yield* setupTracker.stageStatus(threadId, "checkout", "done");
       yield* setupTracker.stageStatus(threadId, "setup-script", "skipped");

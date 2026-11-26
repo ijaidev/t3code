@@ -33,6 +33,7 @@ const state = vi.hoisted(() => ({
   thread: null as ReturnType<typeof makeThreadFixture> | null,
   threadRef: null as ScopedThreadRef | null,
   previews: new Map<string | null, ResultAtom<ReviewDiffPreviewResult>>(),
+  previewCwds: [] as string[],
   patch: null as unknown as ResultAtom<ReviewDiffPreviewSource>,
   diffFilesCollapsed: false,
   project: {
@@ -54,8 +55,10 @@ vi.mock("~/state/server", () => ({
 }));
 vi.mock("~/state/review", () => ({
   reviewEnvironment: {
-    diffPreview: ({ input }: { input: { baseRef?: string } }) =>
-      state.previews.get(input.baseRef ?? null)!,
+    diffPreview: ({ input }: { input: { baseRef?: string; cwd?: string } }) => {
+      if (input.cwd !== undefined) state.previewCwds.push(input.cwd);
+      return state.previews.get(input.baseRef ?? null)!;
+    },
     branchCommits: () => state.commits,
     diffFilePatch: () => state.patch,
     diffFileContents: {},
@@ -166,6 +169,7 @@ function setup(failedBaseRef: string | null) {
     worktreePath: cwd,
   });
   state.previews.clear();
+  state.previewCwds = [];
   state.previews.set(null, Atom.make(AsyncResult.success(preview())));
   state.previews.set("main", Atom.make(AsyncResult.success(preview())));
   state.previews.set(failedBaseRef, Atom.make(AsyncResult.fail(new Error(errorMessage))));
@@ -251,6 +255,31 @@ it.each([
     });
   },
 );
+
+it("requests a cloud thread's diff preview from its sandbox workspace", async () => {
+  using context = setup(null);
+  const cloudWorkspacePath = "/home/t3/.t3/threads/thread-cloud";
+  state.thread = makeThreadFixture({
+    ...context.threadRef,
+    id: context.threadRef.threadId,
+    projectId: ProjectId.make("project"),
+    branch: "dev",
+    worktreePath: null,
+    cloudWorkspace: {
+      accountId: "e2b-work",
+      providerKind: "e2b",
+      workspacePath: cloudWorkspacePath,
+    } as never,
+  });
+  await using screen = await render(
+    <RegistryContext.Provider value={context.registry}>
+      <DiffPanel composerDraftTarget={context.threadRef} workspaceMutationId={null} visible />
+    </RegistryContext.Provider>,
+  );
+  await vi.waitFor(() => expect(state.previewCwds).toContain(cloudWorkspacePath));
+  expect(state.previewCwds).not.toContain("/project");
+  expect(screen.getByRole("combobox", { name: /Change comparison target/ })).toBeVisible();
+});
 
 it("opens a repository-relative file from a nested project without a remote", async () => {
   using context = setup("origin/orphan");

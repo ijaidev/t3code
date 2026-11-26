@@ -76,20 +76,23 @@ export const layer: Layer.Layer<
       readonly runId: RunId;
       readonly scopeId: CheckpointScopeId;
     }) {
-      // A cloud thread's files live in its sandbox; never snapshot the project's local checkout for it.
-      if (
-        Option.isSome(cloudThreads) &&
-        Option.isSome(
-          yield* cloudThreads.value
+      const cloudThread = Option.isSome(cloudThreads)
+        ? yield* cloudThreads.value
             .get(input.threadId)
-            .pipe(Effect.orElseSucceed(() => Option.none())),
-        )
-      ) {
-        return;
-      }
+            .pipe(Effect.orElseSucceed(() => Option.none()))
+        : Option.none();
       const context = yield* projections.getCheckpointCaptureContext(input.threadId, input);
-      const { run, rootNode, scope, providerThread, preservedCheckpointOrdinals, sideChat } =
-        context;
+      // The scope's cwd becomes the sandbox checkout, so every checkpoint, diff, and restore for
+      // this thread targets the sandbox and can never read or write the project's local checkout.
+      const scope =
+        Option.isSome(cloudThread) && context.scope !== undefined
+          ? { ...context.scope, cwd: cloudThread.value.workspacePath }
+          : context.scope;
+      const cloudScopeChanged =
+        Option.isSome(cloudThread) &&
+        context.scope !== undefined &&
+        context.scope.cwd !== cloudThread.value.workspacePath;
+      const { run, rootNode, providerThread, preservedCheckpointOrdinals, sideChat } = context;
       // Stopped runs remain terminal; their checkpoint is the next message's rollback point.
       const stopped = run?.status === "interrupted" || run?.status === "cancelled";
 
@@ -139,7 +142,7 @@ export const layer: Layer.Layer<
       // The tracked Git folders the thread reaches now. One added since the turn began has no
       // baseline, so its first checkpoint lists no files; one removed is simply not captured.
       const repositoryScopes =
-        sideChat || context.thread === undefined
+        sideChat || context.thread === undefined || Option.isSome(cloudThread)
           ? []
           : yield* checkpoints.repositoryScopes({ rootScope: scope, ...context.thread });
       const nested =
@@ -283,6 +286,22 @@ export const layer: Layer.Layer<
             acceptedAt: capturedAt,
             effects: [],
             events: [
+              // A cloud thread's scope is created before its sandbox exists; correct its cwd on
+              // the first capture so diffs and restores never read the project's local checkout.
+              ...(cloudScopeChanged && scope !== undefined
+                ? [
+                    {
+                      id: yield* ids.allocate.event({ threadId: input.threadId, commandId }),
+                      type: "checkpoint-scope.created" as const,
+                      threadId: input.threadId,
+                      runId: run.id,
+                      nodeId: rootNode.id,
+                      providerInstanceId: run.providerInstanceId,
+                      occurredAt: capturedAt,
+                      payload: scope,
+                    },
+                  ]
+                : []),
               // Root records come last: a client that takes the latest ordinal-0 baseline gets the thread's.
               ...repositoryEvents.flat(),
               ...(threadStartCheckpoint === null

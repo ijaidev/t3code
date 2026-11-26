@@ -235,8 +235,10 @@ class Host:
             with open(temporary, "w", encoding="utf-8") as handle:
                 json.dump(self.messages, handle, ensure_ascii=False)
             os.replace(temporary, self.history_path)
+            return True
         except Exception:  # noqa: BLE001
             traceback.print_exc(file=sys.stderr)
+            return False
 
     def send(self, message):
         emit(message)
@@ -471,6 +473,19 @@ class Host:
             except Exception:  # noqa: BLE001
                 pass
 
+    def reset_history(self):
+        self.messages = []
+        if self.save_messages():
+            self.send({"type": "history_reset", "ok": True})
+        else:
+            self.send(
+                {
+                    "type": "history_reset",
+                    "ok": False,
+                    "error": "Could not persist the reset conversation history.",
+                }
+            )
+
     def loop(self):
         self.send({"type": "ready", "protocolVersion": PROTOCOL_VERSION, "pid": os.getpid()})
         threading.Thread(target=self.watch_ports, daemon=True).start()
@@ -489,6 +504,8 @@ class Host:
                 self.inbox.put(message)
             elif kind == "interrupt":
                 self.cancel_turn()
+            elif kind == "reset_history":
+                self.reset_history()
             elif kind == "stop":
                 self.cancel_turn()
                 self.stop = True

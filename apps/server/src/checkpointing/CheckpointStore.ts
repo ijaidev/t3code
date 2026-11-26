@@ -2,10 +2,13 @@ import { type CheckpointRef } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 
 import type { CheckpointStoreError } from "./Errors.ts";
 import type { VcsCheckpointOps } from "../vcs/VcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
+import { makeCloudCheckpointOps } from "../sandbox/CloudCheckpointOps.ts";
+import * as CloudThreads from "../sandbox/CloudThreads.ts";
 
 export interface CaptureCheckpointInput {
   readonly cwd: string;
@@ -108,10 +111,19 @@ export class CheckpointStore extends Context.Service<
 /** @public */
 export const make = Effect.gen(function* () {
   const vcsRegistry = yield* VcsDriverRegistry.VcsDriverRegistry;
+  const cloudThreads = yield* Effect.serviceOption(CloudThreads.CloudThreads);
+  const cloudCheckpoints = Option.map(cloudThreads, makeCloudCheckpointOps);
+  const cloudWorkspace = (cwd: string) =>
+    Option.isSome(cloudThreads)
+      ? cloudThreads.value.forWorkspace(cwd).pipe(Effect.orElseSucceed(() => Option.none()))
+      : Effect.succeedNone;
 
   const resolveCheckpoints = Effect.fn("CheckpointStore.resolveCheckpoints")(function* (
     cwd: string,
   ) {
+    if (Option.isSome(cloudCheckpoints) && Option.isSome(yield* cloudWorkspace(cwd))) {
+      return cloudCheckpoints.value;
+    }
     const handle = yield* vcsRegistry.resolve({ cwd });
     return handle.driver.checkpoints satisfies VcsCheckpointOps;
   });
@@ -120,6 +132,9 @@ export const make = Effect.gen(function* () {
   const isGitRepository: CheckpointStore["Service"]["isGitRepository"] = Effect.fn(
     "CheckpointStore.isGitRepository",
   )(function* (cwd) {
+    if (Option.isSome(cloudCheckpoints) && Option.isSome(yield* cloudWorkspace(cwd))) {
+      return true;
+    }
     if ((yield* vcsRegistry.detect({ cwd, requestedKind: "git" })) !== null) return true;
     const git = yield* vcsRegistry.get("git");
     return (yield* git.detectRepository(cwd)) !== null;

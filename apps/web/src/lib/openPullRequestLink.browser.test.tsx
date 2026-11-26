@@ -6,7 +6,11 @@ import { page } from "vite-plus/test/browser";
 
 import { act, render, stubGlobal } from "../../test/render";
 
-const state = vi.hoisted(() => ({ preview: vi.fn(), openLink: vi.fn() }));
+const state = vi.hoisted(() => ({
+  preview: vi.fn(),
+  openLink: vi.fn(),
+  cloudWorkspacePath: null as string | null,
+}));
 vi.mock("../state/use-atom-query-runner", () => ({ useAtomQueryRunner: () => state.preview }));
 vi.mock("../browser/useOpenLink", () => ({ useOpenLink: () => state.openLink }));
 vi.mock(import("../state/environments"), async (original) => ({
@@ -18,7 +22,12 @@ vi.mock("../state/entities", async (original) => ({
   readProjects: () => [project],
   useProjects: () => [project],
   readProject: () => project,
-  readThreadShell: () => ({ projectId: "project", worktreePath: null }),
+  readThreadShell: () => ({
+    projectId: "project",
+    worktreePath: null,
+    cloudWorkspace:
+      state.cloudWorkspacePath === null ? null : { workspacePath: state.cloudWorkspacePath },
+  }),
 }));
 vi.mock("../state/server", async (original) => {
   const { Atom } = await import("effect/reactivity");
@@ -80,6 +89,7 @@ function IssuesPagePullRequestLink() {
 
 function setup() {
   state.preview.mockReset().mockResolvedValue(AsyncResult.success({ sources: [] }));
+  state.cloudWorkspacePath = null;
   state.openLink.mockReset().mockResolvedValue(undefined);
   __setClientSettingsForTests({
     ...DEFAULT_CLIENT_SETTINGS,
@@ -168,6 +178,28 @@ it("opens an available commit in the closed Diff pane without the pane resetting
     expect(useDiffPanelStore.getState().byThreadKey).toEqual({
       [scopedThreadKey(threadRef)]: { kind: "commit", sha, baseRef: null },
     }),
+  );
+});
+
+it("opens a cloud commit preview in its sandbox workspace", async () => {
+  setup();
+  state.cloudWorkspacePath = "/home/t3/.t3/threads/thread-cloud";
+  const sha = "a".repeat(40);
+  state.preview.mockResolvedValue(
+    AsyncResult.success({ sources: [{ kind: "commit", headRef: sha }] }),
+  );
+  await using screen = await render(
+    <AppAtomRegistryProvider>
+      <CommitLink />
+    </AppAtomRegistryProvider>,
+  );
+  await screen.getByRole("link", { name: "Commit" }).click();
+  await vi.waitFor(() =>
+    expect(
+      state.preview.mock.calls.some(
+        ([request]) => request.input.cwd === "/home/t3/.t3/threads/thread-cloud",
+      ),
+    ).toBe(true),
   );
 });
 

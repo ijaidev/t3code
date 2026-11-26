@@ -103,7 +103,7 @@ const cloudCapabilities = (
   threads: {
     ...base.threads,
     canReadThreadSnapshot: true,
-    canRollbackThread: false,
+    canRollbackThread: true,
     canForkThread: false,
     canForkFromTurn: false,
     canForkFromSubagentThread: false,
@@ -131,10 +131,11 @@ const cloudCapabilities = (
     approvalCallbacksAreLiveOnly: false,
   },
   checkpointing: {
-    appCanCheckpointFilesystem: false,
+    appCanCheckpointFilesystem: true,
     supportsNestedCheckpointScopes: false,
-    providerCanRollbackConversation: false,
-    providerRollbackReturnsSnapshot: false,
+    // The sandbox host keeps the conversation; rollback clears it and the app restores files.
+    providerCanRollbackConversation: true,
+    providerRollbackReturnsSnapshot: true,
     providerCanReadConversationSnapshot: false,
   },
   context: {
@@ -222,7 +223,10 @@ const make = Effect.gen(function* () {
     const capabilities = cloudCapabilities(yield* base.getCapabilities());
     const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
     const connection = yield* Ref.make<CloudThreads.CloudHostConnection | null>(null);
+    const resetHistoryOnConnect = yield* Ref.make(false);
+    const resetAck = yield* Ref.make<Deferred.Deferred<boolean> | null>(null);
     const activeTurn = yield* Ref.make<ActiveTurn | null>(null);
+    const activeTurnEnd = yield* Ref.make<Deferred.Deferred<void> | null>(null);
     const pendingApprovals = yield* Ref.make<
       ReadonlyMap<
         string,
@@ -246,6 +250,42 @@ const make = Effect.gen(function* () {
 
     const emit = (event: ProviderAdapter.ProviderAdapterV2Event) =>
       Queue.offer(events, event).pipe(Effect.asVoid);
+
+    const noteTurnEnded = Effect.gen(function* () {
+      const ended = yield* Ref.get(activeTurnEnd);
+      if (ended !== null) yield* Deferred.succeed(ended, undefined);
+      yield* Ref.set(activeTurnEnd, null);
+    });
+
+    const resetHistory = Effect.fn("CloudThreadRuntime.resetHistory")(function* (
+      host: CloudThreads.CloudHostConnection,
+    ) {
+      const acknowledged = yield* Deferred.make<boolean>();
+      yield* Ref.set(resetAck, acknowledged);
+      const sent = yield* Effect.result(
+        host.send({ type: "reset_history" }).pipe(
+          Effect.mapError(
+            () =>
+              new ProviderAdapter.ProviderAdapterRollbackThreadError({
+                driver: base.driver,
+                providerThreadId: ProviderThreadId.make("cloud"),
+              }),
+          ),
+        ),
+      );
+      if (sent._tag === "Failure") {
+        yield* Ref.set(resetAck, null);
+        return yield* sent.failure;
+      }
+      const ack = yield* Deferred.await(acknowledged).pipe(Effect.timeoutOption("10 seconds"));
+      yield* Ref.set(resetAck, null);
+      if (Option.isNone(ack) || ack.value !== true) {
+        return yield* new ProviderAdapter.ProviderAdapterRollbackThreadError({
+          driver: base.driver,
+          providerThreadId: ProviderThreadId.make("cloud"),
+        });
+      }
+    });
 
     const createdAt = yield* DateTime.now;
     const session: OrchestrationV2ProviderSession = {
@@ -379,6 +419,7 @@ const make = Effect.gen(function* () {
         threadDisposition: "reusable",
       });
       yield* Ref.set(activeTurn, null);
+      yield* noteTurnEnded;
       yield* cloudThreads.endTurn(input.threadId);
     });
 
@@ -564,6 +605,13 @@ const make = Effect.gen(function* () {
           yield* emit({ type: "turn_item.updated", driver: base.driver, turnItem: item });
           return;
         }
+        case "history_reset": {
+          const acknowledged = yield* Ref.get(resetAck);
+          if (acknowledged !== null) {
+            yield* Deferred.succeed(acknowledged, message["ok"] === true);
+          }
+          return;
+        }
         case "turn_end": {
           const turn = yield* Ref.get(activeTurn);
           if (turn === null) return;
@@ -618,6 +666,7 @@ const make = Effect.gen(function* () {
             });
           }
           yield* Ref.set(activeTurn, null);
+          yield* noteTurnEnded;
           yield* cloudThreads.endTurn(input.threadId);
           return;
         }
@@ -633,7 +682,20 @@ const make = Effect.gen(function* () {
 
     const ensureConnection = Effect.fn("CloudThreadRuntime.ensureConnection")(function* () {
       const existing = yield* Ref.get(connection);
-      if (existing !== null) return existing;
+      if (existing !== null) {
+        if (yield* Ref.get(resetHistoryOnConnect)) {
+          yield* resetHistory(existing).pipe(
+            Effect.tapError(() =>
+              Effect.gen(function* () {
+                yield* existing.close.pipe(Effect.ignore);
+                yield* Ref.set(connection, null);
+              }),
+            ),
+          );
+          yield* Ref.set(resetHistoryOnConnect, false);
+        }
+        return existing;
+      }
       const opened = yield* cloudThreads.openHost(input.threadId).pipe(
         Effect.mapError(
           (error) =>
@@ -656,6 +718,17 @@ const make = Effect.gen(function* () {
           ),
         ),
       );
+      if (yield* Ref.get(resetHistoryOnConnect)) {
+        yield* resetHistory(opened).pipe(
+          Effect.tapError(() =>
+            Effect.gen(function* () {
+              yield* opened.close.pipe(Effect.ignore);
+              yield* Ref.set(connection, null);
+            }),
+          ),
+        );
+        yield* Ref.set(resetHistoryOnConnect, false);
+      }
       return opened;
     });
 
@@ -721,6 +794,7 @@ const make = Effect.gen(function* () {
           const startedAt = yield* DateTime.now;
           const started = yield* Deferred.make<void>();
           yield* Ref.set(waitingForTurnStart, started);
+          yield* Ref.set(activeTurnEnd, yield* Deferred.make<void>());
           const providerTurnId = ProviderTurnId.make(randomId());
           const providerThreadId = turnInput.providerThread.id;
           yield* Ref.set(activeTurn, {
@@ -843,13 +917,45 @@ const make = Effect.gen(function* () {
       ),
       readThreadSnapshot: ({ providerThread }) =>
         Effect.succeed({ providerThread, messages: [], runtimeRequests: [] }),
-      rollbackThread: () =>
-        Effect.fail(
-          new ProviderAdapter.ProviderAdapterRollbackThreadError({
-            driver: base.driver,
-            providerThreadId: ProviderThreadId.make("cloud"),
-          }),
-        ),
+      rollbackThread: Effect.fn("CloudThreadRuntime.rollbackThread")(function* ({
+        providerThread,
+      }) {
+        const host = yield* Ref.get(connection);
+        const turn = yield* Ref.get(activeTurn);
+        if (turn !== null) {
+          const ended = yield* Ref.get(activeTurnEnd);
+          if (host !== null) {
+            yield* host.send({ type: "interrupt" }).pipe(
+              Effect.mapError(
+                () =>
+                  new ProviderAdapter.ProviderAdapterRollbackThreadError({
+                    driver: base.driver,
+                    providerThreadId: providerThread.id,
+                  }),
+              ),
+            );
+            if (ended !== null) {
+              const stopped = yield* Deferred.await(ended).pipe(Effect.timeoutOption("30 seconds"));
+              if (Option.isNone(stopped)) {
+                return yield* new ProviderAdapter.ProviderAdapterRollbackThreadError({
+                  driver: base.driver,
+                  providerThreadId: providerThread.id,
+                });
+              }
+            }
+          }
+        }
+        if (host !== null) {
+          // The host keeps the model conversation; clear it so rolled-back turns cannot return.
+          yield* resetHistory(host);
+        } else {
+          yield* Ref.set(resetHistoryOnConnect, true);
+        }
+        yield* Ref.set(activeTurn, null);
+        yield* noteTurnEnded;
+        yield* Ref.set(pendingApprovals, new Map());
+        return { providerThread, messages: [], runtimeRequests: [] };
+      }),
       forkThread: () =>
         Effect.fail(
           new ProviderAdapter.ProviderAdapterForkThreadError({

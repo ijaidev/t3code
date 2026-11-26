@@ -36,6 +36,12 @@ export interface SourceControlRefSelector {
   readonly repository?: string;
 }
 
+/** A credential the server can hand a sandbox for one clone or push, never persist there. */
+export interface SourceControlRepositoryCredential {
+  readonly username: string;
+  readonly token: string;
+}
+
 const MAX_ERROR_TRANSPORT_VALUE_LENGTH = 256;
 
 /**
@@ -201,11 +207,14 @@ export class SourceControlProvider extends Context.Service<
        * host with `createsChangeRequestsIn` can target another repository, so others ignore it.
        */
       readonly repository?: string;
+      /** Cloud work: prefer the supplied context over GH_REPO and checkout remotes. */
+      readonly preferContext?: boolean;
     }) => Effect.Effect<ReadonlyArray<ChangeRequest>, SourceControlProviderError>;
     readonly getChangeRequest: (input: {
       readonly cwd: string;
       readonly context?: SourceControlProviderContext;
       readonly reference: string;
+      readonly preferContext?: boolean;
     }) => Effect.Effect<ChangeRequest, SourceControlProviderError>;
     readonly createChangeRequest: (input: {
       readonly cwd: string;
@@ -220,6 +229,8 @@ export class SourceControlProvider extends Context.Service<
       readonly draft?: boolean;
       /** Asked only of a provider with `privateChangeRequestRemote`, which holds the head. */
       readonly private?: boolean;
+      /** Cloud work: prefer the supplied context over GH_REPO and checkout remotes. */
+      readonly preferContext?: boolean;
     }) => Effect.Effect<void, SourceControlProviderError>;
     readonly getRepositoryCloneUrls: (input: {
       readonly cwd: string;
@@ -228,6 +239,15 @@ export class SourceControlProvider extends Context.Service<
       /** The host the repository is on. Without it, the checkout's host. */
       readonly host?: string;
     }) => Effect.Effect<SourceControlRepositoryCloneUrls, SourceControlProviderError>;
+    /**
+     * A repository-scoped credential for a sandbox clone or push. The caller passes it to git
+     * through a one-shot environment and never writes it into the sandbox or snapshots.
+     */
+    readonly repositoryCredential?: (input: {
+      readonly cwd: string;
+      readonly context?: SourceControlProviderContext;
+      readonly repository?: string;
+    }) => Effect.Effect<SourceControlRepositoryCredential, SourceControlProviderError>;
     readonly createRepository: (input: {
       readonly cwd: string;
       readonly repository: string;
@@ -236,6 +256,7 @@ export class SourceControlProvider extends Context.Service<
     readonly getDefaultBranch: (input: {
       readonly cwd: string;
       readonly context?: SourceControlProviderContext;
+      readonly preferContext?: boolean;
     }) => Effect.Effect<string | null, SourceControlProviderError>;
     readonly checkoutChangeRequest: (input: {
       readonly cwd: string;

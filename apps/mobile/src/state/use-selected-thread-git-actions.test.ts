@@ -15,6 +15,7 @@ const state = vi.hoisted(() => ({
     environmentId: "environment",
     branch: "main",
     worktreePath: null as string | null,
+    cloudWorkspace: null as { workspacePath: string } | null,
   },
   commits: 0,
   pushes: 0,
@@ -47,8 +48,8 @@ vi.mock("./use-thread-selection", () => ({
 }));
 vi.mock("./use-selected-thread-worktree", () => ({
   useSelectedThreadWorktree: () => ({
-    selectedThreadCwd: "/repo",
-    selectedThreadWorktreePath: null,
+    selectedThreadCwd: state.thread.cloudWorkspace?.workspacePath ?? "/repo",
+    selectedThreadWorktreePath: state.thread.cloudWorkspace?.workspacePath ?? null,
   }),
 }));
 vi.mock("./queries", () => ({
@@ -140,6 +141,7 @@ describe("thread Git mutation permissions", () => {
     state.worktrees = [];
     state.thread.branch = "main";
     state.thread.worktreePath = null;
+    state.thread.cloudWorkspace = null;
     state.commits = 0;
     state.pushes = 0;
     state.actionCwds = [];
@@ -207,6 +209,14 @@ describe("thread Git mutation permissions", () => {
       expect(state.results.map((result) => result.type)).toEqual(["error"]);
     },
   );
+
+  it("runs a cloud thread's action in its sandbox workspace", async () => {
+    state.thread.cloudWorkspace = { workspacePath: "/home/t3/.t3/threads/thread-cloud" };
+    const actions = useSelectedThreadGitActions();
+    await actions.onRunSelectedThreadGitAction({ action: "commit" });
+    expect(state.actionCwds).toEqual(["/home/t3/.t3/threads/thread-cloud"]);
+    expect(state.thread.worktreePath).toBeNull();
+  });
 
   it("runs a tracked repository's actions in its folder without touching the thread", async () => {
     const actions = useSelectedThreadGitActions({
