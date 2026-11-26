@@ -100,6 +100,12 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.sandboxListProviders]: AuthOrchestrationReadScope,
   [WS_METHODS.sandboxListCloudTargets]: AuthOrchestrationReadScope,
   [WS_METHODS.sandboxListTestSandboxes]: AuthOrchestrationReadScope,
+  [WS_METHODS.sandboxGetCloudSandbox]: AuthOrchestrationReadScope,
+  [WS_METHODS.sandboxSubscribeCloudSandbox]: AuthOrchestrationReadScope,
+  [WS_METHODS.sandboxSleepCloudSandbox]: AuthOrchestrationOperateScope,
+  [WS_METHODS.sandboxWakeCloudSandbox]: AuthOrchestrationOperateScope,
+  [WS_METHODS.sandboxPreviewCloudSandboxDelete]: AuthOrchestrationOperateScope,
+  [WS_METHODS.sandboxDeleteCloudSandbox]: AuthOrchestrationOperateScope,
   [WS_METHODS.peerLinksList]: AuthAccessReadScope,
   // Names only, so a client that reads threads can open a linked environment's.
   [WS_METHODS.peerLinksNames]: AuthOrchestrationReadScope,

@@ -162,6 +162,9 @@ function EnvironmentSandboxProviders(props: {
   const checkSandbox = useAtomCommand(serverEnvironment.sandboxCheckTestSandbox, {
     reportFailure: false,
   });
+  const updateSettings = useAtomCommand(serverEnvironment.updateSettings, {
+    reportFailure: false,
+  });
   const [connecting, setConnecting] = useState<SandboxProviderSummary | null>(null);
   const [disconnecting, setDisconnecting] = useState<SandboxProviderAccountId | null>(null);
   const [deleting, setDeleting] = useState<SandboxTestSandbox | null>(null);
@@ -312,6 +315,50 @@ function EnvironmentSandboxProviders(props: {
             }
           />
         ))}
+      </SettingsSection>
+
+      <SettingsSection title={gt("Lifecycle")}>
+        <SettingsRow
+          title={gt("Sleep after")}
+          description={gt(
+            "Idle minutes before a cloud sandbox sleeps. A running turn or open preview keeps it awake.",
+          )}
+          control={
+            <div className="flex items-center gap-1.5">
+              <Input
+                key={settings.cloudSandboxIdleMinutes}
+                type="number"
+                min={1}
+                max={1440}
+                defaultValue={settings.cloudSandboxIdleMinutes}
+                disabled={readOnly}
+                className="w-20"
+                aria-label={gt("Cloud sandbox idle minutes")}
+                onBlur={(event) => {
+                  const value = Number.parseInt(event.target.value, 10);
+                  if (!Number.isFinite(value) || value < 1 || value > 1440) {
+                    event.target.value = String(settings.cloudSandboxIdleMinutes);
+                    return;
+                  }
+                  if (value === settings.cloudSandboxIdleMinutes) return;
+                  void updateSettings({
+                    environmentId,
+                    input: { patch: { cloudSandboxIdleMinutes: value } },
+                  }).then((result) => {
+                    if (result._tag === "Failure") {
+                      reportFailure(result.cause);
+                      event.target.value = String(settings.cloudSandboxIdleMinutes);
+                    }
+                  });
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") event.currentTarget.blur();
+                }}
+              />
+              <span className="text-xs text-muted-foreground">{gt("minutes")}</span>
+            </div>
+          }
+        />
       </SettingsSection>
 
       <SettingsSection

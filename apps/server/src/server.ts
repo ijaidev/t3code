@@ -27,6 +27,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Layer from "effect/Layer";
+import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 import { FetchHttpClient, HttpRouter, HttpServer } from "effect/http";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
@@ -107,6 +108,7 @@ import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as DeviceService from "./device/DeviceService.ts";
 import * as CloudThreadRuntime from "./sandbox/CloudThreadRuntime.ts";
 import * as CloudThreadStore from "./sandbox/CloudThreadStore.ts";
+import * as CloudSandboxPreviewBridge from "./sandbox/CloudSandboxPreviewBridge.ts";
 import * as CloudThreads from "./sandbox/CloudThreads.ts";
 import * as SandboxAccounts from "./sandbox/SandboxAccounts.ts";
 import * as SandboxLifecycle from "./sandbox/SandboxLifecycle.ts";
@@ -581,6 +583,11 @@ const layerCloudThreads = CloudThreads.layer.pipe(
   Layer.provide(CloudThreadStore.layer),
 );
 const layerCloudThreadRuntime = CloudThreadRuntime.layer.pipe(Layer.provide(layerCloudThreads));
+// Kept out of `layerSandbox` so CLI commands can build the sandbox layer without previews.
+const layerCloudSandboxPreviewBridge = CloudSandboxPreviewBridge.layer.pipe(
+  Layer.provide(layerCloudThreads),
+  Layer.provide(layerPreview),
+);
 const layerSandbox = Layer.merge(
   Layer.mergeAll(
     layerSandboxStorage,
@@ -596,8 +603,14 @@ const layerSandbox = Layer.merge(
           Effect.logWarning("failed to reconcile sandbox state", { cause }),
         ),
       );
+      const cloudThreads = yield* CloudThreads.CloudThreads;
+      yield* cloudThreads.sweepIdle.pipe(
+        Effect.ignore,
+        Effect.repeat(Schedule.spaced("30 seconds")),
+        Effect.forkScoped,
+      );
     }),
-  ).pipe(Layer.provide(layerSandboxLifecycle)),
+  ).pipe(Layer.provide(layerSandboxLifecycle), Layer.provide(layerCloudThreads)),
 );
 
 const layerWorkspaceEntries = WorkspaceEntries.layer.pipe(Layer.provide(WorkspacePaths.layer));
@@ -831,7 +844,15 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   Layer.provideMerge(layerSourceControlProviderRegistry),
   Layer.provideMerge(layerGit),
   Layer.provideMerge(layerVcs),
-  Layer.provideMerge(Layer.mergeAll(layerTerminal, layerPreview, layerDevice, layerSandbox)),
+  Layer.provideMerge(
+    Layer.mergeAll(
+      layerTerminal,
+      layerPreview,
+      layerDevice,
+      layerSandbox,
+      layerCloudSandboxPreviewBridge,
+    ),
+  ),
   Layer.provideMerge(layerPersistence),
   Layer.provideMerge(Layer.mergeAll(Keybindings.layer, UsageLimitSources.layer)),
   Layer.provideMerge(ProviderRegistry.layer),
