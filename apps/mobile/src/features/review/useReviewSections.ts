@@ -26,6 +26,7 @@ import {
   type ReviewSectionItem,
 } from "./reviewModel";
 import { setReviewSelectedSectionId, type ReviewCacheForThread } from "./reviewState";
+import { reviewDiffPreviewRequest } from "./reviewDiffPreviewRequest";
 
 const NO_GIT_SECTIONS_ATOM = Atom.make<ReadonlyArray<ReviewDiffPreviewSource>>([]).pipe(
   Atom.keepAlive,
@@ -64,10 +65,9 @@ export function useReviewSections(input: {
   const { selectedThreadProject } = useThreadSelection();
   const diffPreviewQuery = (sourceKind: ReviewGitSectionKind) =>
     canReadFiles && enabled && environmentId !== undefined && selectedThreadCwd !== null
-      ? reviewEnvironment.diffPreview({
-          environmentId,
-          input: { cwd: selectedThreadCwd, sourceKind },
-        })
+      ? reviewEnvironment.diffPreview(
+          reviewDiffPreviewRequest(environmentId, selectedThreadCwd, sourceKind),
+        )
       : null;
   const workingTreePreview = useEnvironmentQuery(diffPreviewQuery("working-tree"));
   const branchPreview = useEnvironmentQuery(diffPreviewQuery("branch-range"));

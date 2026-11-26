@@ -1,14 +1,17 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, describe, it } from "@effect/vitest";
+import { assert, describe, expect, it } from "@effect/vitest";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 import { ProjectId } from "@t3tools/contracts";
 
 import * as ServerConfig from "../config.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as CloudReview from "../sandbox/CloudReview.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
@@ -26,9 +29,10 @@ function layer(input: {
   readonly trackedFolders?: ReadonlyArray<string>;
   readonly threadWorktrees?: ReadonlyArray<{ worktreePath: string; deleted?: boolean }>;
   readonly gitWorktrees?: ReadonlyArray<string>;
+  readonly cloudReview?: Layer.Layer<CloudReview.CloudReview>;
 }) {
   const projectRoots = input.projectRoots ?? [];
-  return ReviewService.layer.pipe(
+  const base = ReviewService.layer.pipe(
     Layer.provide(KnownWorkspaces.layer),
     Layer.provide(
       Layer.effectDiscard(
@@ -103,9 +107,46 @@ function layer(input: {
     Layer.provide(ServerConfig.layerTest(input.workspaceRoot, input.baseDir)),
     Layer.provideMerge(NodeServices.layer),
   );
+  return input.cloudReview === undefined ? base : base.pipe(Layer.provideMerge(input.cloudReview));
 }
 
 describe("ReviewService", () => {
+  it.effect("routes a recorded cloud workspace to the cloud review backend", () => {
+    const cloudPath = "/home/t3/.t3/threads/thread-cloud";
+    const calls: Array<{ readonly cwd: string }> = [];
+    const cloudReview = Layer.succeed(CloudReview.CloudReview, {
+      forWorkspace: (cwd) =>
+        Effect.succeed(
+          cwd === cloudPath ? Option.some({ threadId: "thread-cloud" }) : Option.none(),
+        ),
+      getBranchCommits: () => Effect.succeed({ commits: [], truncated: false }),
+      getDiffPreview: (input) =>
+        Effect.sync(() => {
+          calls.push({ cwd: input.cwd });
+          return {
+            cwd: input.cwd,
+            generatedAt: DateTime.makeUnsafe("2026-11-24T00:00:00Z"),
+            sources: [],
+          };
+        }),
+      getDiffFileContents: () => Effect.succeed({ oldContents: "", newContents: "" }),
+    });
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const workspaceRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-workspace-" });
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-base-" });
+      return yield* Effect.gen(function* () {
+        const review = yield* ReviewService.ReviewService;
+        const result = yield* review.getDiffPreview({
+          cwd: cloudPath,
+          sourceKind: "working-tree",
+        });
+        expect(result.cwd).toBe(cloudPath);
+        expect(calls).toEqual([{ cwd: cloudPath }]);
+      }).pipe(Effect.provide(layer({ workspaceRoot, baseDir, cloudReview })));
+    }).pipe(Effect.provide(NodeServices.layer));
+  });
+
   it.effect("rejects diff preview cwd outside the configured workspace roots", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

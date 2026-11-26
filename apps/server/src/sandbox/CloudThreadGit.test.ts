@@ -17,6 +17,7 @@ import type * as SourceControlProvider from "@t3tools/source-control-core/server
 
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as CloudRepositoryCredential from "./CloudRepositoryCredential.ts";
+import * as CloudThreadStore from "./CloudThreadStore.ts";
 import * as CloudThreadGit from "./CloudThreadGit.ts";
 import * as CloudThreads from "./CloudThreads.ts";
 
@@ -71,6 +72,9 @@ interface FakeState {
     ReadonlyArray<{ command: string; envs?: Readonly<Record<string, string>> }>
   >;
   statusBranch: string;
+  remoteRefExists: boolean;
+  localRefExists: boolean;
+  localHasUpstream: boolean;
   openPullRequests: number;
 }
 
@@ -111,6 +115,40 @@ const testLayer = (state: FakeState) => {
             stderr: "",
           };
         }
+        if (input.command.includes("git rev-parse --verify --quiet")) {
+          const exists = input.command.includes("refs/remotes/")
+            ? state.remoteRefExists
+            : state.localRefExists;
+          return { exitCode: exists ? 0 : 1, stdout: "", stderr: "" };
+        }
+        if (input.command.includes("git rev-parse --abbrev-ref")) {
+          return { exitCode: state.localHasUpstream ? 0 : 1, stdout: "", stderr: "" };
+        }
+        if (input.command.includes("git branch --show-current")) {
+          return { exitCode: 0, stdout: `${state.statusBranch}\n`, stderr: "" };
+        }
+        if (input.command.includes("git symbolic-ref")) {
+          return { exitCode: 0, stdout: "refs/remotes/origin/main\n", stderr: "" };
+        }
+        if (input.command.includes("git for-each-ref")) {
+          return {
+            exitCode: 0,
+            stdout:
+              [
+                "main\torigin/main",
+                "feature\t",
+                "release\torigin/release",
+                "origin/main\t",
+                "origin/release\t",
+              ].join("\n") + "\n",
+            stderr: "",
+          };
+        }
+        if (input.command.includes("git switch")) {
+          const branch = /git switch(?: -c)? '([^']+)'/.exec(input.command)?.[1];
+          if (branch !== undefined) state.statusBranch = branch;
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
         return { exitCode: 0, stdout: "", stderr: "" };
       }),
     writeAttachment: () => Effect.succeed(false),
@@ -140,10 +178,18 @@ const testLayer = (state: FakeState) => {
         url: record.repositoryUrl,
       }),
   });
+  const cloudStore = Layer.succeed(CloudThreadStore.CloudThreadStore, {
+    path: "/tmp/cloud-threads-test.json",
+    list: Effect.succeed([record]),
+    get: () => Effect.succeedSome(record),
+    upsert: () => Effect.void,
+    remove: () => Effect.void,
+  });
   return CloudThreadGit.layer.pipe(
     Layer.provideMerge(Layer.succeed(CloudThreads.CloudThreads, cloud)),
     Layer.provideMerge(registry),
     Layer.provideMerge(credentials),
+    Layer.provideMerge(cloudStore),
     Layer.provideMerge(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
   );
 };
@@ -155,12 +201,61 @@ const makeState = (overrides: Partial<FakeState> = {}) =>
         ReadonlyArray<{ command: string; envs?: Readonly<Record<string, string>> }>
       >([]),
       statusBranch: "feature",
+      remoteRefExists: false,
+      localRefExists: false,
+      localHasUpstream: true,
       openPullRequests: 0,
       ...overrides,
     } satisfies FakeState;
   });
 
 describe("cloud thread git", () => {
+  it.effect("switches to a remote ref by creating a local tracking branch", () => {
+    const run = Effect.gen(function* () {
+      const state = yield* makeState({ remoteRefExists: true, localRefExists: false });
+      return yield* Effect.gen(function* () {
+        const git = yield* CloudThreadGit.CloudThreadGit;
+        const result = yield* git.switchRef({
+          cwd: record.workspacePath,
+          refName: "origin/release",
+        });
+        expect(result.refName).toBe("release");
+        const execs = yield* Ref.get(state.execs);
+        expect(
+          execs.some((entry) =>
+            entry.command.includes("git switch -c 'release' --track 'origin/release'"),
+          ),
+        ).toBe(true);
+        const refs = yield* git.listRefs({ cwd: record.workspacePath });
+        expect(refs.refs.find((ref) => ref.name === "release")?.current).toBe(true);
+        expect(refs.refs.find((ref) => ref.name === "main")?.isDefault).toBe(true);
+      }).pipe(Effect.provide(testLayer(state)));
+    });
+    return run;
+  });
+
+  it.effect("switches to an existing local ref and reports it current", () => {
+    const run = Effect.gen(function* () {
+      const state = yield* makeState({
+        statusBranch: "feature",
+        remoteRefExists: true,
+        localRefExists: true,
+        localHasUpstream: true,
+      });
+      return yield* Effect.gen(function* () {
+        const git = yield* CloudThreadGit.CloudThreadGit;
+        expect(
+          (yield* git.switchRef({ cwd: record.workspacePath, refName: "origin/main" })).refName,
+        ).toBe("main");
+        const execs = yield* Ref.get(state.execs);
+        expect(execs.some((entry) => entry.command === "git switch 'main'")).toBe(true);
+        const refs = yield* git.listRefs({ cwd: record.workspacePath });
+        expect(refs.refs.find((ref) => ref.name === "main")?.current).toBe(true);
+      }).pipe(Effect.provide(testLayer(state)));
+    });
+    return run;
+  });
+
   it.effect("refuses a pull request action on the base branch before committing or pushing", () => {
     const run = Effect.gen(function* () {
       const state = yield* makeState({ statusBranch: "main" });

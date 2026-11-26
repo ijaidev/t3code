@@ -22,6 +22,7 @@ import {
   type VcsStatusResult,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -310,6 +311,7 @@ export class CloudThreadGit extends Context.Service<
 
 const make = Effect.gen(function* () {
   const cloudThreads = yield* CloudThreads.CloudThreads;
+  const cloudThreadStore = yield* CloudThreadStore.CloudThreadStore;
   const registry = yield* SourceControlProviderRegistry.SourceControlProviderRegistry;
   const credentialResolver = yield* CloudRepositoryCredential.CloudRepositoryCredentialResolver;
   const fileSystem = yield* FileSystem.FileSystem;
@@ -358,6 +360,41 @@ const make = Effect.gen(function* () {
       );
     }
     return result;
+  });
+
+  const execRaw = Effect.fn("CloudThreadGit.execRaw")(function* (input: {
+    readonly operation: string;
+    readonly record: CloudThreadStore.CloudThreadRecord;
+    readonly command: string;
+    readonly envs?: Readonly<Record<string, string>>;
+    readonly timeoutMs?: number;
+  }) {
+    return yield* cloudThreads
+      .exec({
+        threadId: input.record.threadId,
+        command: input.command,
+        cwd: input.record.workspacePath,
+        ...(input.envs === undefined ? {} : { envs: input.envs }),
+        ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
+      })
+      .pipe(
+        Effect.mapError((error) =>
+          failure(input.operation, input.record.workspacePath, error.detail, error),
+        ),
+      );
+  });
+
+  const updateBranch = Effect.fn("CloudThreadGit.updateBranch")(function* (
+    record: CloudThreadStore.CloudThreadRecord,
+    branch: string,
+  ) {
+    yield* cloudThreadStore
+      .upsert({
+        ...record,
+        branch,
+        updatedAt: DateTime.formatIso(yield* DateTime.now),
+      })
+      .pipe(Effect.orElseSucceed(() => undefined));
   });
 
   const currentBranch: CloudThreadGit["Service"]["currentBranch"] = Effect.fn(
@@ -571,6 +608,7 @@ const make = Effect.gen(function* () {
                 command: `git switch -c ${shellQuote(seed)}`,
               });
               branch = seed;
+              yield* updateBranch(record, seed);
               return { status: "created" as const, name: seed };
             })
           : { status: "skipped_not_requested" as const };
@@ -771,6 +809,24 @@ const make = Effect.gen(function* () {
         command:
           "git for-each-ref --format='%(refname:short)%09%(upstream:short)' refs/heads refs/remotes",
       });
+      const currentBranch = yield* run({
+        operation: "CloudThreadGit.listRefs.current",
+        record,
+        command: "git branch --show-current",
+      });
+      const current = currentBranch.stdout.trim() || null;
+      const symbolicDefault = yield* execRaw({
+        operation: "CloudThreadGit.listRefs.default",
+        record,
+        command: "git symbolic-ref -q refs/remotes/origin/HEAD",
+      });
+      const defaultBranch =
+        symbolicDefault.exitCode === 0
+          ? (symbolicDefault.stdout.trim().split("/").filter(Boolean).at(-1) ?? null)
+          : yield* defaultBranchFor(record);
+      if (current !== null && current !== record.branch) {
+        yield* updateBranch(record, current);
+      }
       const refs = result.stdout
         .split("\n")
         .filter((line) => line.length > 0)
@@ -779,8 +835,8 @@ const make = Effect.gen(function* () {
           const isRemote = name.startsWith("origin/");
           return {
             name,
-            current: name === record.branch,
-            isDefault: false,
+            current: !isRemote && name === current,
+            isDefault: !isRemote && defaultBranch !== null && name === defaultBranch,
             worktreePath: null,
             ...(isRemote ? { isRemote: true, remoteName: "origin" } : {}),
             ...(upstream === "" ? {} : { upstreamRef: upstream }),
@@ -846,6 +902,14 @@ const make = Effect.gen(function* () {
             ? `git switch -c ${shellQuote(input.refName)}`
             : `git branch ${shellQuote(input.refName)}`,
       });
+      if (input.switchRef === true) {
+        const current = yield* run({
+          operation: "CloudThreadGit.currentBranch",
+          record,
+          command: "git branch --show-current",
+        });
+        yield* updateBranch(record, current.stdout.trim() || input.refName);
+      }
       return { refName: input.refName };
     },
   );
@@ -853,17 +917,61 @@ const make = Effect.gen(function* () {
   const switchRef: CloudThreadGit["Service"]["switchRef"] = Effect.fn("CloudThreadGit.switchRef")(
     function* (input) {
       const record = yield* requireRecord(input.cwd);
-      yield* run({
-        operation: "CloudThreadGit.switchRef",
+      const remote = yield* execRaw({
+        operation: "CloudThreadGit.switchRef.resolveRemote",
         record,
-        command: `git switch ${shellQuote(input.refName)}`,
+        command: `git rev-parse --verify --quiet ${shellQuote(`refs/remotes/${input.refName}^{commit}`)}`,
       });
+      let branch = input.refName;
+      if (remote.exitCode === 0) {
+        // The picker lists `origin/<branch>`; Git needs a local tracking branch, as it does for
+        // the local driver. Keep an existing local branch, otherwise create the tracking one.
+        branch = input.refName.slice(input.refName.indexOf("/") + 1);
+        const local = yield* execRaw({
+          operation: "CloudThreadGit.switchRef.resolveLocal",
+          record,
+          command: `git rev-parse --verify --quiet ${shellQuote(`refs/heads/${branch}^{commit}`)}`,
+        });
+        if (local.exitCode === 0) {
+          yield* run({
+            operation: "CloudThreadGit.switchRef.local",
+            record,
+            command: `git switch ${shellQuote(branch)}`,
+          });
+          const upstream = yield* execRaw({
+            operation: "CloudThreadGit.switchRef.upstream",
+            record,
+            command: `git rev-parse --abbrev-ref ${shellQuote(`${branch}@{upstream}`)}`,
+          });
+          if (upstream.exitCode !== 0) {
+            yield* run({
+              operation: "CloudThreadGit.switchRef.track",
+              record,
+              command: `git branch --set-upstream-to=${shellQuote(input.refName)} ${shellQuote(branch)}`,
+            });
+          }
+        } else {
+          yield* run({
+            operation: "CloudThreadGit.switchRef.track",
+            record,
+            command: `git switch -c ${shellQuote(branch)} --track ${shellQuote(input.refName)}`,
+          });
+        }
+      } else {
+        yield* run({
+          operation: "CloudThreadGit.switchRef.local",
+          record,
+          command: `git switch ${shellQuote(input.refName)}`,
+        });
+      }
       const current = yield* run({
         operation: "CloudThreadGit.currentBranch",
         record,
         command: "git branch --show-current",
       });
-      return { refName: current.stdout.trim() || input.refName };
+      const currentBranch = current.stdout.trim() || branch;
+      yield* updateBranch(record, currentBranch);
+      return { refName: currentBranch };
     },
   );
 

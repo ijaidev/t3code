@@ -196,7 +196,10 @@ export function useOpenChangeRequestLink(
       void readDiffPreview({
         environmentId: resolvedThreadRef.environmentId,
         input: {
-          cwd: commitThread.worktreePath ?? commitProject.workspaceRoot,
+          cwd:
+            commitThread.cloudWorkspace?.workspacePath ??
+            commitThread.worktreePath ??
+            commitProject.workspaceRoot,
           ...(baseRef ? { baseRef } : {}),
           commitSha: commit.sha,
           ignoreWhitespace,

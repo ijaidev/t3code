@@ -106,6 +106,7 @@ import * as McpSessionRegistry from "./mcp/McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as DeviceService from "./device/DeviceService.ts";
 import * as CloudRepositoryCredential from "./sandbox/CloudRepositoryCredential.ts";
+import * as CloudReview from "./sandbox/CloudReview.ts";
 import * as CloudThreadGit from "./sandbox/CloudThreadGit.ts";
 import * as CloudThreadRuntime from "./sandbox/CloudThreadRuntime.ts";
 import * as CloudThreadStore from "./sandbox/CloudThreadStore.ts";
@@ -513,8 +514,10 @@ const layerCloudThreads = CloudThreads.layer.pipe(
 const layerCloudThreadGit = CloudThreadGit.layer.pipe(
   Layer.provideMerge(layerCloudThreads),
   Layer.provideMerge(layerCloudRepositoryCredential),
+  Layer.provideMerge(CloudThreadStore.layer),
 );
 const layerCloudThreadRuntime = CloudThreadRuntime.layer.pipe(Layer.provide(layerCloudThreads));
+const layerCloudReview = CloudReview.layer.pipe(Layer.provideMerge(layerCloudThreads));
 
 const layerGitWorkflow = GitWorkflowService.layer.pipe(
   Layer.provideMerge(layerVcsDriverRegistry),
@@ -539,6 +542,7 @@ const layerReview = ReviewService.layer.pipe(
   Layer.provideMerge(layerKnownWorkspaces),
   Layer.provideMerge(GitVcsDriver.layer),
   Layer.provideMerge(layerVcsDriverRegistry),
+  Layer.provideMerge(layerCloudReview),
 );
 
 const layerVcs = Layer.empty.pipe(

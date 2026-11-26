@@ -3,6 +3,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 
 import {
@@ -18,6 +19,7 @@ import {
 } from "@t3tools/contracts";
 
 import * as ServerConfig from "../config.ts";
+import * as CloudReview from "../sandbox/CloudReview.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as KnownWorkspaces from "../workspace/KnownWorkspaces.ts";
@@ -51,6 +53,16 @@ export const make = Effect.gen(function* () {
   const vcsRegistry = yield* VcsDriverRegistry.VcsDriverRegistry;
   const git = yield* GitVcsDriver.GitVcsDriver;
   const knownWorkspaces = yield* KnownWorkspaces.KnownWorkspaces;
+  const cloudReview = yield* Effect.serviceOption(CloudReview.CloudReview);
+
+  // Only a workspace recorded for a cloud thread is routed to its sandbox; no other path is.
+  const isCloudWorkspace = (cwd: string) =>
+    Option.isSome(cloudReview)
+      ? cloudReview.value.forWorkspace(cwd).pipe(
+          Effect.map(Option.isSome),
+          Effect.orElseSucceed(() => false),
+        )
+      : Effect.succeed(false);
 
   const canonicalizePath = (value: string) => {
     const resolvedPath = path.resolve(value);
@@ -96,6 +108,14 @@ export const make = Effect.gen(function* () {
   const getBranchCommits: ReviewService["Service"]["getBranchCommits"] = Effect.fn(
     "ReviewService.getBranchCommits",
   )(function* (input) {
+    if (yield* isCloudWorkspace(input.cwd)) {
+      return yield* cloudReview.pipe(
+        Option.match({
+          onNone: () => Effect.die("Cloud review route lost its service."),
+          onSome: (review) => review.getBranchCommits(input),
+        }),
+      );
+    }
     yield* assertWorkspaceBoundCwd("ReviewService.getBranchCommits", input.cwd);
 
     const handle = yield* vcsRegistry.detect({ cwd: input.cwd, requestedKind: "auto" });
@@ -113,6 +133,14 @@ export const make = Effect.gen(function* () {
   const getDiffPreview: ReviewService["Service"]["getDiffPreview"] = Effect.fn(
     "ReviewService.getDiffPreview",
   )(function* (input) {
+    if (yield* isCloudWorkspace(input.cwd)) {
+      return yield* cloudReview.pipe(
+        Option.match({
+          onNone: () => Effect.die("Cloud review route lost its service."),
+          onSome: (review) => review.getDiffPreview(input),
+        }),
+      );
+    }
     yield* assertWorkspaceBoundCwd("ReviewService.getDiffPreview", input.cwd);
 
     const handle = yield* vcsRegistry.detect({ cwd: input.cwd, requestedKind: "auto" });
@@ -130,6 +158,14 @@ export const make = Effect.gen(function* () {
   const getDiffFileContents: ReviewService["Service"]["getDiffFileContents"] = Effect.fn(
     "ReviewService.getDiffFileContents",
   )(function* (input) {
+    if (yield* isCloudWorkspace(input.cwd)) {
+      return yield* cloudReview.pipe(
+        Option.match({
+          onNone: () => Effect.die("Cloud review route lost its service."),
+          onSome: (review) => review.getDiffFileContents(input),
+        }),
+      );
+    }
     yield* assertWorkspaceBoundCwd("ReviewService.getDiffFileContents", input.cwd);
 
     const handle = yield* vcsRegistry.detect({ cwd: input.cwd, requestedKind: "auto" });
