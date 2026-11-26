@@ -269,6 +269,19 @@ describe("cloud review", () => {
         });
         expect(untrackedContents).toEqual({ oldContents: "", newContents: "hello\n" });
 
+        NodeFS.writeFileSync(NodePath.join(repo, "big.txt"), "x".repeat(5_500_000));
+        const bigPreview = yield* review.getDiffPreview({
+          cwd: repo,
+          sourceKind: "working-tree",
+          file: {
+            path: "big.txt",
+            previousPath: null,
+            sourceKind: "working-tree",
+            changeType: "new",
+          },
+        });
+        expect(Buffer.byteLength(bigPreview.sources[0]?.diff ?? "")).toBeLessThanOrEqual(5_000_000);
+
         NodeFS.writeFileSync(NodePath.join(repo, "file.txt"), "committed\n");
         git("add", "file.txt");
         git(
@@ -295,6 +308,46 @@ describe("cloud review", () => {
         expect(branchContents).toEqual({
           oldContents: "old\n",
           newContents: "committed\n",
+        });
+
+        git("switch", "-c", "feature");
+        NodeFS.writeFileSync(NodePath.join(repo, "file.txt"), "feature\n");
+        git("add", "file.txt");
+        git(
+          "-c",
+          "user.name=Test",
+          "-c",
+          "user.email=test@example.com",
+          "commit",
+          "-m",
+          "feature change",
+        );
+        const featureMergeBase = git("merge-base", "main", "feature").trim();
+        git("switch", "main");
+        NodeFS.writeFileSync(NodePath.join(repo, "file.txt"), "moved\n");
+        git("add", "file.txt");
+        git(
+          "-c",
+          "user.name=Test",
+          "-c",
+          "user.email=test@example.com",
+          "commit",
+          "-m",
+          "move base",
+        );
+        const movedContents = yield* review.getDiffFileContents({
+          cwd: repo,
+          sourceKind: "branch-range",
+          changeType: "change",
+          baseRef: "main",
+          headRef: "feature",
+          mergeBase: featureMergeBase,
+          oldPath: "file.txt",
+          newPath: "file.txt",
+        });
+        expect(movedContents).toEqual({
+          oldContents: "committed\n",
+          newContents: "feature\n",
         });
 
         const absolute = yield* Effect.flip(

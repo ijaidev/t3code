@@ -145,3 +145,30 @@ describe("cloud thread host history", () => {
     }
   });
 });
+
+describe("cloud thread host history persistence", () => {
+  it.effect("does not acknowledge a reset it could not persist", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.acquireRelease(
+        Effect.promise(() => NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-cloud-reset-"))),
+        (path) => Effect.promise(() => NodeFSP.rm(path, { recursive: true, force: true })),
+      );
+      // A directory where the history file belongs makes os.replace fail even for root.
+      yield* Effect.promise(() => NodeFSP.mkdir(NodePath.join(root, "history.json")));
+      const host = yield* Effect.acquireRelease(
+        Effect.promise(() => startHost(root)),
+        (started) => Effect.promise(() => stopHost(started)),
+      );
+      host.child.stdin.write(`${JSON.stringify({ type: "reset_history" })}\n`);
+      let message: { readonly type?: string; readonly ok?: boolean } = {};
+      for (let attempt = 0; attempt < 10 && message.type !== "history_reset"; attempt++) {
+        message = JSON.parse(yield* Effect.promise(() => nextLine(host.iterator))) as {
+          readonly type?: string;
+          readonly ok?: boolean;
+        };
+      }
+      expect(message.type).toBe("history_reset");
+      expect(message.ok).toBe(false);
+    }),
+  );
+});

@@ -13,6 +13,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
+import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import { HttpClient } from "effect/http";
 
@@ -456,9 +457,11 @@ describe("cloud thread runtime", () => {
     return result;
   });
 
-  it.effect("fails a rollback when the host does not acknowledge the reset", () => {
+  it.effect("fails a rollback when the host cannot persist the reset", () => {
     const result = Effect.gen(function* () {
       const outbound = yield* Queue.unbounded<CloudThreads.CloudHostMessage>();
+      const turnEnded = yield* Ref.make(false);
+      const resetBeforeTurnEnd = yield* Ref.make(false);
       const cloud = CloudThreads.CloudThreads.of({
         prepare: () => Effect.die("unused"),
         getSandbox: () => Effect.succeedSome(sandbox),
@@ -481,20 +484,23 @@ describe("cloud thread runtime", () => {
                   return Effect.void;
                 }
                 if (type === "interrupt") {
-                  Queue.offerUnsafe(outbound, {
-                    type: "turn_end",
-                    runId: "run-1",
-                    status: "cancelled",
-                  });
                   return Effect.void;
                 }
                 if (type === "reset_history") {
-                  return Effect.fail(
-                    new CloudThreads.CloudThreadError({
-                      operation: "send",
-                      threadId,
-                      detail: "The host rejected the reset.",
-                    }),
+                  return Ref.get(turnEnded).pipe(
+                    Effect.flatMap((ended) =>
+                      Ref.set(resetBeforeTurnEnd, !ended).pipe(
+                        Effect.andThen(
+                          Effect.sync(() => {
+                            Queue.offerUnsafe(outbound, {
+                              type: "history_reset",
+                              ok: false,
+                              error: "Could not persist the reset conversation history.",
+                            });
+                          }),
+                        ),
+                      ),
+                    ),
                   );
                 }
                 return Effect.void;
@@ -541,17 +547,24 @@ describe("cloud thread runtime", () => {
           modelSelection,
           runtimePolicy: input.runtimePolicy,
         });
-        const failure = yield* Effect.flip(
-          runtime.rollbackThread({
-            providerThread,
-            target: {
-              type: "thread_start",
-              checkpointId: "checkpoint-1",
-              appRunOrdinal: 0,
-            } as never,
-            providerThreadTurns: [],
-          }),
+        const pending = yield* Effect.forkChild(
+          Effect.flip(
+            runtime.rollbackThread({
+              providerThread,
+              target: {
+                type: "thread_start",
+                checkpointId: "checkpoint-1",
+                appRunOrdinal: 0,
+              } as never,
+              providerThreadTurns: [],
+            }),
+          ),
         );
+        yield* Effect.yieldNow;
+        expect(yield* Ref.get(resetBeforeTurnEnd)).toBe(false);
+        yield* Ref.set(turnEnded, true);
+        Queue.offerUnsafe(outbound, { type: "turn_end", runId: "run-1", status: "cancelled" });
+        const failure = yield* Fiber.join(pending);
         expect(failure._tag).toBe("ProviderAdapterRollbackThreadError");
       }).pipe(Effect.provide(testLayer(cloud)));
     });

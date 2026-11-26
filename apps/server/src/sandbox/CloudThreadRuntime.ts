@@ -224,7 +224,7 @@ const make = Effect.gen(function* () {
     const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
     const connection = yield* Ref.make<CloudThreads.CloudHostConnection | null>(null);
     const resetHistoryOnConnect = yield* Ref.make(false);
-    const resetAck = yield* Ref.make<Deferred.Deferred<void> | null>(null);
+    const resetAck = yield* Ref.make<Deferred.Deferred<boolean> | null>(null);
     const activeTurn = yield* Ref.make<ActiveTurn | null>(null);
     const activeTurnEnd = yield* Ref.make<Deferred.Deferred<void> | null>(null);
     const pendingApprovals = yield* Ref.make<
@@ -260,7 +260,7 @@ const make = Effect.gen(function* () {
     const resetHistory = Effect.fn("CloudThreadRuntime.resetHistory")(function* (
       host: CloudThreads.CloudHostConnection,
     ) {
-      const acknowledged = yield* Deferred.make<void>();
+      const acknowledged = yield* Deferred.make<boolean>();
       yield* Ref.set(resetAck, acknowledged);
       const sent = yield* Effect.result(
         host.send({ type: "reset_history" }).pipe(
@@ -279,7 +279,7 @@ const make = Effect.gen(function* () {
       }
       const ack = yield* Deferred.await(acknowledged).pipe(Effect.timeoutOption("10 seconds"));
       yield* Ref.set(resetAck, null);
-      if (Option.isNone(ack)) {
+      if (Option.isNone(ack) || ack.value !== true) {
         return yield* new ProviderAdapter.ProviderAdapterRollbackThreadError({
           driver: base.driver,
           providerThreadId: ProviderThreadId.make("cloud"),
@@ -419,6 +419,7 @@ const make = Effect.gen(function* () {
         threadDisposition: "reusable",
       });
       yield* Ref.set(activeTurn, null);
+      yield* noteTurnEnded;
       yield* cloudThreads.endTurn(input.threadId);
     });
 
@@ -606,7 +607,9 @@ const make = Effect.gen(function* () {
         }
         case "history_reset": {
           const acknowledged = yield* Ref.get(resetAck);
-          if (acknowledged !== null) yield* Deferred.succeed(acknowledged, undefined);
+          if (acknowledged !== null) {
+            yield* Deferred.succeed(acknowledged, message["ok"] === true);
+          }
           return;
         }
         case "turn_end": {
@@ -679,7 +682,20 @@ const make = Effect.gen(function* () {
 
     const ensureConnection = Effect.fn("CloudThreadRuntime.ensureConnection")(function* () {
       const existing = yield* Ref.get(connection);
-      if (existing !== null) return existing;
+      if (existing !== null) {
+        if (yield* Ref.get(resetHistoryOnConnect)) {
+          yield* resetHistory(existing).pipe(
+            Effect.tapError(() =>
+              Effect.gen(function* () {
+                yield* existing.close.pipe(Effect.ignore);
+                yield* Ref.set(connection, null);
+              }),
+            ),
+          );
+          yield* Ref.set(resetHistoryOnConnect, false);
+        }
+        return existing;
+      }
       const opened = yield* cloudThreads.openHost(input.threadId).pipe(
         Effect.mapError(
           (error) =>
@@ -703,7 +719,14 @@ const make = Effect.gen(function* () {
         ),
       );
       if (yield* Ref.get(resetHistoryOnConnect)) {
-        yield* resetHistory(opened);
+        yield* resetHistory(opened).pipe(
+          Effect.tapError(() =>
+            Effect.gen(function* () {
+              yield* opened.close.pipe(Effect.ignore);
+              yield* Ref.set(connection, null);
+            }),
+          ),
+        );
         yield* Ref.set(resetHistoryOnConnect, false);
       }
       return opened;
@@ -771,6 +794,7 @@ const make = Effect.gen(function* () {
           const startedAt = yield* DateTime.now;
           const started = yield* Deferred.make<void>();
           yield* Ref.set(waitingForTurnStart, started);
+          yield* Ref.set(activeTurnEnd, yield* Deferred.make<void>());
           const providerTurnId = ProviderTurnId.make(randomId());
           const providerThreadId = turnInput.providerThread.id;
           yield* Ref.set(activeTurn, {

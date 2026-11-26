@@ -235,8 +235,10 @@ class Host:
             with open(temporary, "w", encoding="utf-8") as handle:
                 json.dump(self.messages, handle, ensure_ascii=False)
             os.replace(temporary, self.history_path)
+            return True
         except Exception:  # noqa: BLE001
             traceback.print_exc(file=sys.stderr)
+            return False
 
     def send(self, message):
         emit(message)
@@ -473,8 +475,16 @@ class Host:
 
     def reset_history(self):
         self.messages = []
-        self.save_messages()
-        self.send({"type": "history_reset"})
+        if self.save_messages():
+            self.send({"type": "history_reset", "ok": True})
+        else:
+            self.send(
+                {
+                    "type": "history_reset",
+                    "ok": False,
+                    "error": "Could not persist the reset conversation history.",
+                }
+            )
 
     def loop(self):
         self.send({"type": "ready", "protocolVersion": PROTOCOL_VERSION, "pid": os.getpid()})

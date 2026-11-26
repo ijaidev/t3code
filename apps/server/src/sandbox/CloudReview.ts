@@ -161,11 +161,12 @@ const make = Effect.gen(function* () {
       input.maxBytes === undefined
         ? input.command
         : [
-            "set -eu",
+            "set -u",
             'out=$(mktemp "${TMPDIR:-/tmp}/t3-review.XXXXXX")',
             "trap 'rm -f \"$out\"' EXIT",
-            `(${input.command}) > "$out"`,
+            `(${input.command}) > "$out"; status=$?`,
             `head -c ${Math.max(1, input.maxBytes)} "$out"`,
+            "exit $status",
           ].join("\n");
     const result = yield* cloudThreads
       .exec({
@@ -461,6 +462,7 @@ const make = Effect.gen(function* () {
                     operation: "CloudReview.getDiffPreview.untrackedPatch",
                     command: `git diff --no-index -- /dev/null ${shellQuote(path)}`,
                     allowNonZero: true,
+                    maxBytes: PATCH_MAX_BYTES,
                   }).pipe(Effect.map((result) => result.stdout)),
                 { concurrency: 4 },
               )).join("")
@@ -496,6 +498,9 @@ const make = Effect.gen(function* () {
       ...(input.trackedOnly === true ? { incomplete: true } : {}),
     };
   });
+
+  const isValidMergeBase = (value: string | undefined): value is string =>
+    value !== undefined && /^[0-9a-f]{40,64}$/.test(value);
 
   const assertRelativePath = Effect.fn("CloudReview.assertRelativePath")(function* (
     cwd: string,
@@ -555,7 +560,11 @@ const make = Effect.gen(function* () {
       input.sourceKind === "commit"
         ? [input.baseRef ?? "HEAD", input.headRef ?? "HEAD"]
         : input.sourceKind === "branch-range"
-          ? [yield* resolveMergeBase(cwd, input.baseRef ?? undefined)]
+          ? [
+              isValidMergeBase(input.mergeBase)
+                ? input.mergeBase
+                : yield* resolveMergeBase(cwd, input.baseRef ?? undefined),
+            ]
           : ["HEAD"];
     const changed = yield* exec({
       cwd,
@@ -599,8 +608,14 @@ const make = Effect.gen(function* () {
             command: `git show ${shellQuote(`${revision}:${filePath}`)}`,
             allowNonZero: true,
           }).pipe(Effect.map((result) => (result.exitCode === 0 ? result.stdout : "")));
+    const oldRevision =
+      input.sourceKind === "branch-range"
+        ? isValidMergeBase(input.mergeBase)
+          ? input.mergeBase
+          : yield* resolveMergeBase(input.cwd, input.baseRef ?? undefined)
+        : (input.baseRef ?? "HEAD");
     const oldContents =
-      input.changeType === "new" ? "" : yield* readRevision(input.baseRef ?? "HEAD", input.oldPath);
+      input.changeType === "new" ? "" : yield* readRevision(oldRevision, input.oldPath);
     const newContents =
       input.changeType === "deleted"
         ? ""
