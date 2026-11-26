@@ -38,6 +38,7 @@ import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 
 import { resolveAttachmentPath } from "../attachmentStore.ts";
 import * as ServerConfig from "../config.ts";
+import * as CloudThreadPorts from "./CloudThreadPorts.ts";
 import * as CloudThreadStore from "./CloudThreadStore.ts";
 import * as CloudThreads from "./CloudThreads.ts";
 
@@ -187,6 +188,7 @@ export class CloudThreadRuntime extends Context.Service<
 
 const make = Effect.gen(function* () {
   const cloudThreads = yield* CloudThreads.CloudThreads;
+  const cloudThreadPorts = yield* CloudThreadPorts.CloudThreadPorts;
   const fileSystem = yield* FileSystem.FileSystem;
   const http = yield* HttpClient.HttpClient;
   const { attachmentsDir } = yield* ServerConfig.ServerConfig;
@@ -388,6 +390,13 @@ const make = Effect.gen(function* () {
         case "turn_started": {
           const waiting = yield* Ref.get(waitingForTurnStart);
           if (waiting !== null) yield* Deferred.succeed(waiting, undefined);
+          return;
+        }
+        case "ports": {
+          yield* cloudThreadPorts.setPorts(
+            input.threadId,
+            Array.isArray(message["ports"]) ? message["ports"] : [],
+          );
           return;
         }
         case "model_request":

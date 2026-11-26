@@ -135,6 +135,7 @@ import * as DocumentText from "./provider/DocumentText.ts";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
 import * as SandboxAccounts from "./sandbox/SandboxAccounts.ts";
 import * as SandboxLifecycle from "./sandbox/SandboxLifecycle.ts";
+import * as CloudThreadPorts from "./sandbox/CloudThreadPorts.ts";
 import * as CloudThreads from "./sandbox/CloudThreads.ts";
 import { projectPublicRemote } from "./sandbox/CloudRepository.ts";
 import * as Workflows from "./workflows/Workflows.ts";
@@ -1566,6 +1567,7 @@ export const layerWsRpc = (
       );
       const previewManager = yield* PreviewManager.PreviewManager;
       const portDiscovery = yield* PortScanner.PortDiscovery;
+      const cloudThreadPorts = yield* CloudThreadPorts.CloudThreadPorts;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
       const providerInstances = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
       const acpRegistryCatalog = yield* AcpRegistrySupport.AcpRegistryCatalog;
@@ -3573,24 +3575,40 @@ export const layerWsRpc = (
             Effect.gen(function* () {
               const configuredUrls = input.configuredUrls ?? [];
               yield* portDiscovery.retain;
-              const initial = yield* portDiscovery.scan(configuredUrls);
-              const initialScannedAt = DateTime.formatIso(yield* DateTime.now);
-              yield* Queue.offer(queue, {
-                servers: initial,
-                scannedAt: initialScannedAt,
-                configuredUrlProbing: true,
+              const initialSandbox = yield* cloudThreadPorts.snapshot;
+              let localServers = yield* portDiscovery.scan(configuredUrls);
+              let sandboxServers = initialSandbox.servers;
+              let sandboxUnavailable = initialSandbox.unavailable;
+              const offer = Effect.fn("subscribeDiscoveredLocalServers.offer")(function* () {
+                const scannedAt = DateTime.formatIso(yield* DateTime.now);
+                yield* Queue.offer(queue, {
+                  servers: [...localServers, ...sandboxServers],
+                  scannedAt,
+                  configuredUrlProbing: true,
+                  ...(sandboxUnavailable.length === 0
+                    ? {}
+                    : { sandboxPreviewUnavailable: sandboxUnavailable }),
+                });
               });
+              yield* offer();
               yield* portDiscovery.subscribe(
-                { configuredUrls, initialSnapshot: initial },
+                { configuredUrls, initialSnapshot: localServers },
                 (servers) =>
                   Effect.gen(function* () {
-                    const scannedAt = DateTime.formatIso(yield* DateTime.now);
-                    yield* Queue.offer(queue, {
-                      servers,
-                      scannedAt,
-                      configuredUrlProbing: true,
-                    });
+                    localServers = servers;
+                    yield* offer();
                   }),
+              );
+              yield* cloudThreadPorts.subscribe(() =>
+                cloudThreadPorts.snapshot.pipe(
+                  Effect.flatMap((snapshot) =>
+                    Effect.gen(function* () {
+                      sandboxServers = snapshot.servers;
+                      sandboxUnavailable = snapshot.unavailable;
+                      yield* offer();
+                    }),
+                  ),
+                ),
               );
             }),
           ),

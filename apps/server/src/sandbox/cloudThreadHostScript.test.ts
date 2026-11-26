@@ -2,12 +2,16 @@
 import * as NodeChildProcess from "node:child_process";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- the test creates a temporary workspace fixture.
 import * as NodeFSP from "node:fs/promises";
+import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- the test builds fixture paths.
 import * as NodePath from "node:path";
 import * as NodeReadline from "node:readline";
 
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { describe, expect, it } from "@effect/vitest";
+import * as Clock from "effect/Clock";
+import * as Effect from "effect/Effect";
 
 import { CLOUD_THREAD_HOST_SCRIPT } from "./cloudThreadHostScript.ts";
 
@@ -75,6 +79,46 @@ const stopHost = async (host: HostProcess) => {
   host.child.kill("SIGKILL");
   await new Promise<void>((resolve) => host.child.once("exit", () => resolve()));
 };
+
+describe("cloud thread host ports", () => {
+  it.effect("reports a listening port so the thread can preview it", () =>
+    Effect.gen(function* () {
+      if ((yield* HostProcess.Platform) !== "linux") return;
+      const root = yield* Effect.acquireRelease(
+        Effect.promise(() => NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-cloud-ports-"))),
+        (path) => Effect.promise(() => NodeFSP.rm(path, { recursive: true, force: true })),
+      );
+      const listener = NodeNet.createServer((socket) => socket.end());
+      yield* Effect.acquireRelease(
+        Effect.promise(
+          () =>
+            new Promise<NodeNet.Server>((resolve) => {
+              listener.listen(0, "127.0.0.1", () => resolve(listener));
+            }),
+        ),
+        (server) =>
+          Effect.promise(() => new Promise<void>((resolve) => server.close(() => resolve()))),
+      );
+      const address = listener.address();
+      if (address === null || typeof address === "string") throw new Error("no listener port");
+      const host = yield* Effect.acquireRelease(
+        Effect.promise(() => startHost(root)),
+        (started) => Effect.promise(() => stopHost(started)),
+      );
+      const deadline = (yield* Clock.currentTimeMillis) + 8_000;
+      while ((yield* Clock.currentTimeMillis) < deadline) {
+        const message = JSON.parse(yield* Effect.promise(() => nextLine(host.iterator))) as {
+          readonly type?: string;
+          readonly ports?: ReadonlyArray<{ readonly port?: number }>;
+        };
+        if (message.type === "ports" && message.ports?.some((port) => port.port === address.port)) {
+          return;
+        }
+      }
+      throw new Error("The host did not report the listening port.");
+    }),
+  );
+});
 
 describe("cloud thread host history", () => {
   it("reloads the conversation after the host process restarts", async () => {

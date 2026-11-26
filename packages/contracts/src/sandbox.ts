@@ -53,6 +53,8 @@ export const SandboxProviderCapabilities = Schema.Struct({
   delete: Schema.Boolean,
   snapshots: Schema.Boolean,
   privatePorts: Schema.Boolean,
+  /** Provider control-plane ports that are never app previews. */
+  reservedPorts: Schema.optionalKey(Schema.Array(PositiveInt)),
   sizes: Schema.Array(SandboxProviderSize),
   regions: Schema.Array(SandboxProviderRegion),
 });
