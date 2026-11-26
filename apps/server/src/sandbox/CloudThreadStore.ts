@@ -3,6 +3,8 @@ import {
   SandboxInstanceId,
   SandboxProviderAccountId,
   SandboxProviderKind,
+  SandboxProviderRegion,
+  SandboxProviderSize,
   ThreadId,
   TrimmedNonEmptyString,
 } from "@t3tools/contracts";
@@ -33,6 +35,9 @@ export const CloudThreadRecord = Schema.Struct({
   workspacePath: TrimmedNonEmptyString,
   /** The sandbox user's home, where attachments and the host script live. */
   homePath: TrimmedNonEmptyString,
+  template: Schema.optionalKey(TrimmedNonEmptyString),
+  size: Schema.optionalKey(SandboxProviderSize),
+  region: Schema.optionalKey(SandboxProviderRegion),
   status: Schema.Literals(["provisioning", "ready", "failed", "lost"]),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,

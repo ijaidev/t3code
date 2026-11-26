@@ -1,13 +1,25 @@
-import { SandboxProviderAccountId, type SandboxTestSandbox, ThreadId } from "@t3tools/contracts";
+import {
+  type CloudSandboxDeleteRisk,
+  type CloudSandboxState,
+  type CloudSandboxStatus,
+  type CloudSandboxSleepDisabledReason,
+  type SandboxProviderAccountId,
+  type SandboxTestSandbox,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
+import * as ServerSettings from "../serverSettings.ts";
 import * as CloudThreadPorts from "./CloudThreadPorts.ts";
 import * as CloudThreadStore from "./CloudThreadStore.ts";
 import * as SandboxAccounts from "./SandboxAccounts.ts";
@@ -21,12 +33,24 @@ const HOST_SCRIPT_PATH = ".t3/thread-host/thread-host.py";
 const THREADS_DIR = ".t3/threads";
 const READY_TIMEOUT = "30 seconds";
 const CLONE_TIMEOUT_MS = 15 * 60_000;
+const DEFAULT_IDLE_MINUTES = 10;
+// Idle sleep, not the provider's lifetime, should stop a cloud sandbox.
+const CLOUD_SANDBOX_LIFETIME_MINUTES = 24 * 60;
 
 export class CloudThreadError extends Schema.TaggedError<
   CloudThreadError,
   { readonly brand: unique symbol }
 >()("CloudThreadError", {
-  operation: Schema.Literals(["prepare", "clone", "start-host", "send", "delete", "resolve"]),
+  operation: Schema.Literals([
+    "prepare",
+    "clone",
+    "start-host",
+    "send",
+    "pause",
+    "resume",
+    "delete",
+    "resolve",
+  ]),
   threadId: Schema.optional(ThreadId),
   detail: Schema.String,
   cause: Schema.optional(Schema.Defect()),
@@ -101,6 +125,34 @@ export class CloudThreads extends Context.Service<
     ) => Effect.Effect<boolean>;
     readonly openHost: (threadId: ThreadId) => Effect.Effect<CloudHostConnection, CloudThreadError>;
     readonly deleteForThread: (threadId: ThreadId) => Effect.Effect<void, CloudThreadError>;
+    readonly getCloudSandboxState: (
+      threadId: ThreadId,
+    ) => Effect.Effect<Option.Option<CloudSandboxState>>;
+    readonly subscribeCloudSandbox: (
+      threadId: ThreadId,
+    ) => Stream.Stream<CloudSandboxState, never, never>;
+    readonly sleepCloudSandbox: (
+      threadId: ThreadId,
+    ) => Effect.Effect<CloudSandboxState, CloudThreadError>;
+    readonly wakeCloudSandbox: (
+      threadId: ThreadId,
+    ) => Effect.Effect<CloudSandboxState, CloudThreadError>;
+    readonly previewCloudSandboxDelete: (
+      threadId: ThreadId,
+    ) => Effect.Effect<
+      { readonly state: CloudSandboxState; readonly risk: CloudSandboxDeleteRisk },
+      CloudThreadError
+    >;
+    readonly deleteCloudSandbox: (input: {
+      readonly threadId: ThreadId;
+      readonly acknowledgedUnpushedChanges: boolean;
+    }) => Effect.Effect<CloudSandboxState, CloudThreadError>;
+    readonly beginTurn: (threadId: ThreadId) => Effect.Effect<void>;
+    readonly endTurn: (threadId: ThreadId) => Effect.Effect<void>;
+    readonly holdPreview: (threadId: ThreadId, tabId: string) => Effect.Effect<void>;
+    readonly releasePreview: (threadId: ThreadId, tabId: string) => Effect.Effect<void>;
+    /** Pauses every cloud sandbox idle past the configured timeout; returns how many slept. */
+    readonly sweepIdle: Effect.Effect<number>;
   }
 >()("t3/sandbox/CloudThreads") {}
 
@@ -116,6 +168,38 @@ const make = Effect.gen(function* () {
       onNone: () => Effect.void,
       onSome: (ports) => ports.clear(threadId),
     });
+
+  const settingsService = yield* ServerSettings.ServerSettingsService;
+
+  const lifecycleLock = yield* Semaphore.make(1);
+  const notifications = yield* PubSub.unbounded<ThreadId>();
+  const transitions = yield* Ref.make<ReadonlyMap<ThreadId, "waking">>(new Map());
+  const activity = yield* Ref.make<
+    ReadonlyMap<ThreadId, { readonly turns: number; readonly previews: ReadonlySet<string> }>
+  >(new Map());
+
+  const activityFor = (threadId: ThreadId) =>
+    Ref.get(activity).pipe(
+      Effect.map((current) => current.get(threadId) ?? { turns: 0, previews: new Set<string>() }),
+    );
+
+  const updateActivity = (
+    threadId: ThreadId,
+    update: (current: { readonly turns: number; readonly previews: ReadonlySet<string> }) => {
+      readonly turns: number;
+      readonly previews: ReadonlySet<string>;
+    },
+  ) =>
+    Ref.update(activity, (current) => {
+      const next = update(current.get(threadId) ?? { turns: 0, previews: new Set<string>() });
+      const map = new Map(current);
+      if (next.turns === 0 && next.previews.size === 0) map.delete(threadId);
+      else map.set(threadId, next);
+      return map;
+    });
+
+  const notify = (threadId: ThreadId) =>
+    PubSub.publish(notifications, threadId).pipe(Effect.asVoid);
 
   const getRecord: CloudThreads["Service"]["getRecord"] = Effect.fn("CloudThreads.getRecord")(
     function* (threadId) {
@@ -137,10 +221,14 @@ const make = Effect.gen(function* () {
   const requireSandbox = Effect.fn("CloudThreads.requireSandbox")(function* (threadId: ThreadId) {
     const sandbox = yield* getSandbox(threadId);
     if (Option.isNone(sandbox)) {
+      const record = yield* getRecord(threadId);
       return yield* new CloudThreadError({
         operation: "resolve",
         threadId,
-        detail: "This cloud thread's sandbox record is missing.",
+        detail:
+          Option.isSome(record) && record.value.status === "lost"
+            ? "This cloud thread's sandbox was deleted. The transcript is still here."
+            : "This cloud thread's sandbox record is missing.",
       });
     }
     return sandbox.value;
@@ -231,24 +319,502 @@ const make = Effect.gen(function* () {
     return record;
   });
 
+  const touchSandbox = Effect.fnUntraced(function* (sandbox: SandboxTestSandbox) {
+    return yield* markSandbox(sandbox, { lastActivityAt: DateTime.formatIso(yield* DateTime.now) });
+  });
+
+  const getCloudSandboxState: CloudThreads["Service"]["getCloudSandboxState"] = Effect.fn(
+    "CloudThreads.getCloudSandboxState",
+  )(function* (threadId) {
+    const [recordOption, sandboxOption, currentActivity, waking] = yield* Effect.all([
+      getRecord(threadId),
+      getSandbox(threadId),
+      activityFor(threadId),
+      Ref.get(transitions),
+    ]);
+    const record = Option.getOrNull(recordOption);
+    const sandbox = Option.getOrNull(sandboxOption);
+    if (record === null && sandbox === null) return Option.none<CloudSandboxState>();
+
+    const accountId = sandbox?.accountId ?? record?.accountId;
+    const providerKind = sandbox?.providerKind ?? record?.providerKind;
+    const resolved =
+      accountId === undefined
+        ? null
+        : yield* accounts.resolve(accountId).pipe(Effect.orElseSucceed(() => null));
+    const now = DateTime.formatIso(yield* DateTime.now);
+    const createdAt = sandbox?.createdAt ?? record?.createdAt ?? now;
+    const lastActiveAt = sandbox?.lastActivityAt ?? sandbox?.updatedAt ?? record?.updatedAt ?? now;
+
+    let status: CloudSandboxStatus;
+    if (record?.status === "lost") status = "lost";
+    else if (waking.get(threadId) === "waking") status = "waking";
+    else if (sandbox === null) {
+      status =
+        record?.status === "provisioning"
+          ? "provisioning"
+          : record?.status === "failed"
+            ? "failed"
+            : "lost";
+    } else if (sandbox.status === "provisioning") status = "provisioning";
+    else if (sandbox.status === "paused") status = "sleeping";
+    else if (sandbox.status === "deleting") status = "deleting";
+    else if (record?.status === "failed") status = "failed";
+    else status = "running";
+
+    const pauseResume = resolved?.driver.capabilities.pauseResume === true;
+    const providerDelete = resolved?.driver.capabilities.delete === true;
+    let sleepDisabledReason: CloudSandboxSleepDisabledReason | undefined;
+    if (status === "running" && sandbox !== null) {
+      if (resolved === null) sleepDisabledReason = "provider-unavailable";
+      else if (!pauseResume) sleepDisabledReason = "provider-no-sleep";
+      else if (currentActivity.turns > 0) sleepDisabledReason = "active-turn";
+      else if (currentActivity.previews.size > 0) sleepDisabledReason = "open-preview";
+    } else if (status === "provisioning" || status === "waking") {
+      sleepDisabledReason = "not-running";
+    }
+    const canSleep = status === "running" && sleepDisabledReason === undefined;
+    const canWake = status === "sleeping" && pauseResume;
+    const canDelete =
+      sandbox !== null &&
+      providerDelete &&
+      status !== "provisioning" &&
+      status !== "deleting" &&
+      status !== "lost";
+
+    return Option.some<CloudSandboxState>({
+      threadId,
+      accountId: accountId!,
+      providerKind: providerKind!,
+      providerLabel: resolved?.driver.label ?? providerKind!,
+      status,
+      sandboxId: sandbox?.id ?? null,
+      template: sandbox?.template ?? record?.template ?? "base",
+      size: sandbox?.size ?? record?.size ?? null,
+      region: sandbox?.region ?? record?.region ?? null,
+      createdAt,
+      lastActiveAt,
+      sleepingSince: sandbox?.sleepingSince ?? (status === "sleeping" ? lastActiveAt : null),
+      canSleep,
+      canWake,
+      canDelete,
+      ...(sleepDisabledReason === undefined ? {} : { sleepDisabledReason }),
+      ...(sandbox?.lastError !== undefined
+        ? { lastError: sandbox.lastError }
+        : record?.lastError === undefined
+          ? {}
+          : { lastError: record.lastError }),
+    });
+  });
+
+  const requireCloudSandboxState = Effect.fn("CloudThreads.requireCloudSandboxState")(function* (
+    threadId: ThreadId,
+  ) {
+    const state = yield* getCloudSandboxState(threadId);
+    if (Option.isNone(state)) {
+      return yield* new CloudThreadError({
+        operation: "resolve",
+        threadId,
+        detail: "This thread has no cloud sandbox.",
+      });
+    }
+    return state.value;
+  });
+
+  const readUnpushedRisk = Effect.fn("CloudThreads.readUnpushedRisk")(function* (
+    sandbox: SandboxTestSandbox,
+    record: CloudThreadStore.CloudThreadRecord,
+  ): Effect.fn.Return<CloudSandboxDeleteRisk, CloudThreadError> {
+    const { account, driver } = yield* resolveSandbox(sandbox, "delete");
+    const status = yield* run(
+      sandbox,
+      driver,
+      account,
+      "git status --porcelain",
+      "delete",
+      record.workspacePath,
+    );
+    const ahead = yield* run(
+      sandbox,
+      driver,
+      account,
+      `git rev-list --count HEAD --not --remotes`,
+      "delete",
+      record.workspacePath,
+    );
+    const changedFiles = status.stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line !== "").length;
+    const unpushedCommits = Number.parseInt(ahead.stdout.trim(), 10);
+    return {
+      hasUnpushedChanges: changedFiles > 0 || unpushedCommits > 0,
+      changedFiles,
+      unpushedCommits: Number.isFinite(unpushedCommits) ? unpushedCommits : 0,
+    };
+  });
+
+  const sleepCloudSandbox: CloudThreads["Service"]["sleepCloudSandbox"] = Effect.fn(
+    "CloudThreads.sleepCloudSandbox",
+  )(function* (threadId) {
+    return yield* lifecycleLock.withPermits(1)(
+      Effect.gen(function* () {
+        const state = yield* requireCloudSandboxState(threadId);
+        if (state.status === "sleeping") return state;
+        if (state.status !== "running") {
+          return yield* new CloudThreadError({
+            operation: "pause",
+            threadId,
+            detail: "Only a running cloud sandbox can sleep.",
+          });
+        }
+        const currentActivity = yield* activityFor(threadId);
+        if (currentActivity.turns > 0) {
+          return yield* new CloudThreadError({
+            operation: "pause",
+            threadId,
+            detail: "The sandbox has an active turn, so it stays awake.",
+          });
+        }
+        if (currentActivity.previews.size > 0) {
+          return yield* new CloudThreadError({
+            operation: "pause",
+            threadId,
+            detail: "A preview is open on the sandbox, so it stays awake.",
+          });
+        }
+        const sandbox = yield* requireSandbox(threadId);
+        const { driver } = yield* resolveSandbox(sandbox, "pause");
+        if (!driver.capabilities.pauseResume) {
+          return yield* new CloudThreadError({
+            operation: "pause",
+            threadId,
+            detail: `${driver.label} sandboxes cannot sleep.`,
+          });
+        }
+        const sleeping = yield* lifecycle.pauseTestSandbox({ sandboxId: sandbox.id }).pipe(
+          Effect.mapError(
+            (error) =>
+              new CloudThreadError({
+                operation: "pause",
+                threadId,
+                detail: error.detail,
+              }),
+          ),
+        );
+        yield* markSandbox(sleeping.sandbox, {
+          sleepingSince: DateTime.formatIso(yield* DateTime.now),
+        });
+        yield* notify(threadId);
+        return yield* requireCloudSandboxState(threadId);
+      }),
+    );
+  });
+
+  const wakeCloudSandboxUnlocked = Effect.fn("CloudThreads.wakeCloudSandboxUnlocked")(function* (
+    threadId: ThreadId,
+  ) {
+    const state = yield* requireCloudSandboxState(threadId);
+    if (state.status === "running") {
+      const sandbox = yield* getSandbox(threadId);
+      if (Option.isSome(sandbox)) yield* touchSandbox(sandbox.value);
+      return yield* requireCloudSandboxState(threadId);
+    }
+    if (state.status !== "sleeping") {
+      return yield* new CloudThreadError({
+        operation: "resume",
+        threadId,
+        detail:
+          state.status === "lost"
+            ? "This cloud thread's workspace was deleted."
+            : "The cloud sandbox is not ready to wake.",
+      });
+    }
+    const sandbox = yield* requireSandbox(threadId);
+    const { driver } = yield* resolveSandbox(sandbox, "resume");
+    if (!driver.capabilities.pauseResume) {
+      return yield* new CloudThreadError({
+        operation: "resume",
+        threadId,
+        detail: `${driver.label} sandboxes cannot be woken after sleeping.`,
+      });
+    }
+    yield* Ref.update(transitions, (current) => new Map(current).set(threadId, "waking"));
+    yield* notify(threadId);
+    const resumed = yield* lifecycle
+      .resumeTestSandbox({ sandboxId: sandbox.id })
+      .pipe(Effect.result);
+    yield* Ref.update(transitions, (current) => {
+      const next = new Map(current);
+      next.delete(threadId);
+      return next;
+    });
+    if (resumed._tag === "Failure") {
+      yield* notify(threadId);
+      return yield* new CloudThreadError({
+        operation: "resume",
+        threadId,
+        detail: resumed.failure.detail,
+      });
+    }
+    const { sleepingSince: _sleepingSince, ...awake } = resumed.success.sandbox;
+    yield* touchSandbox(awake);
+    yield* notify(threadId);
+    return yield* requireCloudSandboxState(threadId);
+  });
+
+  const wakeCloudSandbox: CloudThreads["Service"]["wakeCloudSandbox"] = (threadId) =>
+    lifecycleLock.withPermits(1)(wakeCloudSandboxUnlocked(threadId));
+
+  const previewCloudSandboxDelete: CloudThreads["Service"]["previewCloudSandboxDelete"] = Effect.fn(
+    "CloudThreads.previewCloudSandboxDelete",
+  )(function* (threadId) {
+    return yield* lifecycleLock.withPermits(1)(
+      Effect.gen(function* () {
+        const sandbox = yield* getSandbox(threadId);
+        if (Option.isNone(sandbox)) {
+          return {
+            state: yield* requireCloudSandboxState(threadId),
+            risk: { hasUnpushedChanges: false, changedFiles: 0, unpushedCommits: 0 },
+          };
+        }
+        if (sandbox.value.status === "provisioning") {
+          return yield* new CloudThreadError({
+            operation: "delete",
+            threadId,
+            detail: "Wait for the sandbox to finish provisioning before deleting it.",
+          });
+        }
+        if (sandbox.value.status === "paused") {
+          yield* wakeCloudSandboxUnlocked(threadId);
+        }
+        const record = yield* getRecord(threadId);
+        if (Option.isNone(record)) {
+          return yield* new CloudThreadError({
+            operation: "delete",
+            threadId,
+            detail: "This cloud thread's record is missing, so its changes cannot be checked.",
+          });
+        }
+        const current = yield* requireSandbox(threadId);
+        return {
+          state: yield* requireCloudSandboxState(threadId),
+          risk: yield* readUnpushedRisk(current, record.value),
+        };
+      }),
+    );
+  });
+
+  const markCloudLost = Effect.fnUntraced(function* (threadId: ThreadId) {
+    const record = yield* getRecord(threadId);
+    if (Option.isNone(record) || record.value.status === "lost") return;
+    const { lastError: _lastError, ...rest } = record.value;
+    yield* cloudThreads
+      .upsert({
+        ...rest,
+        status: "lost",
+        updatedAt: DateTime.formatIso(yield* DateTime.now),
+      })
+      .pipe(Effect.ignore);
+  });
+
+  const deleteCloudSandbox: CloudThreads["Service"]["deleteCloudSandbox"] = Effect.fn(
+    "CloudThreads.deleteCloudSandbox",
+  )(function* (input) {
+    return yield* lifecycleLock.withPermits(1)(
+      Effect.gen(function* () {
+        const sandbox = yield* getSandbox(input.threadId);
+        if (Option.isNone(sandbox)) {
+          yield* markCloudLost(input.threadId);
+          yield* notify(input.threadId);
+          return yield* requireCloudSandboxState(input.threadId);
+        }
+        if (sandbox.value.status === "provisioning") {
+          return yield* new CloudThreadError({
+            operation: "delete",
+            threadId: input.threadId,
+            detail: "Wait for the sandbox to finish provisioning before deleting it.",
+          });
+        }
+        const record = yield* getRecord(input.threadId);
+        if (Option.isNone(record)) {
+          return yield* new CloudThreadError({
+            operation: "delete",
+            threadId: input.threadId,
+            detail: "This cloud thread's record is missing, so its sandbox cannot be deleted.",
+          });
+        }
+        const { driver } = yield* resolveSandbox(sandbox.value, "delete");
+        if (!driver.capabilities.delete) {
+          return yield* new CloudThreadError({
+            operation: "delete",
+            threadId: input.threadId,
+            detail: `${driver.label} sandboxes cannot be deleted from T3 Code.`,
+          });
+        }
+        if (sandbox.value.status === "paused") {
+          yield* wakeCloudSandboxUnlocked(input.threadId);
+        }
+        const current = yield* requireSandbox(input.threadId);
+        const risk = yield* readUnpushedRisk(current, record.value);
+        if (risk.hasUnpushedChanges && !input.acknowledgedUnpushedChanges) {
+          return yield* new CloudThreadError({
+            operation: "delete",
+            threadId: input.threadId,
+            detail: `This sandbox has ${risk.changedFiles} changed file(s) and ${risk.unpushedCommits} unpushed commit(s). Confirm that they can be lost before deleting it.`,
+          });
+        }
+        yield* markSandbox(current, { status: "deleting" });
+        yield* notify(input.threadId);
+        const deleted = yield* lifecycle
+          .deleteThreadSandbox({ sandboxId: current.id })
+          .pipe(Effect.result);
+        if (deleted._tag === "Failure") {
+          yield* markSandbox(current, { status: "running" });
+          yield* notify(input.threadId);
+          return yield* new CloudThreadError({
+            operation: "delete",
+            threadId: input.threadId,
+            detail: deleted.failure.detail,
+          });
+        }
+        yield* Ref.update(activity, (currentActivity) => {
+          const next = new Map(currentActivity);
+          next.delete(input.threadId);
+          return next;
+        });
+        yield* markCloudLost(input.threadId);
+        yield* notify(input.threadId);
+        return yield* requireCloudSandboxState(input.threadId);
+      }),
+    );
+  });
+
   const deleteForThread: CloudThreads["Service"]["deleteForThread"] = Effect.fn(
     "CloudThreads.deleteForThread",
   )(function* (threadId) {
     const sandbox = yield* getSandbox(threadId);
-    if (Option.isNone(sandbox)) return;
-    yield* lifecycle.deleteThreadSandbox({ sandboxId: sandbox.value.id }).pipe(
-      Effect.mapError(
-        (error) =>
-          new CloudThreadError({
-            operation: "delete",
-            threadId,
-            detail: error.detail,
-          }),
-      ),
-    );
+    if (Option.isSome(sandbox)) {
+      yield* lifecycle.deleteThreadSandbox({ sandboxId: sandbox.value.id }).pipe(
+        Effect.mapError(
+          (error) =>
+            new CloudThreadError({
+              operation: "delete",
+              threadId,
+              detail: error.detail,
+            }),
+        ),
+      );
+    }
+    yield* Ref.update(activity, (current) => {
+      const next = new Map(current);
+      next.delete(threadId);
+      return next;
+    });
     yield* cloudThreads.remove(threadId).pipe(Effect.ignore);
     yield* clearPorts(threadId);
+    yield* notify(threadId);
   });
+
+  const beginTurn: CloudThreads["Service"]["beginTurn"] = Effect.fn("CloudThreads.beginTurn")(
+    function* (threadId) {
+      yield* updateActivity(threadId, (current) => ({ ...current, turns: current.turns + 1 }));
+      const sandbox = yield* getSandbox(threadId);
+      if (Option.isSome(sandbox)) yield* touchSandbox(sandbox.value).pipe(Effect.ignore);
+      yield* notify(threadId);
+    },
+  );
+
+  const endTurn: CloudThreads["Service"]["endTurn"] = Effect.fn("CloudThreads.endTurn")(
+    function* (threadId) {
+      yield* updateActivity(threadId, (current) => ({
+        ...current,
+        turns: Math.max(0, current.turns - 1),
+      }));
+      const sandbox = yield* getSandbox(threadId);
+      if (Option.isSome(sandbox)) yield* touchSandbox(sandbox.value).pipe(Effect.ignore);
+      yield* notify(threadId);
+    },
+  );
+
+  const holdPreview: CloudThreads["Service"]["holdPreview"] = Effect.fn("CloudThreads.holdPreview")(
+    function* (threadId, tabId) {
+      let sandbox = yield* getSandbox(threadId);
+      if (Option.isNone(sandbox)) return;
+      // A preview needs the sandbox running; opening one wakes a sleeping sandbox first.
+      if (sandbox.value.status === "paused") {
+        yield* wakeCloudSandbox(threadId).pipe(Effect.ignore);
+        sandbox = yield* getSandbox(threadId);
+        if (Option.isNone(sandbox)) return;
+      }
+      yield* updateActivity(threadId, (current) => ({
+        ...current,
+        previews: new Set(current.previews).add(tabId),
+      }));
+      yield* touchSandbox(sandbox.value).pipe(Effect.ignore);
+      yield* notify(threadId);
+    },
+  );
+
+  const releasePreview: CloudThreads["Service"]["releasePreview"] = Effect.fn(
+    "CloudThreads.releasePreview",
+  )(function* (threadId, tabId) {
+    const sandbox = yield* getSandbox(threadId);
+    if (Option.isNone(sandbox)) return;
+    yield* updateActivity(threadId, (current) => {
+      const previews = new Set(current.previews);
+      previews.delete(tabId);
+      return { ...current, previews };
+    });
+    yield* touchSandbox(sandbox.value).pipe(Effect.ignore);
+    yield* notify(threadId);
+  });
+
+  const presentState = (threadId: ThreadId) =>
+    getCloudSandboxState(threadId).pipe(
+      Effect.map((state): ReadonlyArray<CloudSandboxState> =>
+        Option.isSome(state) ? [state.value] : [],
+      ),
+    );
+
+  const subscribeCloudSandbox: CloudThreads["Service"]["subscribeCloudSandbox"] = (threadId) =>
+    Stream.unwrap(
+      PubSub.subscribe(notifications).pipe(
+        Effect.map((subscription) =>
+          Stream.concat(
+            Stream.fromEffect(presentState(threadId)).pipe(Stream.flatMap(Stream.fromIterable)),
+            Stream.fromSubscription(subscription).pipe(
+              Stream.filter((changed) => changed === threadId),
+              Stream.mapEffect(() => presentState(threadId)),
+              Stream.flatMap(Stream.fromIterable),
+            ),
+          ),
+        ),
+      ),
+    );
+
+  const sweepIdle: CloudThreads["Service"]["sweepIdle"] = Effect.suspend(() =>
+    Effect.gen(function* () {
+      const settings = yield* settingsService.getSettings.pipe(Effect.orElseSucceed(() => null));
+      if (settings === null) return 0;
+      const idleMs = (settings.cloudSandboxIdleMinutes ?? DEFAULT_IDLE_MINUTES) * 60_000;
+      const now = yield* DateTime.now;
+      const records = yield* store.list.pipe(Effect.orElseSucceed(() => []));
+      let slept = 0;
+      for (const sandbox of records) {
+        if (sandbox.threadId === undefined || sandbox.status !== "running") continue;
+        const lastActive = Date.parse(sandbox.lastActivityAt ?? sandbox.updatedAt);
+        if (!Number.isFinite(lastActive) || DateTime.toEpochMillis(now) - lastActive < idleMs) {
+          continue;
+        }
+        const currentActivity = yield* activityFor(sandbox.threadId);
+        if (currentActivity.turns > 0 || currentActivity.previews.size > 0) continue;
+        const result = yield* sleepCloudSandbox(sandbox.threadId).pipe(Effect.result);
+        if (result._tag === "Success") slept += 1;
+      }
+      return slept;
+    }),
+  );
 
   const prepare: CloudThreads["Service"]["prepare"] = Effect.fn("CloudThreads.prepare")(
     function* (input) {
@@ -272,7 +838,7 @@ const make = Effect.gen(function* () {
         .createThreadSandbox({
           threadId: input.threadId,
           accountId: input.accountId,
-          timeoutMinutes: 60,
+          timeoutMinutes: CLOUD_SANDBOX_LIFETIME_MINUTES,
         })
         .pipe(
           Effect.mapError(
@@ -284,11 +850,13 @@ const make = Effect.gen(function* () {
               }),
           ),
         );
+      yield* notify(input.threadId);
       const cleanup = Effect.fn("CloudThreads.cleanup")(function* (
         detail: string,
         cause?: unknown,
       ) {
         yield* lifecycle.deleteThreadSandbox({ sandboxId: sandbox.id }).pipe(Effect.ignore);
+        yield* notify(input.threadId);
         return yield* new CloudThreadError({
           operation: "prepare",
           threadId: input.threadId,
@@ -359,6 +927,9 @@ const make = Effect.gen(function* () {
             baseRef: input.baseRef,
             workspacePath,
             homePath,
+            template: ready.template,
+            ...(ready.size === undefined ? {} : { size: ready.size }),
+            ...(ready.region === undefined ? {} : { region: ready.region }),
             status: "ready",
             createdAt: now,
             updatedAt: now,
@@ -369,6 +940,7 @@ const make = Effect.gen(function* () {
                 cleanup(`Could not save the cloud thread state: ${error.message}`, error),
             }),
           );
+        yield* notify(input.threadId);
         return ready;
       });
     },
@@ -396,6 +968,8 @@ const make = Effect.gen(function* () {
 
   const openHost: CloudThreads["Service"]["openHost"] = Effect.fn("CloudThreads.openHost")(
     function* (threadId) {
+      // Waking blocks here, so a turn starts only after the sandbox is running again.
+      yield* wakeCloudSandbox(threadId);
       const sandbox = yield* requireSandbox(threadId);
       const { account, driver } = yield* resolveSandbox(sandbox, "start-host");
       if (driver.startProcess === undefined) {
@@ -411,28 +985,6 @@ const make = Effect.gen(function* () {
           threadId,
           detail: "The sandbox is still provisioning. Try again in a moment.",
         });
-      }
-      const info = yield* driver.get(account, sandbox.providerSandboxId).pipe(
-        Effect.mapError(
-          (error) =>
-            new CloudThreadError({
-              operation: "start-host",
-              threadId,
-              detail: error.detail,
-            }),
-        ),
-      );
-      if (info.status === "paused") {
-        yield* driver.resume(account, sandbox.providerSandboxId).pipe(
-          Effect.mapError(
-            (error) =>
-              new CloudThreadError({
-                operation: "start-host",
-                threadId,
-                detail: error.detail,
-              }),
-          ),
-        );
       }
       const home = yield* run(sandbox, driver, account, 'printf %s "$HOME"', "start-host");
       const hostPath = `${home.stdout.trim()}/${HOST_SCRIPT_PATH}`;
@@ -556,6 +1108,17 @@ const make = Effect.gen(function* () {
     writeAttachment,
     openHost,
     deleteForThread,
+    getCloudSandboxState,
+    subscribeCloudSandbox,
+    sleepCloudSandbox,
+    wakeCloudSandbox,
+    previewCloudSandboxDelete,
+    deleteCloudSandbox,
+    beginTurn,
+    endTurn,
+    holdPreview,
+    releasePreview,
+    sweepIdle,
   });
 });
 

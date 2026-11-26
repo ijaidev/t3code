@@ -95,6 +95,8 @@ const accountsLayer = (driver: SandboxProviderDriver) =>
             template: "base",
           },
           driver,
+          size: null,
+          region: null,
         }),
     }),
   );

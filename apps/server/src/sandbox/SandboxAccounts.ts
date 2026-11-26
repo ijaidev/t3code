@@ -7,6 +7,8 @@ import {
   type SandboxProviderAccountConfig,
   type SandboxProviderAccountSummary,
   type SandboxProviderListResult,
+  type SandboxProviderRegion,
+  type SandboxProviderSize,
   type ServerSettingsError,
 } from "@t3tools/contracts";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
@@ -24,6 +26,10 @@ import * as SandboxProviderRegistry from "./SandboxProviderRegistry.ts";
 export type ResolvedSandboxAccount = {
   readonly account: SandboxProviderAccount;
   readonly driver: SandboxProviderDriver;
+  /** The account's selected provider-declared size, or the provider's first. */
+  readonly size: SandboxProviderSize | null;
+  /** The account's selected provider-declared region, or the provider's first. */
+  readonly region: SandboxProviderRegion | null;
 };
 
 const accountSummary = (
@@ -105,6 +111,14 @@ const make = Effect.gen(function* () {
         detail: `${account.label} has no API key. Reconnect the account with a key.`,
       });
     }
+    const size =
+      driver.capabilities.sizes.find((candidate) => candidate.id === account.sizeId) ??
+      driver.capabilities.sizes[0] ??
+      null;
+    const region =
+      driver.capabilities.regions.find((candidate) => candidate.id === account.regionId) ??
+      driver.capabilities.regions[0] ??
+      null;
     return {
       account: {
         id: accountId,
@@ -114,6 +128,8 @@ const make = Effect.gen(function* () {
         template: account.template,
       },
       driver,
+      size,
+      region,
     } satisfies ResolvedSandboxAccount;
   });
 
