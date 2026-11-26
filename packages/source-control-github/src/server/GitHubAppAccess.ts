@@ -66,6 +66,17 @@ export class GitHubAppAccess extends Context.Service<
       GitHubRequestPolicy.GitHubHeldCredential,
       GitHubRequestPolicy.GitHubApiError
     >;
+    /**
+     * The app sign-in's short-lived credential for a repository it is installed on. None when the
+     * installation does not cover it; personal and saved tokens are never returned.
+     */
+    readonly shortLivedCredentialFor: (
+      host: string,
+      repository: string,
+    ) => Effect.Effect<
+      Option.Option<GitHubRequestPolicy.GitHubHeldCredential>,
+      GitHubRequestPolicy.GitHubApiError
+    >;
   }
 >()("@t3tools/source-control-github/server/GitHubAppAccess") {}
 
@@ -210,7 +221,14 @@ export const make = Effect.gen(function* () {
       .pipe(Effect.catch(() => api.credential(host)));
   });
 
-  return GitHubAppAccess.of({ reach, viewer, credentialFor });
+  const shortLivedCredentialFor: GitHubAppAccess["Service"]["shortLivedCredentialFor"] = Effect.fn(
+    "GitHubAppAccess.shortLivedCredentialFor",
+  )(function* (host, repository) {
+    if ((yield* coverageFor(host, repository)) !== "covered") return Option.none();
+    return yield* api.appCredential(host);
+  });
+
+  return GitHubAppAccess.of({ reach, viewer, credentialFor, shortLivedCredentialFor });
 });
 
 export const layer = Layer.effect(GitHubAppAccess, make);

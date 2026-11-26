@@ -1207,27 +1207,74 @@ export const make = Effect.gen(function* () {
     ),
     repositoryCredential: Effect.fn("GitHubSourceControlProvider.repositoryCredential")(
       function* (input) {
-        const locator = yield* resolveRepository(input);
-        const held = yield* appAccess.credentialFor(
-          locator.host,
-          `${locator.owner}/${locator.name}`,
-        );
+        const host =
+          contextHost(input.context) ?? environment.GH_HOST?.trim().toLowerCase() ?? "github.com";
+        const fromRepository =
+          input.repository === undefined
+            ? null
+            : parseGitHubRepositorySelector(input.repository, host);
+        const fromContext =
+          input.context === undefined
+            ? null
+            : (() => {
+                const remote = normalizeGitRemoteUrl(input.context.remoteUrl);
+                return parseGitHubRepositorySelector(
+                  `${host}/${remote.slice(remote.indexOf("/") + 1)}`,
+                  host,
+                );
+              })();
+        const locator = fromRepository ?? fromContext;
+        if (locator === null) {
+          return yield* failure(
+            "GitHub needs the repository name before it can provide a sandbox credential.",
+            new GitHubRepositoryLookupError({
+              userFacingDetail:
+                "GitHub needs the repository name before it can provide a sandbox credential.",
+            }),
+          );
+        }
+        // Never read the server's checkout here: a forgotten cwd once scoped sandbox work to
+        // whatever repository the server happened to run in.
+        const held = yield* appAccess
+          .shortLivedCredentialFor(locator.host, `${locator.owner}/${locator.name}`)
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new GitHubFailure({
+                  detail: "GitHub App access could not be checked for this repository.",
+                  cause,
+                }),
+            ),
+          );
+        if (Option.isNone(held)) {
+          return yield* failure(
+            "This repository needs the GitHub App installation for sandbox Git. Reconnect GitHub in Settings → Source control & issues.",
+            new GitHubRepositoryLookupError({
+              userFacingDetail:
+                "This repository needs the GitHub App installation for sandbox Git. Reconnect GitHub in Settings → Source control & issues.",
+            }),
+          );
+        }
         return {
           username: "x-access-token",
-          token: Redacted.value(held.token),
+          token: Redacted.value(held.value.token),
         };
       },
       (effect, input) =>
         effect.pipe(
-          Effect.mapError(
-            (cause) =>
-              new SourceControlProviderError({
-                provider: SourceControlProviderKind.make("github"),
-                operation: "repositoryCredential",
-                cwd: input.cwd,
-                detail: "GitHub could not provide a repository credential.",
-                cause,
-              }),
+          Effect.mapError((cause) =>
+            providerError(
+              "repositoryCredential",
+              input.cwd,
+              input.repository === undefined ? undefined : { repository: input.repository },
+            )(
+              cause._tag === "GitHubFailure"
+                ? cause
+                : new GitHubFailure({
+                    detail: "GitHub could not provide a repository credential.",
+                    cause,
+                  }),
+            ),
           ),
         ),
     ),

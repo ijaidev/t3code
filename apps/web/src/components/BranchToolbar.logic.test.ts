@@ -13,6 +13,7 @@ import {
   resolveBranchSelectionTarget,
   resolveDraftEnvModeAfterBranchChange,
   resolveEffectiveEnvMode,
+  resolveBranchToolbarCwd,
   resolveBranchToolbarPrBranch,
   resolveConfirmedSelectedRef,
   resolveDefaultWorktreeBaseBranch,
@@ -467,5 +468,34 @@ describe("resolveConfirmedSelectedRef", () => {
     expect(resolveConfirmedSelectedRef(listed, refs === null ? null : { refs }).worktreePath).toBe(
       expected,
     );
+  });
+});
+
+describe("resolveBranchToolbarCwd", () => {
+  it("prefers the sandbox checkout for a cloud thread", () => {
+    expect(
+      resolveBranchToolbarCwd({
+        cloudWorkspacePath: "/home/t3/.t3/threads/thread-1",
+        worktreePath: null,
+        projectCwd: "/repo",
+      }),
+    ).toBe("/home/t3/.t3/threads/thread-1");
+  });
+
+  it("keeps a local worktree or project checkout", () => {
+    expect(
+      resolveBranchToolbarCwd({
+        cloudWorkspacePath: null,
+        worktreePath: "/repo-worktree",
+        projectCwd: "/repo",
+      }),
+    ).toBe("/repo-worktree");
+    expect(
+      resolveBranchToolbarCwd({
+        cloudWorkspacePath: null,
+        worktreePath: null,
+        projectCwd: "/repo",
+      }),
+    ).toBe("/repo");
   });
 });

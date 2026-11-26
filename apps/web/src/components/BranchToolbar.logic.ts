@@ -155,6 +155,18 @@ export const WORKTREE_SUBMODULES_LABELS: Record<WorktreeSubmodules, string> = {
   none: msg("Skip"),
 };
 
+/**
+ * A cloud thread's branch reads and actions belong to its sandbox checkout. Local threads keep
+ * their worktree, and drafts fall back to the project checkout until one exists.
+ */
+export function resolveBranchToolbarCwd(input: {
+  readonly cloudWorkspacePath: string | null;
+  readonly worktreePath: string | null;
+  readonly projectCwd: string | null;
+}): string | null {
+  return input.cloudWorkspacePath ?? input.worktreePath ?? input.projectCwd;
+}
+
 export function resolveCurrentWorkspaceLabel(
   activeWorktreePath: string | null,
   resolve: MessageResolver = m,

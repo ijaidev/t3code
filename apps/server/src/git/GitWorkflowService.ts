@@ -648,18 +648,55 @@ export const make = Effect.gen(function* () {
       );
     }),
     createRef: Effect.fn("GitWorkflowService.createRef")(function (input) {
-      return ensureGitCommand("GitWorkflowService.createRef", input.cwd).pipe(
-        Effect.flatMap((handle) =>
-          input.switchRef
-            ? withCheckoutLease(handle.repository.rootPath, git.createRef(input))
-            : git.createRef(input),
+      return cloudRecord(input.cwd).pipe(
+        Effect.flatMap((record) =>
+          Option.isSome(record) && Option.isSome(cloud)
+            ? cloud.value.createRef(input).pipe(
+                Effect.mapError((error) =>
+                  error._tag === "GitCommandError"
+                    ? error
+                    : new GitCommandError({
+                        operation: "GitWorkflowService.createRef",
+                        command: "git branch",
+                        cwd: input.cwd,
+                        detail: error.message,
+                      }),
+                ),
+              )
+            : ensureGitCommand("GitWorkflowService.createRef", input.cwd).pipe(
+                Effect.flatMap((handle) =>
+                  input.switchRef
+                    ? withCheckoutLease(handle.repository.rootPath, git.createRef(input))
+                    : git.createRef(input),
+                ),
+              ),
         ),
       );
     }),
     switchRef: Effect.fn("GitWorkflowService.switchRef")(function (input) {
-      return ensureGitCommand("GitWorkflowService.switchRef", input.cwd).pipe(
-        Effect.flatMap((handle) =>
-          withCheckoutLease(handle.repository.rootPath, Effect.scoped(git.switchRef(input))),
+      return cloudRecord(input.cwd).pipe(
+        Effect.flatMap((record) =>
+          Option.isSome(record) && Option.isSome(cloud)
+            ? cloud.value.switchRef(input).pipe(
+                Effect.mapError((error) =>
+                  error._tag === "GitCommandError"
+                    ? error
+                    : new GitCommandError({
+                        operation: "GitWorkflowService.switchRef",
+                        command: "git switch",
+                        cwd: input.cwd,
+                        detail: error.message,
+                      }),
+                ),
+              )
+            : ensureGitCommand("GitWorkflowService.switchRef", input.cwd).pipe(
+                Effect.flatMap((handle) =>
+                  withCheckoutLease(
+                    handle.repository.rootPath,
+                    Effect.scoped(git.switchRef(input)),
+                  ),
+                ),
+              ),
         ),
       );
     }),

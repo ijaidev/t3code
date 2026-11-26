@@ -10,10 +10,14 @@ import {
   type GitRunStackedActionInput,
   type GitRunStackedActionResult,
   type SourceControlProviderInfo,
+  type VcsCreateRefInput,
+  type VcsCreateRefResult,
   type VcsListRefsInput,
   type VcsListRefsResult,
   type VcsPullResult,
   type VcsStatusLocalResult,
+  type VcsSwitchRefInput,
+  type VcsSwitchRefResult,
   type VcsStatusRemoteResult,
   type VcsStatusResult,
 } from "@t3tools/contracts";
@@ -295,6 +299,12 @@ export class CloudThreadGit extends Context.Service<
     readonly pullCurrentBranch: (
       cwd: string,
     ) => Effect.Effect<VcsPullResult, GitManagerServiceError>;
+    readonly createRef: (
+      input: VcsCreateRefInput,
+    ) => Effect.Effect<VcsCreateRefResult, GitManagerServiceError>;
+    readonly switchRef: (
+      input: VcsSwitchRefInput,
+    ) => Effect.Effect<VcsSwitchRefResult, GitManagerServiceError>;
   }
 >()("t3/sandbox/CloudThreadGit") {}
 
@@ -467,6 +477,13 @@ const make = Effect.gen(function* () {
     });
     if (existing[0] !== undefined) return { status: "opened_existing" as const, pr: existing[0] };
     const baseBranch = yield* defaultBranchFor(input.record);
+    if (input.branch === baseBranch) {
+      return yield* failure(
+        "CloudThreadGit.createPullRequest",
+        input.record.workspacePath,
+        `${baseBranch} is the base branch. Use a feature branch before opening a pull request.`,
+      );
+    }
     const bodyPath = path.join(
       yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-cloud-pr-" }),
       "body.md",
@@ -506,6 +523,20 @@ const make = Effect.gen(function* () {
         action === "commit_push_pr" ||
         action === "create_pr";
       const wantsPr = action === "create_pr" || action === "commit_push_pr";
+      if (wantsPr && input.featureBranch !== true && before.parsed.refName !== null) {
+        const baseBranch = yield* defaultBranchFor(record);
+        if (before.parsed.refName === baseBranch) {
+          const provider = yield* providerFor(registry, record);
+          const existing = yield* readPullRequest(record, before.parsed.refName, provider);
+          if (existing === null) {
+            return yield* failure(
+              "CloudThreadGit.runStackedAction",
+              input.cwd,
+              `${baseBranch} is the base branch. Use a feature branch before opening a pull request.`,
+            );
+          }
+        }
+      }
       const phases = [
         ...(input.featureBranch === true ? (["branch"] as const) : []),
         ...(wantsCommit ? (["commit"] as const) : []),
@@ -666,13 +697,6 @@ const make = Effect.gen(function* () {
           );
         }
         const baseBranch = yield* defaultBranchFor(record);
-        if (branch === baseBranch) {
-          return yield* failure(
-            "CloudThreadGit.runStackedAction",
-            input.cwd,
-            `${baseBranch} is the base branch. Use a feature branch before opening a pull request.`,
-          );
-        }
         const title =
           commit.status === "created" && commit.subject !== undefined
             ? commit.subject
@@ -811,6 +835,38 @@ const make = Effect.gen(function* () {
     };
   });
 
+  const createRef: CloudThreadGit["Service"]["createRef"] = Effect.fn("CloudThreadGit.createRef")(
+    function* (input) {
+      const record = yield* requireRecord(input.cwd);
+      yield* run({
+        operation: "CloudThreadGit.createRef",
+        record,
+        command:
+          input.switchRef === true
+            ? `git switch -c ${shellQuote(input.refName)}`
+            : `git branch ${shellQuote(input.refName)}`,
+      });
+      return { refName: input.refName };
+    },
+  );
+
+  const switchRef: CloudThreadGit["Service"]["switchRef"] = Effect.fn("CloudThreadGit.switchRef")(
+    function* (input) {
+      const record = yield* requireRecord(input.cwd);
+      yield* run({
+        operation: "CloudThreadGit.switchRef",
+        record,
+        command: `git switch ${shellQuote(input.refName)}`,
+      });
+      const current = yield* run({
+        operation: "CloudThreadGit.currentBranch",
+        record,
+        command: "git branch --show-current",
+      });
+      return { refName: current.stdout.trim() || input.refName };
+    },
+  );
+
   return CloudThreadGit.of({
     forCwd,
     currentBranch,
@@ -820,6 +876,8 @@ const make = Effect.gen(function* () {
     runStackedAction,
     listRefs,
     pullCurrentBranch,
+    createRef,
+    switchRef,
   });
 });
 

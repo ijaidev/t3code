@@ -39,20 +39,21 @@ const record = {
   updatedAt: "2026-11-24T00:00:00Z",
 };
 
-const statusOutput = [
-  "@@STATUS@@",
-  "# branch.oid 0123456789012345678901234567890123456789",
-  "# branch.head feature",
-  "# branch.upstream origin/feature",
-  "# branch.ab +1 -0",
-  "@@NUMSTAT@@",
-  "@@UNTRACKED@@",
-  "@@REMOTES@@",
-  "origin\thttps://github.com/acme/private.git (fetch)",
-  "origin\thttps://github.com/acme/private.git (push)",
-  "@@DEFAULT@@",
-  "refs/remotes/origin/main",
-].join("\n");
+const statusOutput = (branch: string) =>
+  [
+    "@@STATUS@@",
+    "# branch.oid 0123456789012345678901234567890123456789",
+    `# branch.head ${branch}`,
+    "# branch.upstream origin/feature",
+    "# branch.ab +1 -0",
+    "@@NUMSTAT@@",
+    "@@UNTRACKED@@",
+    "@@REMOTES@@",
+    "origin\thttps://github.com/acme/private.git (fetch)",
+    "origin\thttps://github.com/acme/private.git (push)",
+    "@@DEFAULT@@",
+    "refs/remotes/origin/main",
+  ].join("\n");
 
 const pullRequest = {
   provider: "github",
@@ -69,6 +70,7 @@ interface FakeState {
   readonly execs: Ref.Ref<
     ReadonlyArray<{ command: string; envs?: Readonly<Record<string, string>> }>
   >;
+  statusBranch: string;
   openPullRequests: number;
 }
 
@@ -97,7 +99,7 @@ const testLayer = (state: FakeState) => {
           { command: input.command, ...(input.envs === undefined ? {} : { envs: input.envs }) },
         ]);
         if (input.command.includes("@@STATUS@@")) {
-          return { exitCode: 0, stdout: statusOutput, stderr: "" };
+          return { exitCode: 0, stdout: statusOutput(state.statusBranch), stderr: "" };
         }
         if (input.command.includes("git diff --cached --quiet")) {
           return { exitCode: 1, stdout: "", stderr: "" };
@@ -146,19 +148,73 @@ const testLayer = (state: FakeState) => {
   );
 };
 
-const makeState = Effect.gen(function* () {
-  return {
-    execs: yield* Ref.make<
-      ReadonlyArray<{ command: string; envs?: Readonly<Record<string, string>> }>
-    >([]),
-    openPullRequests: 0,
-  } satisfies FakeState;
-});
+const makeState = (overrides: Partial<FakeState> = {}) =>
+  Effect.gen(function* () {
+    return {
+      execs: yield* Ref.make<
+        ReadonlyArray<{ command: string; envs?: Readonly<Record<string, string>> }>
+      >([]),
+      statusBranch: "feature",
+      openPullRequests: 0,
+      ...overrides,
+    } satisfies FakeState;
+  });
 
 describe("cloud thread git", () => {
+  it.effect("refuses a pull request action on the base branch before committing or pushing", () => {
+    const run = Effect.gen(function* () {
+      const state = yield* makeState({ statusBranch: "main" });
+      return yield* Effect.gen(function* () {
+        const git = yield* CloudThreadGit.CloudThreadGit;
+        const error = yield* Effect.flip(
+          git.runStackedAction(
+            {
+              actionId: "action-base",
+              cwd: record.workspacePath,
+              action: "commit_push_pr",
+              commitMessage: "Update cloud thread",
+            },
+            {},
+          ),
+        );
+        expect(error._tag).toBe("GitManagerError");
+        if (error._tag === "GitManagerError") {
+          expect(error.detail).toContain("main is the base branch");
+        }
+        const execs = yield* Ref.get(state.execs);
+        const commands = execs.map((entry) => entry.command);
+        expect(commands.some((command) => command.includes("git add"))).toBe(false);
+        expect(commands.some((command) => command.includes("git push"))).toBe(false);
+      }).pipe(Effect.provide(testLayer(state)));
+    });
+    return run;
+  });
+
+  it.effect("allows a base-branch action when that branch already has an open pull request", () => {
+    const run = Effect.gen(function* () {
+      const state = yield* makeState({ statusBranch: "main", openPullRequests: 1 });
+      return yield* Effect.gen(function* () {
+        const git = yield* CloudThreadGit.CloudThreadGit;
+        const result = yield* git.runStackedAction(
+          {
+            actionId: "action-existing",
+            cwd: record.workspacePath,
+            action: "commit_push_pr",
+            commitMessage: "Update cloud thread",
+          },
+          {},
+        );
+        expect(result.pr.status).toBe("opened_existing");
+        const execs = yield* Ref.get(state.execs);
+        expect(execs.some((entry) => entry.command.includes("git push"))).toBe(true);
+      }).pipe(Effect.provide(testLayer(state)));
+    });
+    return run;
+  });
+
   it.effect("pushes and opens a pull request without putting the credential in the command", () => {
     const run = Effect.gen(function* () {
-      const state = yield* makeState;
+      const state = yield* makeState();
       return yield* Effect.gen(function* () {
         const git = yield* CloudThreadGit.CloudThreadGit;
         const result = yield* git.runStackedAction(

@@ -14,6 +14,8 @@ import { cascadeRebaseStack } from "./githubStackRebase.ts";
 const layer = Layer.mergeAll(
   Layer.mock(GitHubAppAccess.GitHubAppAccess)({
     credentialFor: () => Effect.succeed({ token: Redacted.make("token"), fingerprint: "fp" }),
+    shortLivedCredentialFor: () =>
+      Effect.succeedSome({ token: Redacted.make("token"), fingerprint: "fp", source: "app" }),
   }),
   TestSourceControlHost.layerWithRealGit(),
 ).pipe(Layer.provideMerge(NodeServices.layer));

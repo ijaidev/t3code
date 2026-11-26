@@ -106,6 +106,8 @@ const runGitHubStackAction = (send: Send, input: Parameters<typeof runStackActio
         ),
         Layer.mock(GitHubAppAccess.GitHubAppAccess)({
           credentialFor: () => Effect.succeed({ token: Redacted.make("token"), fingerprint: "fp" }),
+          shortLivedCredentialFor: () =>
+            Effect.succeedSome({ token: Redacted.make("token"), fingerprint: "fp", source: "app" }),
         }),
         Layer.succeed(HttpClient.HttpClient, graphQlHttp(send)),
       ),

@@ -411,7 +411,25 @@ const make = Effect.gen(function* () {
             CloudThreadError: (error) => cleanup(error.detail, error),
           }),
         );
-        const credential = yield* credentials.resolve(input.cloneUrl);
+        // A public clone must not receive a credential at all. Probe first, then resolve only for
+        // a remote that asks for authentication; a private clone retries with the app credential.
+        const probe = yield* driver
+          .exec({
+            account,
+            providerSandboxId: sandbox.providerSandboxId!,
+            command: `git ls-remote --heads ${shellQuote(input.cloneUrl)} >/dev/null 2>&1`,
+            envs: { GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "" },
+            timeoutMs: 60_000,
+          })
+          .pipe(Effect.orElseSucceed(() => ({ exitCode: 1, stdout: "", stderr: "" })));
+        const credential =
+          probe.exitCode === 0
+            ? Option.none<CloudRepositoryCredential.CloudRepositoryCredential>()
+            : yield* credentials.resolve(input.cloneUrl);
+        const credentialHint =
+          probe.exitCode !== 0 && Option.isNone(credential)
+            ? " If this repository is private, connect its GitHub App installation in Settings → Source control & issues."
+            : "";
         const gitEnv = Option.isSome(credential)
           ? gitCredentialEnvironment(credential.value)
           : undefined;
@@ -422,7 +440,10 @@ const make = Effect.gen(function* () {
         yield* run(sandbox, driver, account, clone, "clone", undefined, gitEnv).pipe(
           Effect.catchTags({
             CloudThreadError: (error) =>
-              cleanup(`Could not clone the project's public branch: ${error.detail}`, error),
+              cleanup(
+                `Could not clone the project's branch: ${error.detail}${credentialHint}`,
+                error,
+              ),
           }),
         );
         const ready = yield* markSandbox(sandbox, { status: "running" }).pipe(
