@@ -70,6 +70,7 @@ const makeDriver = (
     readonly starts: Ref.Ref<number>;
   },
   hostScope: Scope.Scope,
+  options: { readonly failBeforeStart?: string } = {},
 ): SandboxProviderDriver => {
   let port = 0;
   return {
@@ -98,6 +99,15 @@ const makeDriver = (
     startProcess: (input) =>
       Effect.gen(function* () {
         yield* Ref.update(state.starts, (count) => count + 1);
+        if (options.failBeforeStart !== undefined) {
+          input.onStderr(`${options.failBeforeStart}\n`);
+          return {
+            pid: 1,
+            sendStdin: () => Effect.void,
+            kill: Effect.void,
+            wait: Effect.succeed({ exitCode: 1 }),
+          };
+        }
         const token = input.envs?.["T3_PROVIDER_HOST_TOKEN"];
         if (token === undefined) return yield* Effect.die("missing host token");
         const server = yield* NodeSocketServer.makeWebSocket({
@@ -157,22 +167,24 @@ const testLayer = (driver: SandboxProviderDriver) => {
   );
 };
 
+const mockProviderHostBundle = () => {
+  const bundleDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-provider-host-bundle-"));
+  const bundlePath = NodePath.join(bundleDir, "provider-adapter-host.mjs");
+  NodeFS.writeFileSync(bundlePath, "process.exit(0);\n");
+  const previousBundle = process.env["T3CODE_PROVIDER_HOST_BUNDLE"];
+  process.env["T3CODE_PROVIDER_HOST_BUNDLE"] = bundlePath;
+  onTestFinished(() => {
+    if (previousBundle === undefined) delete process.env["T3CODE_PROVIDER_HOST_BUNDLE"];
+    else process.env["T3CODE_PROVIDER_HOST_BUNDLE"] = previousBundle;
+    NodeFS.rmSync(bundleDir, { recursive: true, force: true });
+  });
+};
+
 describe("cloud provider host wiring", () => {
   it.effect("installs the pinned runtime once and reuses the host process", () => {
     const execs = Ref.makeUnsafe<ReadonlyArray<string>>([]);
     const starts = Ref.makeUnsafe(0);
-    const bundleDir = NodeFS.mkdtempSync(
-      NodePath.join(NodeOS.tmpdir(), "t3-provider-host-bundle-"),
-    );
-    const bundlePath = NodePath.join(bundleDir, "provider-adapter-host.mjs");
-    NodeFS.writeFileSync(bundlePath, "process.exit(0);\n");
-    const previousBundle = process.env["T3CODE_PROVIDER_HOST_BUNDLE"];
-    process.env["T3CODE_PROVIDER_HOST_BUNDLE"] = bundlePath;
-    onTestFinished(() => {
-      if (previousBundle === undefined) delete process.env["T3CODE_PROVIDER_HOST_BUNDLE"];
-      else process.env["T3CODE_PROVIDER_HOST_BUNDLE"] = previousBundle;
-      NodeFS.rmSync(bundleDir, { recursive: true, force: true });
-    });
+    mockProviderHostBundle();
     return Effect.scoped(
       Effect.gen(function* () {
         const hostScope = yield* Effect.scope;
@@ -241,6 +253,65 @@ describe("cloud provider host wiring", () => {
               yield* Effect.all([first.close, second.close, rotated.close]);
             }),
           );
+        }).pipe(Effect.provide(testLayer(driver)));
+      }),
+    );
+  });
+
+  it.effect("caps and redacts the host failure surfaced by openProviderHost", () => {
+    const execs = Ref.makeUnsafe<ReadonlyArray<string>>([]);
+    const starts = Ref.makeUnsafe(0);
+    mockProviderHostBundle();
+    const failure = `provider failed sk-live-abc e2b_secretxyz ${"x".repeat(600)}`;
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const hostScope = yield* Effect.scope;
+        const driver = makeDriver({ execs, starts }, hostScope, { failBeforeStart: failure });
+        return yield* Effect.gen(function* () {
+          const accounts = yield* SandboxAccounts.SandboxAccounts;
+          yield* accounts.connect({
+            id: accountId,
+            config: {
+              kind: e2b,
+              label: "E2B",
+              apiKey: "valid-key",
+              template: "base",
+              enabled: true,
+            },
+          });
+          const cloud = yield* CloudThreads.CloudThreads;
+          const sandbox = yield* (yield* SandboxLifecycle.SandboxLifecycle).createThreadSandbox({
+            threadId,
+            accountId,
+          });
+          yield* (yield* CloudThreadStore.CloudThreadStore).upsert({
+            threadId,
+            sandboxId: sandbox.id,
+            accountId,
+            providerKind: e2b,
+            repositoryUrl: "https://github.com/example/public.git",
+            branch: "main",
+            baseRef: "main",
+            workspacePath: "/home/t3/.t3/threads/thread-provider-host",
+            homePath: "/home/t3",
+            status: "ready",
+            createdAt: "2026-11-27T00:00:00.000Z",
+            updatedAt: "2026-11-27T00:00:00.000Z",
+          });
+
+          const error = yield* cloud
+            .openProviderHost(threadId, {
+              driver: driverKind,
+              instanceId,
+              config: { binaryPath: "/home/t3/.t3/provider-host/runtime/bin/opencode" },
+              settings: DEFAULT_SERVER_SETTINGS,
+              environment: [],
+            })
+            .pipe(Effect.flip);
+          expect(error.detail.length).toBeLessThanOrEqual(400);
+          expect(error.detail).not.toContain("sk-live-abc");
+          expect(error.detail).not.toContain("e2b_secretxyz");
+          expect(error.detail).toContain("[redacted]");
         }).pipe(Effect.provide(testLayer(driver)));
       }),
     );

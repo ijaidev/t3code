@@ -1589,7 +1589,7 @@ const make = Effect.gen(function* () {
           if (Option.isNone(ready) || ready.value.type !== "provider_host_listening") {
             const detail =
               Option.isSome(ready) && ready.value.type === "provider_host_exit"
-                ? (stderrLines.at(-1) ?? "The sandbox provider host stopped before it was ready.")
+                ? CloudProviderHost.providerHostFailureDetail(stderrLines.at(-1))
                 : "The sandbox provider host did not start.";
             yield* process.kill.pipe(Effect.ignore);
             return yield* new CloudThreadError({
