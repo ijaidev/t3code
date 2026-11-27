@@ -21,6 +21,7 @@ import { afterAll } from "vite-plus/test";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
 
@@ -168,6 +169,7 @@ const testLayer = (driver: SandboxProviderDriver) => {
   );
 };
 
+// One bundle per file: restoring the env after each test raced the next test's setup.
 const bundleDirs: Array<string> = [];
 let previousBundle: string | undefined;
 let bundleEnvironmentCaptured = false;
@@ -241,7 +243,13 @@ describe("cloud provider host wiring", () => {
                 settings: DEFAULT_SERVER_SETTINGS,
                 environment: [{ name: "OPENAI_API_KEY", value: "sk-test" }],
               };
+              // A restarted thread is already marked recovering when its host opens.
+              yield* cloud.beginRecovery(threadId);
               const first = yield* cloud.openProviderHost(threadId, input);
+              expect(
+                (yield* cloud.getCloudSandboxState(threadId)).pipe(Option.getOrThrow).status,
+              ).toBe("recovering");
+              yield* cloud.endRecovery(threadId);
               const second = yield* cloud.openProviderHost(threadId, input);
 
               expect(yield* Ref.get(starts)).toBe(1);

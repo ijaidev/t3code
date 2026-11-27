@@ -177,6 +177,8 @@ const testLayer = (state: FakeState) => {
     subscribeCloudSandbox: () => Stream.empty,
     sleepCloudSandbox: () => Effect.die("unused"),
     wakeCloudSandbox: () => Effect.die("unused"),
+    beginRecovery: () => Effect.void,
+    endRecovery: () => Effect.void,
     previewCloudSandboxDelete: () => Effect.die("unused"),
     deleteCloudSandbox: () => Effect.die("unused"),
     beginTurn: () => Effect.void,

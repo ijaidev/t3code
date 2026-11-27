@@ -747,23 +747,43 @@ const make = Effect.gen(function* () {
   const wakeCloudSandboxUnlocked = Effect.fn("CloudThreads.wakeCloudSandboxUnlocked")(function* (
     threadId: ThreadId,
   ) {
-    const state = yield* requireCloudSandboxState(threadId);
-    if (state.status === "running") {
-      const sandbox = yield* getSandbox(threadId);
-      if (Option.isSome(sandbox)) yield* touchSandbox(sandbox.value);
-      return yield* requireCloudSandboxState(threadId);
-    }
-    if (state.status !== "sleeping") {
+    // Recovery overlays a composed `recovering` status; waking still depends on what the
+    // sandbox and record are actually doing.
+    const sandboxOption = yield* getSandbox(threadId);
+    const record = yield* getRecord(threadId);
+    if (Option.isSome(record) && record.value.status === "lost") {
       return yield* new CloudThreadError({
         operation: "resume",
         threadId,
-        detail:
-          state.status === "lost"
-            ? "This cloud thread's workspace was deleted."
-            : "The cloud sandbox is not ready to wake.",
+        detail: "This cloud thread's workspace was deleted.",
       });
     }
-    const sandbox = yield* requireSandbox(threadId);
+    if (Option.isNone(sandboxOption)) {
+      return yield* new CloudThreadError({
+        operation: "resume",
+        threadId,
+        detail: "The cloud sandbox is not ready to wake.",
+      });
+    }
+    const sandbox = sandboxOption.value;
+    if (Option.isSome(record) && record.value.status === "failed") {
+      return yield* new CloudThreadError({
+        operation: "resume",
+        threadId,
+        detail: "The cloud sandbox is not ready to wake.",
+      });
+    }
+    if (sandbox.status === "running") {
+      yield* touchSandbox(sandbox);
+      return yield* requireCloudSandboxState(threadId);
+    }
+    if (sandbox.status !== "paused") {
+      return yield* new CloudThreadError({
+        operation: "resume",
+        threadId,
+        detail: "The cloud sandbox is not ready to wake.",
+      });
+    }
     const { driver } = yield* resolveSandbox(sandbox, "resume");
     if (!driver.capabilities.pauseResume) {
       return yield* new CloudThreadError({
@@ -773,14 +793,18 @@ const make = Effect.gen(function* () {
       });
     }
     yield* stopProviderHost(threadId);
-    yield* Ref.update(transitions, (current) => new Map(current).set(threadId, "waking"));
+    yield* Ref.update(transitions, (current) => {
+      // Keep the recovery overlay visible while a paused sandbox resumes under it.
+      if (current.get(threadId) === "recovering") return current;
+      return new Map(current).set(threadId, "waking");
+    });
     yield* notify(threadId);
     const resumed = yield* lifecycle
       .resumeTestSandbox({ sandboxId: sandbox.id })
       .pipe(Effect.result);
     yield* Ref.update(transitions, (current) => {
       const next = new Map(current);
-      next.delete(threadId);
+      if (next.get(threadId) === "waking") next.delete(threadId);
       return next;
     });
     if (resumed._tag === "Failure") {

@@ -2330,11 +2330,36 @@ export const layer: Layer.Layer<
         .pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
       const run = projection.runs.find((candidate) => candidate.id === runId);
       if (run === undefined || run.status !== "running") return;
-      const rootNode = projection.nodes.find((candidate) => candidate.id === run.rootNodeId);
-      const attempt = projection.attempts.find((candidate) => candidate.id === run.activeAttemptId);
       const providerThread = projection.providerThreads.find(
         (candidate) => candidate.id === run.providerThreadId,
       );
+      if (providerThread === undefined || providerThread.providerSessionId === null) {
+        return yield* new ProviderTurnStartError({
+          runId,
+          cause: "The cloud turn's provider thread is missing, so it cannot be resumed.",
+        });
+      }
+      const beginRecovery = Option.match(cloudThreads, {
+        onNone: () => Effect.void,
+        onSome: (service) => service.beginRecovery(threadId),
+      });
+      const endRecovery = Option.match(cloudThreads, {
+        onNone: () => Effect.void,
+        onSome: (service) => service.endRecovery(threadId),
+      });
+      const native =
+        Option.isSome(cloudProviderRuntime) &&
+        cloudProviderRuntime.value.supports(providerThread.driver);
+      // Legacy hosts keep their existing recovery even if newer projection records are absent.
+      if (!native) {
+        yield* Effect.gen(function* () {
+          yield* beginRecovery;
+          yield* providerSessions.resumeCloudTurn({ threadId, runId });
+        }).pipe(Effect.ensuring(endRecovery));
+        return;
+      }
+      const rootNode = projection.nodes.find((candidate) => candidate.id === run.rootNodeId);
+      const attempt = projection.attempts.find((candidate) => candidate.id === run.activeAttemptId);
       const providerTurn = projection.providerTurns.find(
         (candidate) =>
           candidate.runAttemptId === run.activeAttemptId &&
@@ -2348,13 +2373,15 @@ export const layer: Layer.Layer<
         rootNode === undefined ||
         rootNode.checkpointScopeId === null ||
         attempt === undefined ||
-        providerThread === undefined ||
-        providerThread.providerSessionId === null ||
         providerTurn === undefined ||
         message === undefined ||
         checkpointScope === undefined
       ) {
-        return;
+        return yield* new ProviderTurnStartError({
+          runId,
+          cause:
+            "The cloud turn's recovery record is incomplete, so its native session cannot be resumed.",
+        });
       }
       const providerSessionId = providerThread.providerSessionId;
       const cwd =
@@ -2366,17 +2393,22 @@ export const layer: Layer.Layer<
         interactionMode: projection.thread.interactionMode,
         cwd: null,
       };
-      const beginRecovery = Option.match(cloudThreads, {
-        onNone: () => Effect.void,
-        onSome: (service) => service.beginRecovery(threadId),
-      });
-      const endRecovery = Option.match(cloudThreads, {
-        onNone: () => Effect.void,
-        onSome: (service) => service.endRecovery(threadId),
-      });
-      const native =
-        Option.isSome(cloudProviderRuntime) &&
-        cloudProviderRuntime.value.supports(providerThread.driver);
+      const pendingApprovals = yield* projectionStore
+        .getThreadRecords(threadId, ["runtimeRequests"], {
+          providerTurnIds: [providerTurn.id],
+          runtimeRequestStatuses: ["pending"],
+        })
+        .pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
+      const recoveredRequests: ReadonlyArray<ProviderAdapter.ProviderAdapterV2RecoveredRequest> =
+        pendingApprovals.runtimeRequests.flatMap((request) => {
+          const item = projection.turnItems.find(
+            (candidate) =>
+              (candidate.type === "approval_request" || candidate.type === "user_input_request") &&
+              candidate.requestId === request.id,
+          );
+          const node = projection.nodes.find((candidate) => candidate.id === request.nodeId);
+          return item !== undefined && node !== undefined ? [{ request, item, node }] : [];
+        });
       const nextItemOrdinal =
         projection.turnItems.reduce(
           (highest, item) => (item.runId === run.id ? Math.max(highest, item.ordinal) : highest),
@@ -2501,28 +2533,40 @@ export const layer: Layer.Layer<
             resumeCloudTurn: resumeData,
           })
           .pipe(Effect.result);
+        const openedSession = opened._tag === "Success" ? opened.success : undefined;
         // A failed open still settles the turn through run execution, so its transcript row and
         // the run keep the real reason instead of staying live forever.
-        yield* startResume(
-          opened._tag === "Success" ? opened.success : failedSession(opened.failure),
-          opened._tag === "Success"
-            ? () =>
-                opened.success.resumeThread({
-                  providerThread,
-                  threadId,
-                  modelSelection: run.modelSelection,
-                  runtimePolicy,
-                  preservePendingRequests: true,
-                })
-            : undefined,
+        yield* Effect.gen(function* () {
+          yield* startResume(
+            openedSession ?? failedSession(opened._tag === "Failure" ? opened.failure : undefined),
+            openedSession === undefined
+              ? undefined
+              : () =>
+                  openedSession.resumeThread({
+                    providerThread,
+                    threadId,
+                    modelSelection: run.modelSelection,
+                    runtimePolicy,
+                    preservePendingRequests: true,
+                    ...(recoveredRequests.length === 0 ? {} : { recoveredRequests }),
+                  }),
+          );
+          // A Stop that landed while the resume was opening must not leave the session in use.
+          const currentRun = yield* projectionStore
+            .getRun(threadId, runId)
+            .pipe(Effect.orElseSucceed(() => undefined));
+          if (currentRun === undefined || currentRun.status !== "running") {
+            yield* providerSessions.close(providerSessionId).pipe(Effect.ignore);
+          }
+        }).pipe(
+          // A failed terminal write must not leave the opened session registered and busy; a
+          // retry reopens and reattaches the same recorded turn.
+          Effect.onError(() =>
+            openedSession === undefined
+              ? Effect.void
+              : providerSessions.close(providerSessionId).pipe(Effect.ignore),
+          ),
         );
-        // A Stop that landed while the resume was opening must not leave the session in use.
-        const currentRun = yield* projectionStore
-          .getRun(threadId, runId)
-          .pipe(Effect.orElseSucceed(() => undefined));
-        if (currentRun === undefined || currentRun.status !== "running") {
-          yield* providerSessions.close(providerSessionId).pipe(Effect.ignore);
-        }
       }).pipe(Effect.ensuring(endRecovery));
     });
 

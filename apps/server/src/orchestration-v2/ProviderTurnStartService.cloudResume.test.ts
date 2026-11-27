@@ -9,6 +9,7 @@ import {
   NodeId,
   RunAttemptId,
   RunId,
+  RuntimeRequestId,
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
@@ -48,6 +49,7 @@ const messageId = MessageId.make("message-cloud-resume-native");
 const providerThreadId = ProviderThreadId.make("provider-thread-cloud-resume-native");
 const providerTurnId = ProviderTurnId.make("provider-turn-cloud-resume-native");
 const providerSessionId = ProviderSessionId.make("provider-session-cloud-resume-native");
+const runtimeRequestId = RuntimeRequestId.make("runtime-request-cloud-resume-native");
 const providerInstanceId = ProviderInstanceId.make("opencode");
 const driver = ProviderDriverKind.make("opencode");
 
@@ -59,6 +61,9 @@ const layerFor = (input: {
   readonly startRootRun: (
     runInput: RunExecutionService.RunExecutionServiceV2StartRootRunInput,
   ) => Effect.Effect<void>;
+  readonly supports?: boolean;
+  readonly close?: () => Effect.Effect<void>;
+  readonly resumeCloudTurn?: () => Effect.Effect<void>;
 }) =>
   ProviderTurnStart.layer.pipe(
     Layer.provide(
@@ -74,10 +79,17 @@ const layerFor = (input: {
           getTurnStartContext: () => Effect.succeed(input.projection()),
           getRun: (_threadId, id) =>
             Effect.succeed(input.projection().runs.find((run) => run.id === id)),
+          getThreadRecords: () =>
+            Effect.succeed({
+              runtimeRequests:
+                (input.projection() as { runtimeRequests?: ReadonlyArray<unknown> })
+                  .runtimeRequests ?? [],
+            } as never),
         }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
           open: input.open as never,
-          close: () => Effect.void,
+          close: input.close ?? (() => Effect.void),
+          resumeCloudTurn: input.resumeCloudTurn ?? (() => Effect.void),
         }),
         Layer.mock(ProviderAuthService.ProviderAuthService)({}),
         Layer.mock(RunExecutionService.RunExecutionServiceV2)({
@@ -88,7 +100,7 @@ const layerFor = (input: {
         Layer.succeed(
           CloudProviderRuntime.CloudProviderRuntime,
           CloudProviderRuntime.CloudProviderRuntime.of({
-            supports: () => true,
+            supports: () => input.supports ?? true,
             openSession: () => Effect.die("unused openSession"),
           }),
         ),
@@ -201,9 +213,34 @@ const makeProjection = (now: DateTime.Utc): OrchestrationV2ThreadProjection =>
         id: TurnItemId.make("turn-item-cloud-resume-native"),
         threadId,
         runId,
+        nodeId: rootNodeId,
+        providerThreadId,
+        providerTurnId,
+        nativeItemRef: null,
+        parentItemId: null,
+        requestId: runtimeRequestId,
         type: "approval_request",
+        requestKind: "command",
+        title: "Run command",
+        prompt: "pwd",
         status: "waiting",
         ordinal: 1,
+        startedAt: now,
+        completedAt: null,
+        updatedAt: now,
+      },
+    ],
+    runtimeRequests: [
+      {
+        id: runtimeRequestId,
+        nodeId: rootNodeId,
+        providerTurnId,
+        nativeRequestRef: { driver, nativeId: "native-cloud-resume-approval", strength: "strong" },
+        kind: "command",
+        status: "pending",
+        responseCapability: { type: "live", providerSessionId },
+        createdAt: now,
+        resolvedAt: null,
       },
     ],
   }) as unknown as OrchestrationV2ThreadProjection;
@@ -270,9 +307,96 @@ it.effect("resumes one native cloud turn and keeps its pending approval", () => 
     yield* resume!.prepareProviderTurn!();
     expect(session.resumeThread).toHaveBeenCalledTimes(1);
     expect(session.resumeThread).toHaveBeenCalledWith(
-      expect.objectContaining({ providerThread: expect.anything(), preservePendingRequests: true }),
+      expect.objectContaining({
+        providerThread: expect.anything(),
+        preservePendingRequests: true,
+        recoveredRequests: [
+          expect.objectContaining({
+            request: expect.objectContaining({ id: runtimeRequestId }),
+          }),
+        ],
+      }),
     );
     expect(session.startTurn).not.toHaveBeenCalled();
+  });
+});
+
+it.effect("closes a session opened before a failed resume", () => {
+  let opened = 0;
+  let closed = 0;
+  return Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const session = fakeSession(() => Effect.void);
+    const layer = layerFor({
+      projection: () => makeProjection(now),
+      open: () => {
+        opened += 1;
+        return Effect.succeed(session);
+      },
+      startRootRun: () => Effect.fail(new Error("terminal write failed")),
+      close: () => {
+        closed += 1;
+        return Effect.void;
+      },
+    });
+    const failure = yield* Effect.gen(function* () {
+      return yield* (yield* ProviderTurnStart.ProviderTurnStartServiceV2).resumeCloudTurn({
+        threadId,
+        runId,
+      });
+    }).pipe(Effect.flip, Effect.provide(layer));
+    expect(failure).toBeDefined();
+    expect(opened).toBe(1);
+    expect(closed).toBe(1);
+  });
+});
+
+it.effect("fails native recovery clearly when a required record is missing", () => {
+  let opened = 0;
+  return Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const projection = { ...makeProjection(now), messages: [] } as OrchestrationV2ThreadProjection;
+    const layer = layerFor({
+      projection: () => projection,
+      open: () => {
+        opened += 1;
+        return Effect.die("an incomplete record must not open a session");
+      },
+      startRootRun: () => Effect.void,
+    });
+    const failure = yield* Effect.gen(function* () {
+      return yield* (yield* ProviderTurnStart.ProviderTurnStartServiceV2).resumeCloudTurn({
+        threadId,
+        runId,
+      });
+    }).pipe(Effect.flip, Effect.provide(layer));
+    expect((failure as { readonly cause?: unknown }).cause).toContain("incomplete");
+    expect(opened).toBe(0);
+  });
+});
+
+it.effect("lets the legacy cloud host resume before native-only records are checked", () => {
+  let resumed = 0;
+  return Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const projection = { ...makeProjection(now), messages: [] } as OrchestrationV2ThreadProjection;
+    const layer = layerFor({
+      projection: () => projection,
+      open: () => Effect.die("the native host must not open"),
+      startRootRun: () => Effect.die("the native runtime must not start"),
+      supports: false,
+      resumeCloudTurn: () => {
+        resumed += 1;
+        return Effect.void;
+      },
+    });
+    yield* Effect.gen(function* () {
+      yield* (yield* ProviderTurnStart.ProviderTurnStartServiceV2).resumeCloudTurn({
+        threadId,
+        runId,
+      });
+    }).pipe(Effect.provide(layer));
+    expect(resumed).toBe(1);
   });
 });
 

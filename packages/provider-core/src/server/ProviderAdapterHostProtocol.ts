@@ -7,12 +7,14 @@ import {
   NodeId,
   OrchestrationV2AppThread,
   OrchestrationV2ConversationMessage,
+  OrchestrationV2ExecutionNode,
   OrchestrationV2HistoricalMessage,
   OrchestrationV2ProviderCapabilities,
   OrchestrationV2ProviderSession,
   OrchestrationV2ProviderThread,
   OrchestrationV2ProviderTurn,
   OrchestrationV2RuntimeRequest,
+  OrchestrationV2TurnItem,
   ProviderApprovalDecision,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -212,6 +214,15 @@ export const ProviderAdapterHostParams = {
     runtimePolicy: Schema.optional(ProviderAdapterV2RuntimePolicy),
     importedNativeSession: Schema.optional(Schema.Boolean),
     preservePendingRequests: Schema.optional(Schema.Boolean),
+    recoveredRequests: Schema.optional(
+      Schema.Array(
+        Schema.Struct({
+          request: OrchestrationV2RuntimeRequest,
+          item: OrchestrationV2TurnItem,
+          node: OrchestrationV2ExecutionNode,
+        }),
+      ),
+    ),
   }),
   injectHistory: Schema.Struct({
     providerThread: OrchestrationV2ProviderThread,
