@@ -281,7 +281,8 @@ const make = Effect.gen(function* () {
       threadId: input.threadId as ThreadId,
       command: shellCommand,
       cwd,
-      envs: { TERM: "xterm-256color", ...environment },
+      // The controller project path must never reach the sandbox; scripts read this as their root.
+      envs: { TERM: "xterm-256color", ...environment, T3CODE_PROJECT_ROOT: cwd },
       onStdout: (data) => appendOutput(session, data),
       onStderr: (data) => appendOutput(session, data),
     }).pipe(

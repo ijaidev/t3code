@@ -731,7 +731,7 @@ function ThreadRouteContent(
   const handleOpenTerminal = (nextTerminalId?: string | null) => {
     if (
       !selectedThread ||
-      !selectedThreadProject?.workspaceRoot ||
+      selectedThreadCwd === null ||
       (!readEnvironmentScope(selectedThread.environmentId, AuthTerminalReadScope) &&
         !readEnvironmentScope(selectedThread.environmentId, AuthTerminalOperateScope))
     ) {
@@ -748,7 +748,7 @@ function ThreadRouteContent(
   const handleOpenNewTerminal = () => {
     if (
       !selectedThread ||
-      !selectedThreadProject?.workspaceRoot ||
+      selectedThreadCwd === null ||
       !readEnvironmentScope(selectedThread.environmentId, AuthTerminalOperateScope)
     ) {
       return;
@@ -772,6 +772,7 @@ function ThreadRouteContent(
     if (
       !selectedThread ||
       !selectedThreadProject?.workspaceRoot ||
+      selectedThreadCwd === null ||
       !readEnvironmentScope(selectedThread.environmentId, AuthTerminalOperateScope)
     ) {
       return;
@@ -787,16 +788,23 @@ function ThreadRouteContent(
         (session) => session.status === "running" || session.status === "starting",
       ),
     });
-    const preferredWorktreePath = resolvePreferredThreadWorktreePath({
-      threadShellWorktreePath: selectedThread.worktreePath ?? null,
-      threadDetailWorktreePath: selectedThreadDetailWorktreePath,
-    });
-    const cwd = projectScriptCwd({
-      project: { cwd: selectedThreadProject.workspaceRoot },
-      worktreePath: preferredWorktreePath,
-    });
+    const cloudWorkspacePath = selectedThread.cloudWorkspace?.workspacePath ?? null;
+    const preferredWorktreePath =
+      cloudWorkspacePath === null
+        ? resolvePreferredThreadWorktreePath({
+            threadShellWorktreePath: selectedThread.worktreePath ?? null,
+            threadDetailWorktreePath: selectedThreadDetailWorktreePath,
+          })
+        : null;
+    const projectWorkspaceRoot = cloudWorkspacePath ?? selectedThreadProject.workspaceRoot;
+    const cwd =
+      cloudWorkspacePath ??
+      projectScriptCwd({
+        project: { cwd: projectWorkspaceRoot },
+        worktreePath: preferredWorktreePath,
+      });
     const env = projectScriptRuntimeEnv({
-      project: { cwd: selectedThreadProject.workspaceRoot },
+      project: { cwd: projectWorkspaceRoot },
       worktreePath: preferredWorktreePath,
     });
     stagePendingTerminalLaunch({

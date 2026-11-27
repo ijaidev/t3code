@@ -432,6 +432,12 @@ function ThreadTerminal(props: {
   const selectedThreadDetail = useSelectedThreadProjection();
   const selectedThreadDetailWorktreePath =
     selectedThreadDetail?.projection.thread.worktreePath ?? null;
+  const cloudWorkspacePath = selectedThread.cloudWorkspace?.workspacePath ?? null;
+  const terminalWorkspaceRoot = cloudWorkspacePath ?? selectedThreadProject?.workspaceRoot ?? null;
+  const terminalThreadWorktreePath =
+    cloudWorkspacePath === null ? (selectedThread.worktreePath ?? null) : null;
+  const terminalDetailWorktreePath =
+    cloudWorkspacePath === null ? selectedThreadDetailWorktreePath : null;
   const routeThreadIdRaw = firstRouteParam(params.threadId);
   const routeThreadId = routeThreadIdRaw ? ThreadId.make(routeThreadIdRaw) : null;
   const environment = useEnvironmentPresentation(routeEnvironmentId);
@@ -512,13 +518,13 @@ function ThreadTerminal(props: {
     canRead: canReadTerminal,
     canOperate: canOperateTerminal,
     hasLoadedSessions: knownSessions !== null,
-    location: selectedThreadProject?.workspaceRoot
+    location: terminalWorkspaceRoot
       ? {
           terminalLocation: activeKnownSession?.state.summary ?? null,
           activeSessionLocation: activeKnownSession?.state.summary ?? null,
-          workspaceRoot: selectedThreadProject.workspaceRoot,
-          threadShellWorktreePath: selectedThread.worktreePath ?? null,
-          threadDetailWorktreePath: selectedThreadDetailWorktreePath,
+          workspaceRoot: terminalWorkspaceRoot,
+          threadShellWorktreePath: terminalThreadWorktreePath,
+          threadDetailWorktreePath: terminalDetailWorktreePath,
         }
       : null,
   });
@@ -571,7 +577,7 @@ function ThreadTerminal(props: {
   );
   const isRunning = terminal.status === "running" || terminal.status === "starting";
 
-  const cwd = terminal.summary?.cwd ?? selectedThreadProject?.workspaceRoot ?? null;
+  const cwd = terminal.summary?.cwd ?? terminalWorkspaceRoot ?? null;
   const serverConfigs = useServerConfigs();
   const hostOs =
     routeEnvironmentId === null
@@ -636,7 +642,7 @@ function ThreadTerminal(props: {
   const terminalMenuSessions: ReadonlyArray<TerminalMenuSession> = buildTerminalMenuSessions(
     {
       knownSessions: knownSessions ?? [],
-      workspaceRoot: selectedThreadProject?.workspaceRoot ?? null,
+      workspaceRoot: terminalWorkspaceRoot,
       currentSession: {
         terminalId,
         cwd: cwd ?? null,
@@ -857,7 +863,7 @@ function ThreadTerminal(props: {
     }
   };
 
-  if (!selectedThreadProject?.workspaceRoot) {
+  if (!terminalWorkspaceRoot) {
     return (
       <View className="flex-1 bg-screen">
         <EmptyState
@@ -901,7 +907,7 @@ function ThreadTerminal(props: {
           status: terminal.status,
           hasRunningSubprocess: terminal.hasRunningSubprocess,
         }}
-        workspaceRoot={selectedThreadProject.workspaceRoot}
+        workspaceRoot={terminalWorkspaceRoot}
         onBack={handleBack}
         onCloseTerminal={handleCloseTerminal}
         onDecreaseFontSize={handleDecreaseFontSize}

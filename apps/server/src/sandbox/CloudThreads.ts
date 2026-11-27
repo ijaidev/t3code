@@ -539,6 +539,7 @@ const make = Effect.gen(function* () {
     const sandbox = yield* requireSandbox(input.threadId);
     const { account, driver } = yield* resolveSandbox(sandbox, "start-host");
     const start = driver.startProcess;
+    // Every shipped driver (E2B, Daytona) implements this; the guard is for future drivers.
     if (start === undefined) {
       return yield* new CloudThreadError({
         operation: "start-host",
@@ -569,6 +570,7 @@ const make = Effect.gen(function* () {
             threadId: input.threadId,
             detail: error.detail,
             statusCode: error.statusCode,
+            cause: error,
           }),
       ),
     );

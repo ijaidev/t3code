@@ -1748,6 +1748,13 @@ export const layerWsRpc = (
         currentSession.scopes.includes(requiredScope)
           ? effect
           : Effect.fail(rpcAuthorizationError(requiredScope));
+      const authorizeStream = <A, E, R>(
+        requiredScope: AuthEnvironmentScope,
+        stream: Stream.Stream<A, E, R>,
+      ): Stream.Stream<A, E | EnvironmentAuthorizationError, R> =>
+        currentSession.scopes.includes(requiredScope)
+          ? stream
+          : Stream.fail(rpcAuthorizationError(requiredScope));
 
       const listAcpRegistrySessions = Effect.fn("ws.acpRegistry.listSessions")(function* (
         input: AcpRegistryListSessionsInput,
@@ -3608,7 +3615,10 @@ export const layerWsRpc = (
                         ),
                     ),
                   ),
-                onSome: (cloud) => cloud.open(input),
+                // A cloud terminal can wake billable compute, so opening one needs the same
+                // grant as the dedicated wake RPC even though typing in a running shell does not.
+                onSome: (cloud) =>
+                  authorizeEffect(AuthOrchestrationOperateScope, cloud.open(input)),
               }),
             ),
           ),
@@ -3632,7 +3642,8 @@ export const layerWsRpc = (
                         ),
                       ),
                     ),
-                  onSome: (cloud) => cloud.attachOutputStream(input),
+                  onSome: (cloud) =>
+                    authorizeStream(AuthOrchestrationOperateScope, cloud.attachOutputStream(input)),
                 }),
               ),
             ),

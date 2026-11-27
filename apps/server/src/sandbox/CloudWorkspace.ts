@@ -257,8 +257,8 @@ const make = Effect.gen(function* () {
   const entryError = (
     input: {
       readonly cwd: string;
-      readonly partialPath?: string;
-      readonly directoryPath?: string;
+      readonly partialPath?: string | undefined;
+      readonly directoryPath?: string | undefined;
     },
     parentPath: string,
     cause: unknown,

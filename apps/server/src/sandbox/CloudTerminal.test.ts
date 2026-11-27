@@ -39,7 +39,13 @@ const record: CloudThreadStore.CloudThreadRecord = {
 };
 
 const machine = (state: {
-  readonly starts: Ref.Ref<ReadonlyArray<{ cwd: string; command: string }>>;
+  readonly starts: Ref.Ref<
+    ReadonlyArray<{
+      cwd: string;
+      command: string;
+      envs: Readonly<Record<string, string>> | undefined;
+    }>
+  >;
   readonly writes: Ref.Ref<ReadonlyArray<string>>;
   readonly kills: Ref.Ref<number>;
 }) =>
@@ -54,7 +60,7 @@ const machine = (state: {
       Effect.gen(function* () {
         yield* Ref.update(state.starts, (current) => [
           ...current,
-          { cwd: input.cwd ?? "", command: input.command },
+          { cwd: input.cwd ?? "", command: input.command, envs: input.envs },
         ]);
         input.onStdout(`${input.cwd ?? ""}\n`);
         return {
@@ -88,7 +94,13 @@ const machine = (state: {
 describe("cloud terminal", () => {
   it.effect("opens, streams, writes, resizes, clears, and closes in the sandbox", () => {
     const scenario = Effect.gen(function* () {
-      const starts = yield* Ref.make<ReadonlyArray<{ cwd: string; command: string }>>([]);
+      const starts = yield* Ref.make<
+        ReadonlyArray<{
+          cwd: string;
+          command: string;
+          envs: Readonly<Record<string, string>> | undefined;
+        }>
+      >([]);
       const writes = yield* Ref.make<ReadonlyArray<string>>([]);
       const kills = yield* Ref.make(0);
       const cloud = machine({ starts, writes, kills });
@@ -100,6 +112,7 @@ describe("cloud terminal", () => {
           threadId,
           terminalId: "terminal-1",
           cwd: workspacePath,
+          env: { T3CODE_PROJECT_ROOT: "/controller/repo", FOO: "bar" },
         });
         expect(open).toMatchObject({
           threadId,
@@ -136,6 +149,11 @@ describe("cloud terminal", () => {
         const calls = yield* Ref.get(starts);
         expect(calls).toEqual([expect.objectContaining({ cwd: workspacePath })]);
         expect(calls[0]?.command).toContain("script");
+        expect(calls[0]?.envs).toMatchObject({
+          T3CODE_PROJECT_ROOT: workspacePath,
+          FOO: "bar",
+          TERM: "xterm-256color",
+        });
 
         yield* terminal.close({ threadId, terminalId: "terminal-1" });
         expect(yield* terminal.listMetadata).toEqual([]);
@@ -153,7 +171,13 @@ describe("cloud terminal", () => {
 
   it.effect("rejects a cwd outside the thread's sandbox", () => {
     const scenario = Effect.gen(function* () {
-      const starts = yield* Ref.make<ReadonlyArray<{ cwd: string; command: string }>>([]);
+      const starts = yield* Ref.make<
+        ReadonlyArray<{
+          cwd: string;
+          command: string;
+          envs: Readonly<Record<string, string>> | undefined;
+        }>
+      >([]);
       const writes = yield* Ref.make<ReadonlyArray<string>>([]);
       const kills = yield* Ref.make(0);
       const cloud = machine({ starts, writes, kills });

@@ -12,6 +12,14 @@ export interface ActiveProjectTarget {
   readonly threadRef: ScopedThreadRef;
 }
 
+export function resolveActiveProjectTargetCwd(input: {
+  readonly cloudWorkspacePath: string | null;
+  readonly worktreePath: string | null;
+  readonly projectWorkspaceRoot: string | null;
+}): string | null {
+  return input.cloudWorkspacePath ?? input.worktreePath ?? input.projectWorkspaceRoot;
+}
+
 export function useActiveProjectTarget(): ActiveProjectTarget | null {
   const { activeDraftThread, activeThread } = useHandleNewThread();
   const projects = useProjects();
@@ -23,7 +31,11 @@ export function useActiveProjectTarget(): ActiveProjectTarget | null {
           candidate.environmentId === thread.environmentId && candidate.id === thread.projectId,
       )
     : null;
-  const cwd = thread?.worktreePath ?? project?.workspaceRoot;
+  const cwd = resolveActiveProjectTargetCwd({
+    cloudWorkspacePath: activeThread?.cloudWorkspace?.workspacePath ?? null,
+    worktreePath: thread?.worktreePath ?? null,
+    projectWorkspaceRoot: project?.workspaceRoot ?? null,
+  });
 
   if (!thread || !threadId || !project || !cwd) return null;
 

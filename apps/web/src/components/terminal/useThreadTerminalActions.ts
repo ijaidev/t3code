@@ -110,7 +110,7 @@ export function useThreadTerminalActions(threadRef: ScopedThreadRef | null) {
         cwd: location.cwd,
         ...(location.worktreePath !== null ? { worktreePath: location.worktreePath } : {}),
         env: projectScriptRuntimeEnv({
-          project: { cwd: project.workspaceRoot },
+          project: { cwd: threadCloudWorkspacePath ?? project.workspaceRoot },
           worktreePath: location.worktreePath,
           ...(input.extraEnv ? { extraEnv: input.extraEnv } : {}),
         }),
