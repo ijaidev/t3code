@@ -223,66 +223,77 @@ const makeFakeAdapter = (input: {
   checksVersionAtHandshake: true,
   getCapabilities: () => Effect.succeed(capabilities),
   planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
-  openSession: () =>
-    Effect.succeed({
-      instanceId,
-      driver,
-      providerSessionId,
-      providerSession,
-      events: Stream.fromQueue(input.events),
-      ensureThread: (threadInput) => {
-        input.calls.push(`ensureThread:${threadInput.threadId}`);
-        return Effect.succeed(providerThread);
-      },
-      resumeThread: () => {
-        input.calls.push("resumeThread");
-        return Effect.succeed(providerThread);
-      },
-      startTurn: (turnInput) =>
-        Effect.sync(() => {
-          input.calls.push(`startTurn:${turnInput.runId}`);
-          Queue.offerUnsafe(input.events, {
-            type: "thread_model_selection.updated",
-            driver,
-            threadId,
-            instanceId,
-            changes: [{ id: "model", from: modelSelection.model, to: "opencode-go/other" }],
+  openSession: (sessionInput) =>
+    Effect.sync(() => {
+      input.calls.push("openSession");
+      if (sessionInput.resumeFromSession !== undefined) {
+        input.calls.push(
+          `resume:${DateTime.toEpochMillis(sessionInput.resumeFromSession.createdAt)}`,
+        );
+      }
+      return {
+        instanceId,
+        driver,
+        providerSessionId,
+        providerSession,
+        events: Stream.fromQueue(input.events),
+        ensureThread: (threadInput) => {
+          input.calls.push(`ensureThread:${threadInput.threadId}`);
+          return Effect.succeed(providerThread);
+        },
+        resumeThread: () => {
+          input.calls.push("resumeThread");
+          return Effect.succeed(providerThread);
+        },
+        startTurn: (turnInput) =>
+          Effect.sync(() => {
+            input.calls.push(`startTurn:${turnInput.runId}`);
+            Queue.offerUnsafe(input.events, {
+              type: "thread_model_selection.updated",
+              driver,
+              threadId,
+              instanceId,
+              changes: [{ id: "model", from: modelSelection.model, to: "opencode-go/other" }],
+            });
+          }),
+        steerTurn: (steerInput) =>
+          Effect.sync(() => {
+            input.calls.push(`steerTurn:${steerInput.providerTurnId}`);
+          }),
+        interruptTurn: (interruptInput) =>
+          Effect.sync(() => {
+            input.calls.push(`interruptTurn:${interruptInput.providerTurnId}`);
+          }),
+        respondToRuntimeRequest: (responseInput) =>
+          Effect.sync(() => {
+            input.calls.push(`respond:${responseInput.requestId}:${responseInput.decision}`);
+          }),
+        readThreadSnapshot: () => {
+          input.calls.push("readThreadSnapshot");
+          return Effect.succeed({
+            providerThread,
+            messages: [],
+            runtimeRequests: [],
           });
+        },
+        rollbackThread: () => {
+          input.calls.push("rollbackThread");
+          return Effect.succeed({
+            providerThread,
+            messages: [],
+            runtimeRequests: [],
+          });
+        },
+        forkThread: () => {
+          input.calls.push("forkThread");
+          return Effect.succeed(providerThread);
+        },
+        hasPendingBackgroundWork: Effect.sync(() => {
+          input.calls.push("hasPendingBackgroundWork");
+          return false;
         }),
-      steerTurn: (steerInput) =>
-        Effect.sync(() => {
-          input.calls.push(`steerTurn:${steerInput.providerTurnId}`);
-        }),
-      interruptTurn: (interruptInput) =>
-        Effect.sync(() => {
-          input.calls.push(`interruptTurn:${interruptInput.providerTurnId}`);
-        }),
-      respondToRuntimeRequest: (responseInput) =>
-        Effect.sync(() => {
-          input.calls.push(`respond:${responseInput.requestId}:${responseInput.decision}`);
-        }),
-      readThreadSnapshot: () => {
-        input.calls.push("readThreadSnapshot");
-        return Effect.succeed({
-          providerThread,
-          messages: [],
-          runtimeRequests: [],
-        });
-      },
-      rollbackThread: () => {
-        input.calls.push("rollbackThread");
-        return Effect.succeed({
-          providerThread,
-          messages: [],
-          runtimeRequests: [],
-        });
-      },
-      forkThread: () => {
-        input.calls.push("forkThread");
-        return Effect.succeed(providerThread);
-      },
-      hasPendingBackgroundWork: Effect.succeed(false),
-      hasPendingBackgroundWorkForThread: () => Effect.succeed(false),
+        hasPendingBackgroundWorkForThread: () => Effect.succeed(false),
+      };
     }),
 });
 
@@ -412,8 +423,15 @@ describe("remote provider adapter", () => {
               providerSessionId,
               modelSelection,
               runtimePolicy,
+              resumeFromSession: providerSession,
             });
             expect(session.providerSession.id).toBe(providerSessionId);
+            expect(calls).toContain(`resume:${DateTime.toEpochMillis(providerSession.createdAt)}`);
+            const pendingProbe = session.hasPendingBackgroundWork;
+            expect(pendingProbe).toBeDefined();
+            if (pendingProbe !== undefined) {
+              expect(yield* pendingProbe).toBe(false);
+            }
             const ensured = yield* session.ensureThread({
               threadId,
               title: "cloud thread",
@@ -491,11 +509,39 @@ describe("remote provider adapter", () => {
         expect(calls).toContain("respond:request-1:accept");
         expect(calls).toContain("rollbackThread");
         expect(calls).toContain("forkThread");
+        expect(calls).toContain("hasPendingBackgroundWork");
         yield* connection.close;
         const stoppedResult = yield* Deferred.await(stopped).pipe(
           Effect.timeoutOption("5 seconds"),
         );
         expect(Option.isSome(stoppedResult)).toBe(true);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("fails calls after the controller closes instead of hanging", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const calls: string[] = [];
+        const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
+        const hostRef = yield* Ref.make<SandboxProviderHost.SandboxProviderHost | null>(null);
+        const stopped = yield* Deferred.make<void>();
+        const fileSystem = yield* FileSystem.FileSystem;
+        const root = yield* fileSystem.makeTempDirectory({ prefix: "t3-remote-adapter-" });
+        const paths = makePaths(root);
+        const host = yield* startHost({ calls, events, hostRef, stopped });
+
+        const connection = yield* connect({ url: host.url, paths });
+        yield* connection.close;
+        const stoppedResult = yield* Deferred.await(stopped).pipe(
+          Effect.timeoutOption("5 seconds"),
+        );
+        expect(Option.isSome(stoppedResult)).toBe(true);
+
+        const closedCall = yield* connection.adapter
+          .getCapabilities()
+          .pipe(Effect.match({ onFailure: (error) => error, onSuccess: () => null }));
+        expect(closedCall === null ? null : closedCall._tag).toBe("ProviderAdapterProtocolError");
       }),
     ).pipe(Effect.provide(testLayer)),
   );

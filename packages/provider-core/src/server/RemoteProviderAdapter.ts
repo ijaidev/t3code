@@ -168,6 +168,7 @@ export const connect = (
     const outbox = yield* Queue.unbounded<string | Socket.CloseEvent>();
     const pending = new Map<string, Deferred.Deferred<unknown, ProviderAdapterV2Error>>();
     const sessions = new Map<string, RemoteSession>();
+    const closed = yield* Ref.make<ProviderAdapterV2Error | null>(null);
 
     yield* Effect.gen(function* () {
       while (true) {
@@ -199,6 +200,8 @@ export const connect = (
     const failAll = Effect.fn("RemoteProviderAdapter.failAll")(function* (
       error: ProviderAdapterV2Error,
     ) {
+      if ((yield* Ref.get(closed)) !== null) return;
+      yield* Ref.set(closed, error);
       for (const deferred of pending.values()) {
         yield* Deferred.fail(deferred, error);
       }
@@ -208,6 +211,7 @@ export const connect = (
         yield* PubSub.shutdown(session.hub);
       }
       sessions.clear();
+      yield* Queue.shutdown(outbox);
     });
 
     const hello = encodeHello({
@@ -291,6 +295,10 @@ export const connect = (
       Effect.gen(function* () {
         const id = yield* randomUuidV4;
         const deferred = yield* Deferred.make<unknown, ProviderAdapterV2Error>();
+        const closedError = yield* Ref.get(closed);
+        if (closedError !== null) {
+          return yield* closedError;
+        }
         pending.set(id, deferred);
         const offered = yield* send({
           type: "call",
@@ -301,10 +309,10 @@ export const connect = (
         });
         if (!offered) {
           pending.delete(id);
-          return yield* protocolError(
-            options.driver,
-            "The sandbox provider host connection is closed.",
-          );
+          const closeError =
+            (yield* Ref.get(closed)) ??
+            protocolError(options.driver, "The sandbox provider host connection is closed.");
+          return yield* closeError;
         }
         const result = yield* Deferred.await(deferred).pipe(
           Effect.ensuring(Effect.sync(() => pending.delete(id))),
@@ -605,7 +613,9 @@ export const connect = (
       protocolVersion: message.protocolVersion,
       hostVersion: message.hostVersion,
       close: Effect.gen(function* () {
-        yield* Queue.offer(outbox, new Socket.CloseEvent(1000, "controller closed"));
+        if ((yield* Ref.get(closed)) === null) {
+          yield* writer.write(new Socket.CloseEvent(1000, "controller closed")).pipe(Effect.ignore);
+        }
         yield* failAll(
           new ProviderAdapterProtocolError({
             driver: options.driver,

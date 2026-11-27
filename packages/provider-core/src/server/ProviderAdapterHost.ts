@@ -279,7 +279,7 @@ export const serveProviderAdapterHost = <R = never>(
         return yield* protocolError(adapter.driver, "That host session is already open.");
       }
       const scope = yield* Scope.make();
-      const decoded = decodeParams("openSession", params) as ProviderAdapterV2OpenSessionInput & {
+      const decoded = params as ProviderAdapterV2OpenSessionInput & {
         readonly promptSuggestions?: boolean;
       };
       const runtime = yield* adapter
@@ -295,8 +295,10 @@ export const serveProviderAdapterHost = <R = never>(
             Exit.isSuccess(exit) ? Effect.void : Scope.close(scope, Exit.void),
           ),
         );
-      const features = PROVIDER_ADAPTER_HOST_SESSION_FEATURES.filter(
-        (feature) => typeof (runtime as unknown as Record<string, unknown>)[feature] === "function",
+      const features = PROVIDER_ADAPTER_HOST_SESSION_FEATURES.filter((feature) =>
+        feature === "hasPendingBackgroundWork"
+          ? runtime.hasPendingBackgroundWork !== undefined
+          : typeof (runtime as unknown as Record<string, unknown>)[feature] === "function",
       );
       const descriptor: ProviderAdapterHostSessionDescriptor = {
         providerSession: runtime.providerSession,
@@ -346,6 +348,16 @@ export const serveProviderAdapterHost = <R = never>(
       if (!SESSION_METHODS.has(method)) {
         return Effect.fail(protocolError(adapter.driver, `The host does not know ${method}.`));
       }
+      if (method === "hasPendingBackgroundWork") {
+        return runtime.hasPendingBackgroundWork === undefined
+          ? Effect.fail(
+              protocolError(
+                adapter.driver,
+                `The ${adapter.driver} adapter does not support ${method}.`,
+              ),
+            )
+          : runtime.hasPendingBackgroundWork;
+      }
       const handler = (runtime as unknown as Record<string, unknown>)[method];
       if (typeof handler !== "function") {
         return Effect.fail(
@@ -388,17 +400,18 @@ export const serveProviderAdapterHost = <R = never>(
       sessionId: string | undefined,
       params: unknown,
     ): Effect.Effect<unknown, ProviderAdapterV2Error> => {
+      const decodedParams = decodeParams(method, params);
       if (method === "getCapabilities") return adapter.getCapabilities();
       if (method === "planSelectionTransition") {
         return adapter.planSelectionTransition(
-          params as import("./selectionTransition.ts").ProviderSelectionTransitionInput,
+          decodedParams as import("./selectionTransition.ts").ProviderSelectionTransitionInput,
         );
       }
       if (method === "openSession") {
         if (sessionId === undefined) {
           return Effect.fail(protocolError(adapter.driver, "A host session needs an id."));
         }
-        return openSession(sessionId, params);
+        return openSession(sessionId, decodedParams);
       }
       if (sessionId !== undefined && method === "closeSession") return closeSession(sessionId);
       if (!ADAPTER_METHODS.has(method) && sessionId === undefined) {
@@ -411,7 +424,7 @@ export const serveProviderAdapterHost = <R = never>(
       if (entry === undefined) {
         return Effect.fail(protocolError(adapter.driver, "That host session is not open."));
       }
-      return callSession(entry.runtime, method, params);
+      return callSession(entry.runtime, method, decodedParams);
     };
 
     return yield* Effect.forever(
@@ -421,11 +434,7 @@ export const serveProviderAdapterHost = <R = never>(
         if (Option.isNone(message)) return;
         const call = message.value;
         yield* Effect.gen(function* () {
-          const result = yield* dispatch(
-            call.method,
-            call.sessionId,
-            decodeParams(call.method, call.params),
-          );
+          const result = yield* dispatch(call.method, call.sessionId, call.params);
           yield* send({
             type: "response",
             id: call.id,

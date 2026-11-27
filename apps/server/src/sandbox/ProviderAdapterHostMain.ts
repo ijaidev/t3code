@@ -12,6 +12,7 @@ import {
 } from "@t3tools/provider-core/server/ProviderAdapterHost";
 import type { ProviderAdapterHostAdapterCreateInput } from "@t3tools/provider-core/server/ProviderAdapterHostProtocol";
 import * as SandboxProviderHost from "@t3tools/provider-core/server/SandboxProviderHost";
+import { sandboxProviderEnvironment } from "./ProviderAdapterHostEnvironment.ts";
 import * as OpenCodeRuntime from "@t3tools/provider-opencode/server/OpenCodeRuntime";
 import * as OpenCodeServerLedger from "@t3tools/provider-opencode/server/OpenCodeServerLedger";
 import * as OpenCode2AdapterV2 from "@t3tools/provider-opencode/server/v2/adapter";
@@ -71,7 +72,7 @@ const createAdapter = Effect.fn("ProviderAdapterHostMain.createAdapter")(functio
       serverUrl: config.serverUrl,
       serverPassword: settingsSecretLiteral(config.serverPassword),
       directory: input.paths.cwd,
-      environment: process.env,
+      environment: sandboxProviderEnvironment(process.env),
     }).pipe(
       Effect.provideService(OpenCode2Client.OpenCode2Client, client),
       Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, runtime),
