@@ -78,27 +78,25 @@ const machine = (input: TestWorkspace) =>
         cwd === input.record.workspacePath ? Option.some(input.record) : Option.none(),
       ),
     exec: (command) =>
-      Effect.gen(function* () {
-        return yield* Effect.promise(
-          () =>
-            new Promise<{ exitCode: number; stdout: string; stderr: string }>((resolve) => {
-              const child = NodeChildProcess.spawn("/bin/sh", ["-lc", command.command], {
-                cwd: command.cwd ?? input.record.workspacePath,
-              });
-              let stdout = "";
-              let stderr = "";
-              child.stdout.on("data", (data) => {
-                stdout += String(data);
-              });
-              child.stderr.on("data", (data) => {
-                stderr += String(data);
-              });
-              child.on("close", (code) => {
-                resolve({ exitCode: code ?? 1, stdout, stderr });
-              });
-            }),
-        );
-      }),
+      Effect.promise(
+        () =>
+          new Promise<{ exitCode: number; stdout: string; stderr: string }>((resolve) => {
+            const child = NodeChildProcess.spawn("/bin/sh", ["-lc", command.command], {
+              cwd: command.cwd ?? input.record.workspacePath,
+            });
+            let stdout = "";
+            let stderr = "";
+            child.stdout.on("data", (data) => {
+              stdout += String(data);
+            });
+            child.stderr.on("data", (data) => {
+              stderr += String(data);
+            });
+            child.on("close", (code) => {
+              resolve({ exitCode: code ?? 1, stdout, stderr });
+            });
+          }),
+      ),
     writeAttachment: (_threadId, path, data) =>
       Effect.tryPromise({
         try: () => NodeFS.promises.writeFile(path, data),

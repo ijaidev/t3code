@@ -122,6 +122,7 @@ describe("cloud terminal", () => {
           pid: 4242,
         });
         expect(open.history).toContain(workspacePath);
+        expect(yield* terminal.hasLiveSession({ threadId, terminalId: "terminal-1" })).toBe(true);
 
         const events = yield* terminal
           .attachOutputStream({ threadId, terminalId: "terminal-1" })
@@ -157,6 +158,7 @@ describe("cloud terminal", () => {
 
         yield* terminal.close({ threadId, terminalId: "terminal-1" });
         expect(yield* terminal.listMetadata).toEqual([]);
+        expect(yield* terminal.hasLiveSession({ threadId, terminalId: "terminal-1" })).toBe(false);
         expect(yield* Ref.get(kills)).toBe(1);
       }).pipe(
         Effect.provide(
@@ -167,6 +169,27 @@ describe("cloud terminal", () => {
       );
     });
     return scenario;
+  });
+
+  it("allows terminal-only attach to a live session and requires orchestration to start one", () => {
+    expect(
+      CloudTerminal.cloudTerminalAccess({
+        hasLiveSession: true,
+        hasOrchestrationScope: false,
+      }),
+    ).toBe("attach");
+    expect(
+      CloudTerminal.cloudTerminalAccess({
+        hasLiveSession: false,
+        hasOrchestrationScope: false,
+      }),
+    ).toBe("denied");
+    expect(
+      CloudTerminal.cloudTerminalAccess({
+        hasLiveSession: false,
+        hasOrchestrationScope: true,
+      }),
+    ).toBe("start");
   });
 
   it.effect("rejects a cwd outside the thread's sandbox", () => {
@@ -191,6 +214,18 @@ describe("cloud terminal", () => {
           })
           .pipe(Effect.flip);
         expect(error._tag).toBe("TerminalCwdNotFoundError");
+
+        const deniedStart = yield* terminal
+          .open(
+            {
+              threadId,
+              terminalId: "terminal-3",
+              cwd: workspacePath,
+            },
+            { allowStart: false },
+          )
+          .pipe(Effect.flip);
+        expect(deniedStart._tag).toBe("TerminalSessionLookupError");
         expect(yield* Ref.get(starts)).toEqual([]);
       }).pipe(
         Effect.provide(

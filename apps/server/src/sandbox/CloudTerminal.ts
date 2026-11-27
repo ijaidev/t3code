@@ -127,15 +127,33 @@ const notifyListeners = (session: CloudTerminalSession, event: TerminalAttachStr
 
 type MetadataEvent = TerminalMetadataStreamEvent;
 
+/**
+ * A live session can be attached without waking compute. Starting a missing or stopped
+ * session is the wake path and needs the same grant as the dedicated wake RPC.
+ */
+export const cloudTerminalAccess = (input: {
+  readonly hasLiveSession: boolean;
+  readonly hasOrchestrationScope: boolean;
+}): "attach" | "start" | "denied" => {
+  if (input.hasLiveSession) return "attach";
+  return input.hasOrchestrationScope ? "start" : "denied";
+};
+
 export class CloudTerminal extends Context.Service<
   CloudTerminal,
   {
     readonly hasThread: (threadId: string) => Effect.Effect<boolean>;
+    readonly hasLiveSession: (input: {
+      readonly threadId: string;
+      readonly terminalId: string;
+    }) => Effect.Effect<boolean>;
     readonly open: (
       input: TerminalOpenInput,
+      options?: { readonly allowStart?: boolean },
     ) => Effect.Effect<TerminalSessionSnapshot, TerminalError>;
     readonly attachOutputStream: (
       input: TerminalAttachInput,
+      options?: { readonly allowStart?: boolean },
     ) => Stream.Stream<TerminalAttachStreamEvent, TerminalError>;
     readonly observeOutputStream: (input: {
       readonly threadId: string;
@@ -324,27 +342,43 @@ const make = Effect.gen(function* () {
   const hasThread: CloudTerminal["Service"]["hasThread"] = (threadId) =>
     recordFor(threadId).pipe(Effect.map(Option.isSome));
 
-  const open: CloudTerminal["Service"]["open"] = Effect.fn("CloudTerminal.open")(function* (input) {
-    const record = yield* recordFor(input.threadId);
-    if (Option.isNone(record)) {
-      return yield* new TerminalCwdNotFoundError({ cwd: input.cwd });
-    }
-    const existing = sessions.get(sessionKey(input.threadId, input.terminalId));
-    if (existing !== undefined) {
-      const nextCwd = yield* validateCwd(record.value, input.cwd);
-      if (existing.cwd !== nextCwd || existing.status === "exited") {
-        yield* closeSession(existing, false);
-        return snapshotFor(yield* startSession(input, record.value));
+  const hasLiveSession: CloudTerminal["Service"]["hasLiveSession"] = (input) =>
+    Effect.sync(() => {
+      const session = sessions.get(sessionKey(input.threadId, input.terminalId));
+      return (
+        session !== undefined && (session.status === "running" || session.status === "starting")
+      );
+    });
+
+  const open: CloudTerminal["Service"]["open"] = Effect.fn("CloudTerminal.open")(
+    function* (input, options) {
+      const record = yield* recordFor(input.threadId);
+      if (Option.isNone(record)) {
+        return yield* new TerminalCwdNotFoundError({ cwd: input.cwd });
       }
-      existing.stopOnSettle = input.stopOnSettle ?? existing.stopOnSettle;
-      if (input.cols !== undefined) existing.cols = input.cols;
-      if (input.rows !== undefined) existing.rows = input.rows;
-      upsertMetadata(existing);
-      return snapshotFor(existing);
-    }
-    const session = yield* startSession(input, record.value);
-    return snapshotFor(session);
-  });
+      const existing = sessions.get(sessionKey(input.threadId, input.terminalId));
+      if (existing !== undefined) {
+        const nextCwd = yield* validateCwd(record.value, input.cwd);
+        if (existing.cwd !== nextCwd || existing.status === "exited") {
+          if (options?.allowStart === false) {
+            return yield* new TerminalNotRunningError(input);
+          }
+          yield* closeSession(existing, false);
+          return snapshotFor(yield* startSession(input, record.value));
+        }
+        existing.stopOnSettle = input.stopOnSettle ?? existing.stopOnSettle;
+        if (input.cols !== undefined) existing.cols = input.cols;
+        if (input.rows !== undefined) existing.rows = input.rows;
+        upsertMetadata(existing);
+        return snapshotFor(existing);
+      }
+      if (options?.allowStart === false) {
+        return yield* new TerminalSessionLookupError(input);
+      }
+      const session = yield* startSession(input, record.value);
+      return snapshotFor(session);
+    },
+  );
 
   const closeSession = Effect.fn("CloudTerminal.closeSession")(function* (
     session: CloudTerminalSession,
@@ -372,16 +406,23 @@ const make = Effect.gen(function* () {
     }
   });
 
-  const getOrOpen = Effect.fn("CloudTerminal.getOrOpen")(function* (input: TerminalAttachInput) {
+  const getOrOpen = Effect.fn("CloudTerminal.getOrOpen")(function* (
+    input: TerminalAttachInput,
+    allowStart: boolean,
+  ) {
     const existing = sessions.get(sessionKey(input.threadId, input.terminalId));
     if (existing !== undefined) {
       if (existing.status === "running" || existing.status === "starting") return existing;
       if (input.resume === true || input.cwd === undefined) return existing;
+      if (!allowStart) return yield* new TerminalNotRunningError(input);
       yield* closeSession(existing, false);
     } else if (input.resume === true) {
       return yield* new TerminalSessionLookupError(input);
     }
     if (input.cwd === undefined) {
+      return yield* new TerminalSessionLookupError(input);
+    }
+    if (!allowStart) {
       return yield* new TerminalSessionLookupError(input);
     }
     const record = yield* recordFor(input.threadId);
@@ -406,10 +447,10 @@ const make = Effect.gen(function* () {
     );
   });
 
-  const attachOutputStream: CloudTerminal["Service"]["attachOutputStream"] = (input) =>
+  const attachOutputStream: CloudTerminal["Service"]["attachOutputStream"] = (input, options) =>
     Stream.unwrap(
       Effect.gen(function* () {
-        const session = yield* getOrOpen(input);
+        const session = yield* getOrOpen(input, options?.allowStart ?? true);
         const queue = yield* Queue.unbounded<TerminalAttachStreamEvent>();
         const live = (event: TerminalAttachStreamEvent) => {
           Queue.offerUnsafe(queue, event);
@@ -556,6 +597,7 @@ const make = Effect.gen(function* () {
 
   return CloudTerminal.of({
     hasThread,
+    hasLiveSession,
     open,
     attachOutputStream,
     observeOutputStream,

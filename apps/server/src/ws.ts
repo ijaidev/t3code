@@ -105,7 +105,11 @@ import {
   EnvironmentAuthorizationError,
   SandboxError,
   ThreadId,
+  type TerminalAttachInput,
+  type TerminalAttachStreamEvent,
+  type TerminalError,
   type TerminalMetadataStreamEvent,
+  type TerminalOpenInput,
   type PullRequestRef,
   WS_METHODS,
   WsRpcGroup,
@@ -1639,6 +1643,46 @@ export const layerWsRpc = (
           onSome: (service) =>
             service.forWorkspace(cwd).pipe(Effect.map(Option.map(() => service))),
         });
+      const openTerminal = Effect.fn("ws.terminalOpen")(function* (input: TerminalOpenInput) {
+        const cloud = yield* cloudTerminalFor(input.threadId);
+        if (Option.isNone(cloud)) {
+          const launch = yield* prepareTerminalLaunch(input);
+          return yield* terminalManager
+            .open(launch.input)
+            .pipe(Effect.provideService(TerminalManager.TerminalCwdRecovery, launch.recover));
+        }
+        const hasLiveSession = yield* cloud.value.hasLiveSession(input);
+        const access = CloudTerminal.cloudTerminalAccess({
+          hasLiveSession,
+          hasOrchestrationScope: currentSession.scopes.includes(AuthOrchestrationOperateScope),
+        });
+        if (access === "denied") {
+          return yield* rpcAuthorizationError(AuthOrchestrationOperateScope);
+        }
+        return yield* cloud.value.open(input, { allowStart: access === "start" });
+      });
+      const attachTerminal = Effect.fn("ws.terminalAttach")(function* (
+        input: TerminalAttachInput,
+        viewerId: string,
+      ): Effect.fn.Return<
+        Stream.Stream<TerminalAttachStreamEvent, TerminalError | EnvironmentAuthorizationError>
+      > {
+        const cloud = yield* cloudTerminalFor(input.threadId);
+        if (Option.isNone(cloud)) {
+          const launch = yield* prepareTerminalLaunch(input);
+          return terminalManager
+            .attachOutputStream(launch.input, viewerId)
+            .pipe(Stream.provideService(TerminalManager.TerminalCwdRecovery, launch.recover));
+        }
+        const hasLiveSession = yield* cloud.value.hasLiveSession(input);
+        const access = CloudTerminal.cloudTerminalAccess({
+          hasLiveSession,
+          hasOrchestrationScope: currentSession.scopes.includes(AuthOrchestrationOperateScope),
+        });
+        return access === "denied"
+          ? Stream.fail(rpcAuthorizationError(AuthOrchestrationOperateScope))
+          : cloud.value.attachOutputStream(input, { allowStart: access === "start" });
+      });
       const getFilesystemMetadata = Effect.fn("ws.filesystemGetMetadata")(function* (
         input: FilesystemGetMetadataInput,
       ) {
@@ -1748,13 +1792,6 @@ export const layerWsRpc = (
         currentSession.scopes.includes(requiredScope)
           ? effect
           : Effect.fail(rpcAuthorizationError(requiredScope));
-      const authorizeStream = <A, E, R>(
-        requiredScope: AuthEnvironmentScope,
-        stream: Stream.Stream<A, E, R>,
-      ): Stream.Stream<A, E | EnvironmentAuthorizationError, R> =>
-        currentSession.scopes.includes(requiredScope)
-          ? stream
-          : Stream.fail(rpcAuthorizationError(requiredScope));
 
       const listAcpRegistrySessions = Effect.fn("ws.acpRegistry.listSessions")(function* (
         input: AcpRegistryListSessionsInput,
@@ -3598,56 +3635,9 @@ export const layerWsRpc = (
         [WS_METHODS.reviewGetBranchCommits]: (input) => review.getBranchCommits(input),
         [WS_METHODS.reviewGetDiffPreview]: (input) => review.getDiffPreview(input),
         [WS_METHODS.reviewGetDiffFileContents]: (input) => review.getDiffFileContents(input),
-        [WS_METHODS.terminalOpen]: (input) =>
-          cloudTerminalFor(input.threadId).pipe(
-            Effect.flatMap(
-              Option.match({
-                onNone: () =>
-                  prepareTerminalLaunch(input).pipe(
-                    Effect.flatMap((launch) =>
-                      terminalManager
-                        .open(launch.input)
-                        .pipe(
-                          Effect.provideService(
-                            TerminalManager.TerminalCwdRecovery,
-                            launch.recover,
-                          ),
-                        ),
-                    ),
-                  ),
-                // A cloud terminal can wake billable compute, so opening one needs the same
-                // grant as the dedicated wake RPC even though typing in a running shell does not.
-                onSome: (cloud) =>
-                  authorizeEffect(AuthOrchestrationOperateScope, cloud.open(input)),
-              }),
-            ),
-          ),
+        [WS_METHODS.terminalOpen]: (input) => openTerminal(input),
         [WS_METHODS.terminalAttach]: (input, metadata) =>
-          Stream.unwrap(
-            cloudTerminalFor(input.threadId).pipe(
-              Effect.map(
-                Option.match({
-                  onNone: () =>
-                    Stream.unwrap(
-                      prepareTerminalLaunch(input).pipe(
-                        Effect.map((launch) =>
-                          terminalManager
-                            .attachOutputStream(launch.input, terminalViewerId(metadata))
-                            .pipe(
-                              Stream.provideService(
-                                TerminalManager.TerminalCwdRecovery,
-                                launch.recover,
-                              ),
-                            ),
-                        ),
-                      ),
-                    ),
-                  onSome: (cloud) =>
-                    authorizeStream(AuthOrchestrationOperateScope, cloud.attachOutputStream(input)),
-                }),
-              ),
-            ),
-          ),
+          Stream.unwrap(attachTerminal(input, terminalViewerId(metadata))),
         [WS_METHODS.terminalWrite]: (input, metadata) =>
           cloudTerminalFor(input.threadId).pipe(
             Effect.flatMap(

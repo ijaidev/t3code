@@ -804,7 +804,11 @@ const make = Effect.gen(function* () {
           ].join("\n"),
         },
         30_000,
-      ).pipe(Effect.mapError((error) => new Error(error.detail)));
+      ).pipe(
+        Effect.mapError((error) =>
+          searchError(input, "The sandbox could not search the workspace.", error),
+        ),
+      );
 
     let regexMode = input.useRegex;
     let regexFallbackError: string | undefined;
