@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 
+import { resolveSelectedThreadWorkspace } from "../../state/selected-thread-workspace";
 import {
   resolveTerminalOpenLocation,
   stagePendingTerminalLaunch,
@@ -23,6 +24,29 @@ describe("resolveTerminalOpenLocation", () => {
     ).toEqual({
       cwd: "/repo/worktrees/feature",
       worktreePath: "/repo/worktrees/feature",
+    });
+  });
+
+  it("opens a cloud thread's terminal in its sandbox checkout", () => {
+    const workspaceRoot = resolveSelectedThreadWorkspace({
+      cloudWorkspacePath: "/home/t3/.t3/threads/thread-1",
+      shellWorktreePath: null,
+      detailWorktreePath: null,
+      projectWorkspaceRoot: "/repo",
+    });
+    expect(workspaceRoot).toBe("/home/t3/.t3/threads/thread-1");
+
+    expect(
+      resolveTerminalOpenLocation({
+        terminalLocation: null,
+        activeSessionLocation: null,
+        workspaceRoot: workspaceRoot ?? "/repo",
+        threadShellWorktreePath: null,
+        threadDetailWorktreePath: null,
+      }),
+    ).toEqual({
+      cwd: "/home/t3/.t3/threads/thread-1",
+      worktreePath: null,
     });
   });
 
