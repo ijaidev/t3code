@@ -10,6 +10,7 @@ import {
   dismissProviderStatusBannerForSession,
   ProviderStatusBanner,
 } from "./ProviderStatusBanner";
+import { CloudRecoveringBanner } from "./CloudRecoveringBanner";
 import { CloudWorkspaceLostBanner } from "./CloudWorkspaceLostBanner";
 import { dismissThreadErrorBannerForSession, ThreadErrorBanner } from "./ThreadErrorBanner";
 
@@ -47,7 +48,10 @@ export function ChatBannerLane(props: {
   return (
     <div className="chat-banner-lane pointer-events-none absolute top-0 z-30 flex flex-col">
       {props.cloudThread ? (
-        <CloudWorkspaceLostBanner environmentId={props.environmentId} threadId={props.threadId} />
+        <>
+          <CloudRecoveringBanner environmentId={props.environmentId} threadId={props.threadId} />
+          <CloudWorkspaceLostBanner environmentId={props.environmentId} threadId={props.threadId} />
+        </>
       ) : null}
       <ProviderStatusBanner
         environmentId={props.environmentId}

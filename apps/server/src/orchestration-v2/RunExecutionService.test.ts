@@ -916,6 +916,197 @@ it.effect("rechecks run ownership immediately before calling the provider", () =
   }).pipe(Effect.provide(layerRunExecutionTest)),
 );
 
+it.effect("reattaches a resumed conversation before it continues the turn", () =>
+  Effect.gen(function* () {
+    const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
+    const order: Array<string> = [];
+    const threadId = ThreadId.make("thread:run-execution-cloud-resume");
+    const providerInstanceId = ProviderInstanceId.make("opencode");
+    const session = {
+      events: Stream.never,
+      resumeThread: () => {
+        order.push("conversation");
+        return Effect.void;
+      },
+      resumeTurn: () =>
+        Effect.suspend(() => {
+          order.push("turn");
+          return Effect.void;
+        }),
+      startTurn: () => Effect.die("a resume must not start a turn"),
+    } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime;
+
+    yield* runExecution.startRootRun({
+      commandId: CommandId.make("command:run-execution-cloud-resume"),
+      appThread: rootAppThread(threadId),
+      providerSessionId: ProviderSessionId.make("session:run-execution-cloud-resume"),
+      session,
+      run: {
+        id: RunId.make("run:run-execution-cloud-resume"),
+        threadId,
+        ordinal: 1,
+        providerInstanceId,
+      } as OrchestrationV2Run,
+      rootNode: {
+        id: NodeId.make("node:run-execution-cloud-resume"),
+      } as OrchestrationV2ExecutionNode,
+      checkpointScope: {
+        id: CheckpointScopeId.make("checkpoint-scope:run-execution-cloud-resume"),
+      } as OrchestrationV2CheckpointScope,
+      providerThread: {
+        id: ProviderThreadId.make("provider-thread:run-execution-cloud-resume"),
+        driver,
+      } as OrchestrationV2ProviderThread,
+      attempt: {
+        id: RunAttemptId.make("attempt:run-execution-cloud-resume"),
+        providerTurnId: null,
+      } as OrchestrationV2RunAttempt,
+      attemptId: RunAttemptId.make("attempt:run-execution-cloud-resume"),
+      providerTurnOrdinal: 1,
+      resume: true,
+      recovered: true,
+      prepareProviderTurn: () => {
+        order.push("conversation");
+        return Effect.void;
+      },
+      message: {
+        messageId: MessageId.make("message:run-execution-cloud-resume"),
+        text: "Keep going",
+        attachments: [],
+        createdBy: "user",
+        creationSource: "web",
+      },
+      modelSelection: { instanceId: providerInstanceId, model: "opencode-go/kimi" },
+      runtimePolicy: {
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: process.cwd(),
+      },
+    });
+
+    assert.deepEqual(order, ["conversation", "turn"]);
+  }).pipe(Effect.provide(layerRunExecutionTest)),
+);
+
+it.effect("settles a resumed turn and its provider turn when the session cannot reconnect", () => {
+  const writes: Array<{ readonly type: string; readonly payload?: Record<string, unknown> }> = [];
+  const layer = RunExecutionService.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        McpAppModelContext.layerEmpty,
+        PreviewAgentActivity.layer,
+        Layer.mock(CheckpointService.CheckpointServiceV2)({ captureBaseline: () => Effect.void }),
+        layerTurnItemPositionsTest,
+        mockEventSink({
+          writeIfRunCurrent: (input) =>
+            Effect.sync(() => {
+              writes.push(...(input.events as typeof writes));
+              return { committed: true, storedEvents: [] };
+            }),
+          writeWithEffects: (input) =>
+            Effect.sync(() => {
+              writes.push(...(input.events as typeof writes));
+              return [];
+            }),
+        }),
+        IdAllocator.layer,
+        ThreadCommandExecutor.layer,
+        Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
+          ingestNormalized: () => Effect.succeed([]),
+        }),
+        ServerSettings.layerTest(),
+      ),
+    ),
+  );
+  return Effect.gen(function* () {
+    const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
+    const threadId = ThreadId.make("thread:run-execution-cloud-resume-failure");
+    const providerInstanceId = ProviderInstanceId.make("opencode");
+    const providerTurnId = ProviderTurnId.make("provider-turn:run-execution-cloud-resume-failure");
+    const session = {
+      events: Stream.never,
+      resumeTurn: () =>
+        Effect.fail(
+          new ProviderAdapter.ProviderAdapterProtocolError({
+            driver,
+            detail: "The sandbox host is gone.",
+          }),
+        ),
+      startTurn: () => Effect.die("a resume must not start a turn"),
+    } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime;
+    const message =
+      "The cloud session could not reconnect after the server restart. The turn was stopped; the transcript is unchanged.";
+
+    yield* runExecution.startRootRun({
+      commandId: CommandId.make("command:run-execution-cloud-resume-failure"),
+      appThread: rootAppThread(threadId),
+      providerSessionId: ProviderSessionId.make("session:run-execution-cloud-resume-failure"),
+      session,
+      run: {
+        id: RunId.make("run:run-execution-cloud-resume-failure"),
+        threadId,
+        ordinal: 1,
+        providerInstanceId,
+        startedAt: DateTime.makeUnsafe(0),
+      } as OrchestrationV2Run,
+      rootNode: {
+        id: NodeId.make("node:run-execution-cloud-resume-failure"),
+      } as OrchestrationV2ExecutionNode,
+      checkpointScope: {
+        id: CheckpointScopeId.make("checkpoint-scope:run-execution-cloud-resume-failure"),
+      } as OrchestrationV2CheckpointScope,
+      providerThread: {
+        id: ProviderThreadId.make("provider-thread:run-execution-cloud-resume-failure"),
+        driver,
+      } as OrchestrationV2ProviderThread,
+      attempt: {
+        id: RunAttemptId.make("attempt:run-execution-cloud-resume-failure"),
+        providerTurnId,
+        reason: "initial",
+      } as OrchestrationV2RunAttempt,
+      attemptId: RunAttemptId.make("attempt:run-execution-cloud-resume-failure"),
+      providerTurnOrdinal: 1,
+      resume: true,
+      recovered: true,
+      startFailureMessage: message,
+      message: {
+        messageId: MessageId.make("message:run-execution-cloud-resume-failure"),
+        text: "Keep going",
+        attachments: [],
+        createdBy: "user",
+        creationSource: "web",
+      },
+      modelSelection: { instanceId: providerInstanceId, model: "opencode-go/kimi" },
+      runtimePolicy: {
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: process.cwd(),
+      },
+    });
+
+    const failure = writes.find(
+      (event) => event.type === "turn-item.updated" && event.payload?.["type"] === "error",
+    );
+    assert.equal(
+      (failure?.payload?.["failure"] as { message?: string } | undefined)?.message,
+      message,
+    );
+    assert.isTrue(
+      writes.some(
+        (event) =>
+          event.type === "provider-turn.updated" &&
+          event.payload?.["id"] === providerTurnId &&
+          event.payload?.["status"] === "failed",
+      ),
+    );
+    assert.isTrue(
+      writes.some(
+        (event) => event.type === "run.updated" && event.payload?.["status"] === "failed",
+      ),
+    );
+  }).pipe(Effect.provide(layer));
+});
+
 it.effect("passes the thread's MCP app context to the provider under a safe key", () =>
   Effect.gen(function* () {
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;

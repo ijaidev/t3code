@@ -10,6 +10,7 @@ import {
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ContextHandoff,
   type OrchestrationV2ExecutionNode,
+  type OrchestrationV2ProviderSession,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2Run,
   type OrchestrationV2RunAttempt,
@@ -33,6 +34,7 @@ import * as Path from "effect/Path";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
+import * as Stream from "effect/Stream";
 
 import * as ServerConfig from "../config.ts";
 import {
@@ -70,6 +72,9 @@ import { isProviderCommand, outputInstructions } from "./runOutput.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import * as CloudProviderRuntime from "../sandbox/CloudProviderRuntime.ts";
+import * as CloudThreads from "../sandbox/CloudThreads.ts";
+import type { CloudThreadRuntimeResumeTurn } from "../sandbox/CloudThreadRuntime.ts";
 import { unsentManualContinuationSource } from "@t3tools/shared/orchestrationV2ManualContinuation";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import {
@@ -262,6 +267,14 @@ export interface ProviderTurnStartServiceV2Shape {
     readonly attemptId: RunAttemptId;
     readonly rootNodeId: NodeId;
   }) => Effect.Effect<void, ProviderTurnStartError | ProviderTurnStartRunStateMissingError>;
+  /**
+   * Reattaches a cloud run that kept running in its sandbox while the controlling server was
+   * offline. The native session resumes once and its remaining events settle the same turn.
+   */
+  readonly resumeCloudTurn: (input: {
+    readonly threadId: ThreadId;
+    readonly runId: RunId;
+  }) => Effect.Effect<void, ProviderTurnStartError>;
 }
 
 export class ProviderTurnStartServiceV2 extends Context.Service<
@@ -303,6 +316,10 @@ export const layer: Layer.Layer<
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
+    const cloudThreads = yield* Effect.serviceOption(CloudThreads.CloudThreads);
+    const cloudProviderRuntime = yield* Effect.serviceOption(
+      CloudProviderRuntime.CloudProviderRuntime,
+    );
     const restoreMissingWorktree = yield* makeRestoreMissingWorktree;
     const turnItemPositions = yield* TurnItemPositionStore.TurnItemPositionStoreV2;
 
@@ -2304,6 +2321,255 @@ export const layer: Layer.Layer<
       });
     });
 
+    const resumeCloudTurn: ProviderTurnStartServiceV2Shape["resumeCloudTurn"] = Effect.fn(
+      "ProviderTurnStartService.resumeCloudTurn",
+    )(function* (input) {
+      const { threadId, runId } = input;
+      const projection = yield* projectionStore
+        .getTurnStartContext(threadId, runId)
+        .pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
+      const run = projection.runs.find((candidate) => candidate.id === runId);
+      if (run === undefined || run.status !== "running") return;
+      const providerThread = projection.providerThreads.find(
+        (candidate) => candidate.id === run.providerThreadId,
+      );
+      if (providerThread === undefined || providerThread.providerSessionId === null) {
+        return yield* new ProviderTurnStartError({
+          runId,
+          cause: "The cloud turn's provider thread is missing, so it cannot be resumed.",
+        });
+      }
+      const beginRecovery = Option.match(cloudThreads, {
+        onNone: () => Effect.void,
+        onSome: (service) => service.beginRecovery(threadId),
+      });
+      const endRecovery = Option.match(cloudThreads, {
+        onNone: () => Effect.void,
+        onSome: (service) => service.endRecovery(threadId),
+      });
+      const native =
+        Option.isSome(cloudProviderRuntime) &&
+        cloudProviderRuntime.value.supports(providerThread.driver);
+      // Legacy hosts keep their existing recovery even if newer projection records are absent.
+      if (!native) {
+        yield* Effect.gen(function* () {
+          yield* beginRecovery;
+          yield* providerSessions.resumeCloudTurn({ threadId, runId });
+        }).pipe(Effect.ensuring(endRecovery));
+        return;
+      }
+      const rootNode = projection.nodes.find((candidate) => candidate.id === run.rootNodeId);
+      const attempt = projection.attempts.find((candidate) => candidate.id === run.activeAttemptId);
+      const providerTurn = projection.providerTurns.find(
+        (candidate) =>
+          candidate.runAttemptId === run.activeAttemptId &&
+          (candidate.status === "running" || candidate.status === "pending"),
+      );
+      const message = projection.messages.find((candidate) => candidate.id === run.userMessageId);
+      const checkpointScope = projection.checkpointScopes.find(
+        (candidate) => candidate.id === rootNode?.checkpointScopeId,
+      );
+      if (
+        rootNode === undefined ||
+        rootNode.checkpointScopeId === null ||
+        attempt === undefined ||
+        providerTurn === undefined ||
+        message === undefined ||
+        checkpointScope === undefined
+      ) {
+        return yield* new ProviderTurnStartError({
+          runId,
+          cause:
+            "The cloud turn's recovery record is incomplete, so its native session cannot be resumed.",
+        });
+      }
+      const providerSessionId = providerThread.providerSessionId;
+      const cwd =
+        projection.thread.cloudWorkspace?.workspacePath ??
+        projection.thread.worktreePath ??
+        checkpointScope.cwd;
+      const runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy = {
+        runtimeMode: projection.thread.runtimeMode,
+        interactionMode: projection.thread.interactionMode,
+        cwd: null,
+      };
+      const pendingApprovals = yield* projectionStore
+        .getThreadRecords(threadId, ["runtimeRequests"], {
+          providerTurnIds: [providerTurn.id],
+          runtimeRequestStatuses: ["pending"],
+        })
+        .pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
+      const recoveredRequests: ReadonlyArray<ProviderAdapter.ProviderAdapterV2RecoveredRequest> =
+        pendingApprovals.runtimeRequests.flatMap((request) => {
+          const item = projection.turnItems.find(
+            (candidate) =>
+              (candidate.type === "approval_request" || candidate.type === "user_input_request") &&
+              candidate.requestId === request.id,
+          );
+          const node = projection.nodes.find((candidate) => candidate.id === request.nodeId);
+          return item !== undefined && node !== undefined ? [{ request, item, node }] : [];
+        });
+      const nextItemOrdinal =
+        projection.turnItems.reduce(
+          (highest, item) => (item.runId === run.id ? Math.max(highest, item.ordinal) : highest),
+          0,
+        ) + 1;
+      const resumeData: CloudThreadRuntimeResumeTurn = {
+        runId: run.id,
+        runOrdinal: run.ordinal,
+        providerTurnId: providerTurn.id,
+        providerTurnOrdinal: providerTurn.ordinal,
+        providerThreadId: providerThread.id,
+        nodeId: providerTurn.nodeId,
+        startedAt: providerTurn.startedAt ?? run.startedAt ?? (yield* DateTime.now),
+        nextItemOrdinal,
+        // Native resume leaves the controller's pending approvals in place; it reattaches the
+        // host, which still owns the requests it was waiting on.
+        approvals: [],
+      };
+      const now = yield* DateTime.now;
+      const commandId = CommandId.make(`command:cloud-resume:${run.id}:${DateTime.formatIso(now)}`);
+      const providerSession =
+        projection.providerSessions.find((candidate) => candidate.id === providerSessionId) ??
+        ({
+          id: providerSessionId,
+          driver: providerThread.driver,
+          providerInstanceId: run.providerInstanceId,
+          status: "error",
+          cwd,
+          model: run.modelSelection.model,
+          capabilities: {},
+          extensionStatuses: [],
+          createdAt: projection.thread.createdAt,
+          updatedAt: projection.thread.updatedAt,
+          lastError: null,
+        } satisfies OrchestrationV2ProviderSession);
+      const startResume = (
+        session: ProviderAdapter.ProviderAdapterV2SessionRuntime,
+        prepareProviderTurn?: () => Effect.Effect<void, ProviderAdapter.ProviderAdapterV2Error>,
+      ) =>
+        runExecution
+          .startRootRun({
+            commandId,
+            appThread: projection.thread,
+            providerSessionId,
+            session,
+            run,
+            rootNode,
+            checkpointScope,
+            providerThread,
+            attempt: { ...attempt, providerTurnId: providerTurn.id },
+            attemptId: attempt.id,
+            baseline: Effect.void,
+            providerTurnOrdinal: providerTurn.ordinal,
+            nativeThreadHasTurns: true,
+            resume: true,
+            recovered: true,
+            startFailureMessage:
+              "The cloud session could not reconnect after the server restart. The turn was stopped; the transcript is unchanged.",
+            ...(prepareProviderTurn === undefined ? {} : { prepareProviderTurn }),
+            ...makeRunControls({
+              threadId,
+              runId,
+              attemptId: attempt.id,
+              providerThreadId: providerThread.id,
+              runOrdinal: run.ordinal,
+              worktreePath: projection.thread.worktreePath,
+              inheritedBackgroundTurnItems: [],
+            }),
+            message: {
+              messageId: message.id,
+              text: message.text,
+              attachments: message.attachments,
+              createdBy: message.createdBy,
+              creationSource: message.creationSource,
+              ...(message.scheduledTaskId === undefined
+                ? {}
+                : { scheduledTaskId: message.scheduledTaskId }),
+              ...(message.senderThreadId === undefined
+                ? {}
+                : { senderThreadId: message.senderThreadId }),
+            },
+            modelSelection: run.modelSelection,
+            runtimePolicy,
+          })
+          .pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
+      const failedSession = (failure: unknown): ProviderAdapter.ProviderAdapterV2SessionRuntime => {
+        const reconnectError = new ProviderAdapter.ProviderAdapterProtocolError({
+          driver: providerThread.driver,
+          detail: "The cloud provider session could not reconnect after the server restart.",
+          cause: failure,
+        });
+        return {
+          instanceId: run.providerInstanceId,
+          driver: providerThread.driver,
+          providerSessionId,
+          providerSession,
+          events: Stream.never,
+          ensureThread: () => Effect.succeed(providerThread),
+          resumeThread: () => Effect.succeed(providerThread),
+          startTurn: () => Effect.fail(reconnectError),
+          resumeTurn: () => Effect.fail(reconnectError),
+          steerTurn: () => Effect.fail(reconnectError),
+          interruptTurn: () => Effect.void,
+          respondToRuntimeRequest: () => Effect.void,
+          readThreadSnapshot: () => Effect.die("The reconnected session has no transcript."),
+          rollbackThread: () => Effect.die("The reconnected session cannot roll back."),
+          forkThread: () => Effect.die("The reconnected session cannot fork."),
+        };
+      };
+      yield* Effect.gen(function* () {
+        yield* beginRecovery;
+        if (!native) {
+          yield* providerSessions.resumeCloudTurn({ threadId, runId });
+          return;
+        }
+        const opened = yield* providerSessions
+          .open({
+            threadId,
+            providerSessionId,
+            modelSelection: run.modelSelection,
+            runtimePolicy,
+            resumeCloudTurn: resumeData,
+          })
+          .pipe(Effect.result);
+        const openedSession = opened._tag === "Success" ? opened.success : undefined;
+        // A failed open still settles the turn through run execution, so its transcript row and
+        // the run keep the real reason instead of staying live forever.
+        yield* Effect.gen(function* () {
+          yield* startResume(
+            openedSession ?? failedSession(opened._tag === "Failure" ? opened.failure : undefined),
+            openedSession === undefined
+              ? undefined
+              : () =>
+                  openedSession.resumeThread({
+                    providerThread,
+                    threadId,
+                    modelSelection: run.modelSelection,
+                    runtimePolicy,
+                    preservePendingRequests: true,
+                    ...(recoveredRequests.length === 0 ? {} : { recoveredRequests }),
+                  }),
+          );
+          // A Stop that landed while the resume was opening must not leave the session in use.
+          const currentRun = yield* projectionStore
+            .getRun(threadId, runId)
+            .pipe(Effect.orElseSucceed(() => undefined));
+          if (currentRun === undefined || currentRun.status !== "running") {
+            yield* providerSessions.close(providerSessionId).pipe(Effect.ignore);
+          }
+        }).pipe(
+          // A failed terminal write must not leave the opened session registered and busy; a
+          // retry reopens and reattaches the same recorded turn.
+          Effect.onError(() =>
+            openedSession === undefined
+              ? Effect.void
+              : providerSessions.close(providerSessionId).pipe(Effect.ignore),
+          ),
+        );
+      }).pipe(Effect.ensuring(endRecovery));
+    });
+
     return ProviderTurnStartServiceV2.of({
       start: Effect.fn("ProviderTurnStartService.start")(
         function* (input) {
@@ -2420,6 +2686,7 @@ export const layer: Layer.Layer<
             ),
           ),
       ),
+      resumeCloudTurn,
     });
   }),
 );

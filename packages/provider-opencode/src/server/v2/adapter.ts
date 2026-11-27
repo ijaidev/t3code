@@ -361,6 +361,8 @@ interface ThreadState {
   agent: string;
   title: string | undefined;
   rules: ReadonlyArray<Rule> | undefined;
+  /** Controller rows to map onto native requests still open after a recovery resume. */
+  recoveredRequests: ReadonlyArray<ProviderAdapter.ProviderAdapterV2RecoveredRequest> | undefined;
   policy: RulesPolicy;
   readonly grants: Array<Rule>;
   readonly calls: Map<string, SubagentCall>;
@@ -942,6 +944,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       agent: "build",
       title: undefined,
       rules: undefined,
+      recoveredRequests: undefined,
       policy: input.runtimePolicy,
       grants: [],
       calls: new Map(),
@@ -2569,6 +2572,75 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       }
     });
 
+    // A recovery keeps the controller's T3 request ids: map them onto the native requests the
+    // resumed session still waits on instead of allocating replacements.
+    const seedRecoveredRequests = Effect.fnUntraced(function* (
+      state: ThreadState,
+      turn: ActiveTurn,
+      resume: boolean,
+    ) {
+      const recovered = state.recoveredRequests;
+      if (!resume || recovered === undefined || recovered.length === 0) {
+        state.recoveredRequests = undefined;
+        return;
+      }
+      yield* Effect.gen(function* () {
+        const sessionID = Session.ID.make(state.sessionId);
+        const listed = yield* Effect.all([
+          client.permission.list({ sessionID }),
+          client.session.form.list({ sessionID }),
+        ]).pipe(Effect.timeout(ACTIVE_CHECK_TIMEOUT), Effect.option);
+        if (listed._tag === "None") {
+          return yield* Effect.logWarning(
+            "Could not reattach an OpenCode session's open requests.",
+          );
+        }
+        const [permissions, forms] = listed.value;
+        for (const recoveredRequest of recovered) {
+          const nativeId = recoveredRequest.request.nativeRequestRef?.nativeId;
+          if (nativeId === undefined) continue;
+          if ([...pending.values()].some((entry) => entry.native.id === nativeId)) continue;
+          const permission = permissions.find((request) => request.id === nativeId);
+          const form = forms.find((candidate) => candidate.id === nativeId);
+          if (permission !== undefined) {
+            pending.set(recoveredRequest.request.id, {
+              request: recoveredRequest.request,
+              item: recoveredRequest.item,
+              node: recoveredRequest.node,
+              state,
+              turn,
+              sessionId: state.sessionId,
+              answering: false,
+              native: {
+                type: "permission",
+                id: permission.id,
+                action: permission.action,
+                resources: permission.resources,
+                save: permission.save ?? [],
+              },
+            });
+          } else if (form !== undefined) {
+            pending.set(recoveredRequest.request.id, {
+              request: recoveredRequest.request,
+              item: recoveredRequest.item,
+              node: recoveredRequest.node,
+              state,
+              turn,
+              sessionId: state.sessionId,
+              answering: false,
+              native: { type: "form", id: form.id, form },
+            });
+          }
+        }
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            state.recoveredRequests = undefined;
+          }),
+        ),
+      );
+    });
+
     const showRequest = Effect.fnUntraced(function* (
       sessionId: string,
       native: PendingRequest["native"],
@@ -2593,6 +2665,14 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       const target = requestTurn(sessionId);
       if (target === undefined) return;
       const { state, turn } = target;
+      // The recovery seed owns this native request's T3 id; an early event must not allocate one.
+      if (
+        state.recoveredRequests?.some(
+          (recovered) => recovered.request.nativeRequestRef?.nativeId === native.id,
+        ) === true
+      ) {
+        return;
+      }
       if ([...pending.values()].some((entry) => entry.native.id === native.id)) return;
       const now = yield* DateTime.now;
       const requestId = yield* idAllocator.allocate.runtimeRequest({
@@ -4905,7 +4985,12 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           const cwd = threadInput.runtimePolicy?.cwd;
           const loaded = threads.has(sessionId);
           const state = register(providerThread, native, cwd ?? native.location.directory);
-          if (!loaded) yield* stopLeftoverRequests(state);
+          state.recoveredRequests = threadInput.recoveredRequests;
+          // A recovery resume keeps the approvals the controller still shows pending; a normal
+          // load drops requests T3 already expired with the old process.
+          if (!loaded && threadInput.preservePendingRequests !== true) {
+            yield* stopLeftoverRequests(state);
+          }
           if (!loaded && supportsNativeGoals()) {
             yield* readGoal(state).pipe(
               Effect.timeout(INVENTORY_TIMEOUT),
@@ -5041,6 +5126,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
               yield* prepareTurn(sessionId, state, turnInput);
               const turn = yield* begin;
               turn.unsent = true;
+              yield* seedRecoveredRequests(state, turn, turnInput.resume === true);
               yield* lock.withPermit(takeRunningWake(state));
               return { state, sessionId, turn };
             }),

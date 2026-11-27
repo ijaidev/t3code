@@ -217,6 +217,7 @@ export type SandboxCreateTestSandboxInput = typeof SandboxCreateTestSandboxInput
 export const CloudSandboxStatus = Schema.Literals([
   "provisioning",
   "waking",
+  "recovering",
   "running",
   "sleeping",
   "deleting",

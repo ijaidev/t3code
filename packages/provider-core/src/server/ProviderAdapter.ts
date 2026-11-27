@@ -760,6 +760,15 @@ export type ProviderAdapterV2SubagentOutcome = {
   readonly result: OrchestrationV2Subagent["result"];
 };
 
+export interface ProviderAdapterV2RecoveredRequest {
+  readonly request: OrchestrationV2RuntimeRequest;
+  readonly item: Extract<
+    OrchestrationV2TurnItem,
+    { readonly type: "approval_request" | "user_input_request" }
+  >;
+  readonly node: OrchestrationV2ExecutionNode;
+}
+
 export interface ProviderAdapterV2SessionRuntime {
   readonly instanceId: ProviderInstanceId;
   readonly driver: ProviderDriverKind;
@@ -797,6 +806,13 @@ export interface ProviderAdapterV2SessionRuntime {
     readonly threadId?: ThreadId;
     readonly modelSelection?: ModelSelection;
     readonly runtimePolicy?: ProviderAdapterV2RuntimePolicy;
+    /**
+     * A controller restart reattaches to the native session; its open approvals are still the
+     * user's to answer. A normal idle unload leaves them to be expired with the old process.
+     */
+    readonly preservePendingRequests?: boolean;
+    /** The controller's pending rows to map back onto the native requests still open. */
+    readonly recoveredRequests?: ReadonlyArray<ProviderAdapterV2RecoveredRequest>;
     /** The native session is the only copy of the thread's imported history: fail when it is gone. */
     readonly importedNativeSession?: boolean;
   }) => Effect.Effect<OrchestrationV2ProviderThread, ProviderAdapterV2Error>;

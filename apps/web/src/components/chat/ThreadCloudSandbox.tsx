@@ -34,6 +34,7 @@ import { ThreadDetailsSection } from "./ThreadDetailsSection";
 const STATUS_LABELS: Readonly<Record<CloudSandboxStatus, string>> = {
   provisioning: msg("Provisioning"),
   waking: msg("Waking"),
+  recovering: msg("Recovering"),
   running: msg("Running"),
   sleeping: msg("Sleeping"),
   deleting: msg("Deleting"),

@@ -17,13 +17,17 @@ import {
   ProviderTurnId,
   RunAttemptId,
   RunId,
-  type RuntimeRequestId,
+  RuntimeRequestId,
   ThreadId,
+  TurnItemId,
   type ModelSelection,
   type OrchestrationV2AppThread,
+  type OrchestrationV2ExecutionNode,
   type OrchestrationV2ProviderFailure,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2ProviderTurn,
+  type OrchestrationV2RuntimeRequest,
+  type OrchestrationV2TurnItem,
   type ProviderReplayEntry,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -3139,6 +3143,113 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
       });
       const terminal = yield* terminalOf(runtime).pipe(Effect.forkScoped);
       yield* runtime.startTurn(turnInput(thread));
+      assert.equal((yield* Fiber.join(terminal))?.status, "completed");
+    }),
+  );
+
+  it.effect("rehydrates a pending approval after recovery and answers the native request", () =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const requestId = RuntimeRequestId.make("runtime-request:opencode2-recovered-approval");
+      const request = {
+        id: requestId,
+        nodeId: NodeId.make("node:opencode2-recovered-approval"),
+        providerTurnId: null,
+        nativeRequestRef: {
+          driver: OPENCODE_PROVIDER,
+          nativeId: shellAsk.data.id,
+          strength: "strong",
+        },
+        kind: "command",
+        status: "pending",
+        responseCapability: {
+          type: "live",
+          providerSessionId: ProviderSessionId.make("provider-session:opencode2-adapter"),
+        },
+        createdAt: now,
+        resolvedAt: null,
+      } satisfies OrchestrationV2RuntimeRequest;
+      const item = {
+        id: TurnItemId.make("turn-item:opencode2-recovered-approval"),
+        threadId,
+        runId: RunId.make("run:opencode2-recovered-approval"),
+        nodeId: request.nodeId,
+        providerThreadId: providerThread(now).id,
+        providerTurnId: ProviderTurnId.make("provider-turn:opencode2-recovered-approval"),
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: 1,
+        status: "waiting",
+        title: "Run command",
+        startedAt: now,
+        completedAt: null,
+        updatedAt: now,
+        type: "approval_request",
+        requestId,
+        requestKind: "command",
+        prompt: "pwd",
+      } satisfies OrchestrationV2TurnItem;
+      const node = {
+        id: request.nodeId,
+        threadId,
+        runId: item.runId,
+        parentNodeId: null,
+        rootNodeId: NodeId.make("node:opencode2-recovered-approval-root"),
+        kind: "approval_request",
+        status: "waiting",
+        countsForRun: false,
+        providerThreadId: item.providerThreadId,
+        providerTurnId: null,
+        nativeItemRef: null,
+        runtimeRequestId: requestId,
+        checkpointScopeId: null,
+        startedAt: now,
+        completedAt: null,
+      } satisfies OrchestrationV2ExecutionNode;
+      const runtime = yield* openCode2ReplayRuntime(
+        [
+          ...opening,
+          out("session.get", { sessionID: SESSION }),
+          replyData("session.get", sessionInfo()),
+          out("session.instructions.entry.put", {
+            sessionID: SESSION,
+            key: "t3-code",
+            value: "<any>",
+          }),
+          reply("session.instructions.entry.put", null),
+          out("permission.list", { sessionID: SESSION }),
+          replyData("permission.list", [shellAsk.data]),
+          out("session.form.list", { sessionID: SESSION }),
+          replyData("session.form.list", []),
+          out("session.prompt", { sessionID: SESSION, text: "" }),
+          promptAccepted,
+          event("session.execution.started", { sessionID: SESSION }),
+          out("permission.reply", {
+            sessionID: SESSION,
+            requestID: shellAsk.data.id,
+            decision: "once",
+          }),
+          reply("permission.reply", null),
+          event("session.execution.succeeded", { sessionID: SESSION }),
+        ],
+        { external: true },
+      );
+      const thread = yield* runtime.resumeThread({
+        providerThread: providerThread(now),
+        threadId,
+        modelSelection: bigPickle,
+        runtimePolicy: policy(),
+        preservePendingRequests: true,
+        recoveredRequests: [{ request, item, node }],
+      });
+      const terminal = yield* terminalOf(runtime).pipe(Effect.forkScoped);
+      const { message, ...input } = turnInput(thread);
+      yield* runtime.resumeTurn!({ ...input, messageId: message.messageId });
+      yield* runtime.respondToRuntimeRequest({ requestId, decision: "accept" });
+      const answered = yield* runtime
+        .respondToRuntimeRequest({ requestId, decision: "accept" })
+        .pipe(Effect.flip);
+      assert.include(answered.message, "No pending OpenCode request");
       assert.equal((yield* Fiber.join(terminal))?.status, "completed");
     }),
   );

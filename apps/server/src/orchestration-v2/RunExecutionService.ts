@@ -651,6 +651,15 @@ export interface RunExecutionServiceV2StartRootRunInput {
   readonly providerTurnOrdinal: number;
   readonly nativeThreadHasTurns?: boolean;
   readonly resume?: boolean;
+  /** Reattaches a turn that was already running; it is not a new run start. */
+  readonly recovered?: boolean;
+  /**
+   * Reattaches the provider conversation after the event subscription is live and before the
+   * resumed turn continues, so replayed approvals reach this run.
+   */
+  readonly prepareProviderTurn?: () => Effect.Effect<void, ProviderAdapter.ProviderAdapterV2Error>;
+  /** A curated failure message when a reattached turn cannot be resumed. */
+  readonly startFailureMessage?: string;
   readonly loadInheritedBackgroundTurnItems?: () => Effect.Effect<
     ReadonlyArray<InheritedBackgroundTurnItemRoute>,
     unknown
@@ -1239,7 +1248,7 @@ export const layer: Layer.Layer<
             ? {}
             : { restartContinuation: true }),
         } satisfies ProviderUsageAnalytics.ProviderTurnAnalyticsContext;
-        if (input.attempt.reason === "initial") {
+        if (input.attempt.reason === "initial" && input.recovered !== true) {
           yield* turnAnalytics.runStarted({
             runId: input.run.id,
             driver: input.providerThread.driver,
@@ -2348,7 +2357,9 @@ export const layer: Layer.Layer<
                   }),
                 ))
               : input.session.startTurn(turnInput);
-        yield* Effect.andThen(shouldStart, startTurn).pipe(
+        const prepareProviderTurn = input.prepareProviderTurn?.() ?? Effect.void;
+        yield* Effect.andThen(shouldStart, prepareProviderTurn).pipe(
+          Effect.andThen(startTurn),
           // Wait for acceptance so abandoned startup cannot leave a refresher
           // on the already-detached ingestion fiber.
           Effect.tap(() =>
@@ -2369,26 +2380,47 @@ export const layer: Layer.Layer<
                   Effect.flatMap((latestItemOrdinal) =>
                     Ref.get(openRunOwnedSubagents).pipe(
                       Effect.flatMap((openSubagents) =>
-                        writeFinalRunEvents({
-                          run: input.run,
-                          rootNode: input.rootNode,
-                          checkpointScope: input.checkpointScope,
-                          providerThread,
-                          attempt: input.attempt,
-                          writeIfRunCurrent: {
-                            activeAttemptId: input.attempt.id,
-                            expectedStatus: "running",
-                          },
-                          openRunOwnedSubagents: openSubagents,
-                          terminal: makeFailedTerminalEvent(
-                            makeProviderFailure({
-                              cause: Cause.squash(cause),
-                              class: Exit.isFailure(shouldStart) ? "unknown" : "provider_error",
-                            }),
-                            latestItemOrdinal + 1,
-                          ),
-                          failureItemPersisted: false,
-                          refreshAfterTurn,
+                        Effect.gen(function* () {
+                          const completedAt = yield* DateTime.now;
+                          return yield* writeFinalRunEvents({
+                            run: input.run,
+                            rootNode: input.rootNode,
+                            checkpointScope: input.checkpointScope,
+                            providerThread,
+                            attempt: input.attempt,
+                            writeIfRunCurrent: {
+                              activeAttemptId: input.attempt.id,
+                              expectedStatus: "running",
+                            },
+                            openRunOwnedSubagents: openSubagents,
+                            ...(input.recovered === true && input.attempt.providerTurnId !== null
+                              ? {
+                                  abandonedProviderTurn: {
+                                    id: input.attempt.providerTurnId,
+                                    providerThreadId: input.providerThread.id,
+                                    nodeId: input.rootNode.id,
+                                    runAttemptId: input.attempt.id,
+                                    nativeTurnRef: null,
+                                    ordinal: input.providerTurnOrdinal,
+                                    status: "failed" as const,
+                                    startedAt: input.run.startedAt ?? completedAt,
+                                    completedAt,
+                                  },
+                                }
+                              : {}),
+                            terminal: makeFailedTerminalEvent(
+                              makeProviderFailure({
+                                cause: Cause.squash(cause),
+                                ...(input.startFailureMessage === undefined
+                                  ? {}
+                                  : { message: input.startFailureMessage }),
+                                class: Exit.isFailure(shouldStart) ? "unknown" : "provider_error",
+                              }),
+                              latestItemOrdinal + 1,
+                            ),
+                            failureItemPersisted: false,
+                            refreshAfterTurn,
+                          });
                         }),
                       ),
                     ),

@@ -159,7 +159,7 @@ export const layerExecutor: Layer.Layer<
         const willRetry = options?.willRetry ?? false;
         switch (effect.request.type) {
           case "cloud-thread.resume": {
-            return providerSessions
+            return providerTurnStart
               .resumeCloudTurn({
                 threadId: effect.threadId,
                 runId: effect.request.runId,
