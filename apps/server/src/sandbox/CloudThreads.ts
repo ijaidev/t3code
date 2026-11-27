@@ -97,6 +97,15 @@ export interface CloudThreadExecResult {
   readonly stderr: string;
 }
 
+export interface CloudThreadStartProcessInput {
+  readonly threadId: ThreadId;
+  readonly command: string;
+  readonly cwd?: string;
+  readonly envs?: Readonly<Record<string, string>>;
+  readonly onStdout: (data: string) => void;
+  readonly onStderr: (data: string) => void;
+}
+
 export interface CloudHostMessage {
   readonly type: string;
   readonly [key: string]: unknown;
@@ -272,6 +281,10 @@ export class CloudThreads extends Context.Service<
     readonly exec: (
       input: CloudThreadExecInput,
     ) => Effect.Effect<CloudThreadExecResult, CloudThreadError>;
+    /** Starts a streaming process for interactive surfaces such as the terminal. */
+    readonly startProcess?: (
+      input: CloudThreadStartProcessInput,
+    ) => Effect.Effect<SandboxProviderProcess, CloudThreadError>;
     readonly writeAttachment: (
       threadId: ThreadId,
       path: string,
@@ -517,6 +530,48 @@ const make = Effect.gen(function* () {
         ),
       );
     return result;
+  });
+
+  const startProcess: NonNullable<CloudThreads["Service"]["startProcess"]> = Effect.fn(
+    "CloudThreads.startProcess",
+  )(function* (input) {
+    yield* wakeCloudSandbox(input.threadId);
+    const sandbox = yield* requireSandbox(input.threadId);
+    const { account, driver } = yield* resolveSandbox(sandbox, "start-host");
+    const start = driver.startProcess;
+    if (start === undefined) {
+      return yield* new CloudThreadError({
+        operation: "start-host",
+        threadId: input.threadId,
+        detail: `${driver.label} cannot start an interactive process.`,
+      });
+    }
+    if (sandbox.providerSandboxId === null) {
+      return yield* new CloudThreadError({
+        operation: "start-host",
+        threadId: input.threadId,
+        detail: "The sandbox is still provisioning. Try again in a moment.",
+      });
+    }
+    return yield* start({
+      account,
+      providerSandboxId: sandbox.providerSandboxId,
+      command: input.command,
+      ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
+      ...(input.envs === undefined ? {} : { envs: input.envs }),
+      onStdout: input.onStdout,
+      onStderr: input.onStderr,
+    }).pipe(
+      Effect.mapError(
+        (error) =>
+          new CloudThreadError({
+            operation: "start-host",
+            threadId: input.threadId,
+            detail: error.detail,
+            statusCode: error.statusCode,
+          }),
+      ),
+    );
   });
 
   const markSandbox = Effect.fn("CloudThreads.markSandbox")(function* (
@@ -1847,6 +1902,7 @@ const make = Effect.gen(function* () {
     getRecord,
     forWorkspace,
     exec,
+    startProcess,
     writeAttachment,
     openHost,
     openProviderHost,

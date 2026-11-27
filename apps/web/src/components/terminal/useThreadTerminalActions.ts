@@ -40,6 +40,7 @@ export function useThreadTerminalActions(threadRef: ScopedThreadRef | null) {
       ? scopeProjectRef(draftThread.environmentId, draftThread.projectId)
       : null;
   const project = useProject(projectRef);
+  const threadCloudWorkspacePath = serverThread?.cloudWorkspace?.workspacePath ?? null;
   const threadWorktreePath = serverThread?.worktreePath ?? draftThread?.worktreePath ?? null;
   const knownSessions = useKnownTerminalSessions({
     environmentId: threadRef?.environmentId ?? null,
@@ -72,8 +73,11 @@ export function useThreadTerminalActions(threadRef: ScopedThreadRef | null) {
     return nextTerminalId([...ids], canReuse ? undefined : randomUUID());
   };
 
-  const defaultLaunchLocation = (): TerminalLaunchLocation | null =>
-    project
+  const defaultLaunchLocation = (): TerminalLaunchLocation | null => {
+    if (threadCloudWorkspacePath !== null) {
+      return { cwd: threadCloudWorkspacePath, worktreePath: null };
+    }
+    return project
       ? {
           cwd: projectScriptCwd({
             project: { cwd: project.workspaceRoot },
@@ -82,6 +86,7 @@ export function useThreadTerminalActions(threadRef: ScopedThreadRef | null) {
           worktreePath: threadWorktreePath,
         }
       : null;
+  };
 
   /** place mounts the destination before the server open resolves. */
   const launchTerminal = (input: {

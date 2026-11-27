@@ -94,6 +94,7 @@ import {
   type ServerProvider,
   serverProviderDeltas,
   type FilesystemBrowseFailure,
+  type FilesystemGetMetadataInput,
   FilesystemBrowseError,
   AssetWorkspaceContextNotFoundError,
   AssetWorkspaceContextResolutionError,
@@ -136,8 +137,10 @@ import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
 import * as SandboxAccounts from "./sandbox/SandboxAccounts.ts";
 import * as SandboxLifecycle from "./sandbox/SandboxLifecycle.ts";
 import * as CloudTargets from "./sandbox/CloudTargets.ts";
+import * as CloudTerminal from "./sandbox/CloudTerminal.ts";
 import * as CloudThreadPorts from "./sandbox/CloudThreadPorts.ts";
 import * as CloudThreads from "./sandbox/CloudThreads.ts";
+import * as CloudWorkspace from "./sandbox/CloudWorkspace.ts";
 import { projectPublicRemote } from "./sandbox/CloudRepository.ts";
 import * as Workflows from "./workflows/Workflows.ts";
 import * as WorkflowRuntime from "./workflows/WorkflowRuntime.ts";
@@ -1620,6 +1623,52 @@ export const layerWsRpc = (
       const sandboxAccounts = yield* SandboxAccounts.SandboxAccounts;
       const sandboxLifecycle = yield* SandboxLifecycle.SandboxLifecycle;
       const cloudThreads = yield* Effect.serviceOption(CloudThreads.CloudThreads);
+      const cloudWorkspace = yield* Effect.serviceOption(CloudWorkspace.CloudWorkspace);
+      const cloudTerminal = yield* Effect.serviceOption(CloudTerminal.CloudTerminal);
+      const cloudTerminalFor = (threadId: string) =>
+        Option.match(cloudTerminal, {
+          onNone: () => Effect.succeed(Option.none<CloudTerminal.CloudTerminal["Service"]>()),
+          onSome: (service) =>
+            service
+              .hasThread(threadId)
+              .pipe(Effect.map((hasThread) => (hasThread ? Option.some(service) : Option.none()))),
+        });
+      const cloudWorkspaceFor = (cwd: string) =>
+        Option.match(cloudWorkspace, {
+          onNone: () => Effect.succeed(Option.none<CloudWorkspace.CloudWorkspace["Service"]>()),
+          onSome: (service) =>
+            service.forWorkspace(cwd).pipe(Effect.map(Option.map(() => service))),
+        });
+      const getFilesystemMetadata = Effect.fn("ws.filesystemGetMetadata")(function* (
+        input: FilesystemGetMetadataInput,
+      ) {
+        const cloud = Option.getOrUndefined(cloudWorkspace);
+        if (cloud === undefined) return yield* workspaceFileSystem.getMetadata(input);
+        const records = yield* Effect.forEach(input.paths, (path) => cloud.forPath(path));
+        if (records.every(Option.isNone)) {
+          return yield* workspaceFileSystem.getMetadata(input);
+        }
+        const cloudResult = yield* cloud.getMetadata(input);
+        const localIndexes = records.flatMap((record, index) =>
+          Option.isNone(record) ? [index] : [],
+        );
+        const localEntries =
+          localIndexes.length === 0
+            ? []
+            : (yield* workspaceFileSystem.getMetadata({
+                paths: localIndexes.map((index) => input.paths[index]!),
+              })).entries;
+        const localByIndex = new Map(
+          localIndexes.map((index, position) => [index, localEntries[position] ?? null]),
+        );
+        return {
+          entries: input.paths.map((_, index) =>
+            Option.isSome(records[index]!)
+              ? (cloudResult.entries[index] ?? null)
+              : (localByIndex.get(index) ?? null),
+          ),
+        };
+      });
       const requireCloudThreads = Effect.fn("ws.sandbox.requireCloudThreads")(function* () {
         if (Option.isNone(cloudThreads)) {
           return yield* new SandboxError({
@@ -3175,7 +3224,13 @@ export const layerWsRpc = (
             ),
           ),
         [WS_METHODS.projectsSearchEntries]: (input) =>
-          workspaceEntries.search(input).pipe(
+          cloudWorkspaceFor(input.cwd).pipe(
+            Effect.flatMap(
+              Option.match({
+                onNone: () => workspaceEntries.search(input),
+                onSome: (cloud) => cloud.search(input),
+              }),
+            ),
             Effect.mapError(
               (cause) =>
                 new ProjectSearchEntriesError({
@@ -3188,7 +3243,13 @@ export const layerWsRpc = (
             ),
           ),
         [WS_METHODS.projectsSearchContents]: (input) =>
-          workspaceEntries.searchContents(input).pipe(
+          cloudWorkspaceFor(input.cwd).pipe(
+            Effect.flatMap(
+              Option.match({
+                onNone: () => workspaceEntries.searchContents(input),
+                onSome: (cloud) => cloud.searchContents(input),
+              }),
+            ),
             Effect.mapError(
               (cause) =>
                 new ProjectSearchContentsError({
@@ -3201,7 +3262,13 @@ export const layerWsRpc = (
             ),
           ),
         [WS_METHODS.projectsListEntries]: (input) =>
-          workspaceEntries.list(input).pipe(
+          cloudWorkspaceFor(input.cwd).pipe(
+            Effect.flatMap(
+              Option.match({
+                onNone: () => workspaceEntries.list(input),
+                onSome: (cloud) => cloud.list(input),
+              }),
+            ),
             Effect.mapError(
               (cause) =>
                 new ProjectListEntriesError({
@@ -3212,7 +3279,13 @@ export const layerWsRpc = (
             ),
           ),
         [WS_METHODS.projectsListIgnoredFiles]: (input) =>
-          workspaceEntries.listIgnoredFiles(input).pipe(
+          cloudWorkspaceFor(input.cwd).pipe(
+            Effect.flatMap(
+              Option.match({
+                onNone: () => workspaceEntries.listIgnoredFiles(input),
+                onSome: (cloud) => cloud.listIgnoredFiles(input),
+              }),
+            ),
             Effect.mapError(
               (cause) =>
                 new ProjectListEntriesError({
@@ -3223,7 +3296,13 @@ export const layerWsRpc = (
             ),
           ),
         [WS_METHODS.projectsReadFile]: (input) =>
-          workspaceFileSystem.readFile(input).pipe(
+          cloudWorkspaceFor(input.cwd).pipe(
+            Effect.flatMap(
+              Option.match({
+                onNone: () => workspaceFileSystem.readFile(input),
+                onSome: (cloud) => cloud.readFile(input),
+              }),
+            ),
             Effect.mapError(
               (cause) =>
                 new ProjectReadFileError({
@@ -3234,7 +3313,13 @@ export const layerWsRpc = (
             ),
           ),
         [WS_METHODS.projectsWriteFile]: (input) =>
-          workspaceFileSystem.writeFile(input).pipe(
+          cloudWorkspaceFor(input.cwd).pipe(
+            Effect.flatMap(
+              Option.match({
+                onNone: () => workspaceFileSystem.writeFile(input),
+                onSome: (cloud) => cloud.writeFile(input),
+              }),
+            ),
             Effect.mapError(
               (cause) =>
                 new ProjectWriteFileError({
@@ -3260,7 +3345,7 @@ export const layerWsRpc = (
             ),
           ),
         [WS_METHODS.shellOpenInEditor]: (input) => externalLauncher.launchEditor(input),
-        [WS_METHODS.filesystemGetMetadata]: (input) => workspaceFileSystem.getMetadata(input),
+        [WS_METHODS.filesystemGetMetadata]: (input) => getFilesystemMetadata(input),
         [WS_METHODS.filesystemBrowse]: (input) =>
           workspaceEntries.browse(input).pipe(
             Effect.mapError(
@@ -3507,42 +3592,160 @@ export const layerWsRpc = (
         [WS_METHODS.reviewGetDiffPreview]: (input) => review.getDiffPreview(input),
         [WS_METHODS.reviewGetDiffFileContents]: (input) => review.getDiffFileContents(input),
         [WS_METHODS.terminalOpen]: (input) =>
-          prepareTerminalLaunch(input).pipe(
-            Effect.flatMap((launch) =>
-              terminalManager
-                .open(launch.input)
-                .pipe(Effect.provideService(TerminalManager.TerminalCwdRecovery, launch.recover)),
+          cloudTerminalFor(input.threadId).pipe(
+            Effect.flatMap(
+              Option.match({
+                onNone: () =>
+                  prepareTerminalLaunch(input).pipe(
+                    Effect.flatMap((launch) =>
+                      terminalManager
+                        .open(launch.input)
+                        .pipe(
+                          Effect.provideService(
+                            TerminalManager.TerminalCwdRecovery,
+                            launch.recover,
+                          ),
+                        ),
+                    ),
+                  ),
+                onSome: (cloud) => cloud.open(input),
+              }),
             ),
           ),
         [WS_METHODS.terminalAttach]: (input, metadata) =>
           Stream.unwrap(
-            prepareTerminalLaunch(input).pipe(
-              Effect.map((launch) =>
-                terminalManager
-                  .attachOutputStream(launch.input, terminalViewerId(metadata))
-                  .pipe(Stream.provideService(TerminalManager.TerminalCwdRecovery, launch.recover)),
+            cloudTerminalFor(input.threadId).pipe(
+              Effect.map(
+                Option.match({
+                  onNone: () =>
+                    Stream.unwrap(
+                      prepareTerminalLaunch(input).pipe(
+                        Effect.map((launch) =>
+                          terminalManager
+                            .attachOutputStream(launch.input, terminalViewerId(metadata))
+                            .pipe(
+                              Stream.provideService(
+                                TerminalManager.TerminalCwdRecovery,
+                                launch.recover,
+                              ),
+                            ),
+                        ),
+                      ),
+                    ),
+                  onSome: (cloud) => cloud.attachOutputStream(input),
+                }),
               ),
             ),
           ),
         [WS_METHODS.terminalWrite]: (input, metadata) =>
-          terminalManager.write(input, terminalViewerId(metadata)),
+          cloudTerminalFor(input.threadId).pipe(
+            Effect.flatMap(
+              Option.match({
+                onNone: () => terminalManager.write(input, terminalViewerId(metadata)),
+                onSome: (cloud) => cloud.write(input),
+              }),
+            ),
+          ),
         [WS_METHODS.terminalResize]: (input, metadata) =>
-          terminalManager.resize(input, terminalViewerId(metadata)),
-        [WS_METHODS.terminalClear]: (input) => terminalManager.clear(input),
-        [WS_METHODS.terminalClose]: (input) => terminalManager.close(input),
+          cloudTerminalFor(input.threadId).pipe(
+            Effect.flatMap(
+              Option.match({
+                onNone: () => terminalManager.resize(input, terminalViewerId(metadata)),
+                onSome: (cloud) => cloud.resize(input),
+              }),
+            ),
+          ),
+        [WS_METHODS.terminalClear]: (input) =>
+          cloudTerminalFor(input.threadId).pipe(
+            Effect.flatMap(
+              Option.match({
+                onNone: () => terminalManager.clear(input),
+                onSome: (cloud) => cloud.clear(input),
+              }),
+            ),
+          ),
+        [WS_METHODS.terminalClose]: (input) =>
+          cloudTerminalFor(input.threadId).pipe(
+            Effect.flatMap(
+              Option.match({
+                onNone: () => terminalManager.close(input),
+                onSome: (cloud) => cloud.close(input),
+              }),
+            ),
+          ),
         [WS_METHODS.terminalObserve]: (input) =>
-          terminalOutputStream(
-            (listener, registerCleanup) =>
-              terminalManager.observeStream(input, listener, registerCleanup),
-            (listener, registerCleanup) =>
-              terminalManager.resyncStream(input, listener, registerCleanup),
+          Stream.unwrap(
+            cloudTerminalFor(input.threadId).pipe(
+              Effect.map(
+                Option.match({
+                  onNone: () =>
+                    terminalOutputStream(
+                      (listener, registerCleanup) =>
+                        terminalManager.observeStream(input, listener, registerCleanup),
+                      (listener, registerCleanup) =>
+                        terminalManager.resyncStream(input, listener, registerCleanup),
+                    ),
+                  onSome: (cloud) => cloud.observeOutputStream(input),
+                }),
+              ),
+            ),
           ),
         [WS_METHODS.subscribeTerminalMetadata]: (_input) =>
           Stream.callback<TerminalMetadataStreamEvent>((queue) =>
-            Effect.acquireRelease(
-              terminalManager.subscribeMetadata((event) => Queue.offer(queue, event)),
-              (unsubscribe) => Effect.sync(unsubscribe),
-            ),
+            Effect.gen(function* () {
+              const cloud = Option.getOrUndefined(cloudTerminal);
+              if (cloud === undefined) {
+                const unsubscribe = yield* terminalManager.subscribeMetadata((event) =>
+                  Queue.offer(queue, event),
+                );
+                return Effect.sync(unsubscribe);
+              }
+
+              const localState: {
+                snapshot: Extract<
+                  TerminalMetadataStreamEvent,
+                  { readonly type: "snapshot" }
+                > | null;
+              } = { snapshot: null };
+              const localBuffered: TerminalMetadataStreamEvent[] = [];
+              const cloudBuffered: TerminalMetadataStreamEvent[] = [];
+              let deliverLive = false;
+              const deliver = (event: TerminalMetadataStreamEvent) =>
+                Queue.offer(queue, event).pipe(Effect.asVoid);
+              const localUnsubscribe = yield* terminalManager.subscribeMetadata((event) => {
+                if (event.type === "snapshot" && localState.snapshot === null) {
+                  localState.snapshot = event;
+                  return Effect.void;
+                }
+                if (deliverLive) return deliver(event);
+                localBuffered.push(event);
+                return Effect.void;
+              });
+              const cloudUnsubscribe = yield* cloud.subscribeMetadata((event) => {
+                if (deliverLive) return deliver(event);
+                cloudBuffered.push(event);
+                return Effect.void;
+              });
+              const cloudTerminals = yield* cloud.listMetadata;
+              const localSnapshot = localState.snapshot;
+              yield* deliver({
+                type: "snapshot",
+                terminals: [
+                  ...(localSnapshot === null ? [] : localSnapshot.terminals),
+                  ...cloudTerminals,
+                ],
+                ...(localSnapshot?.managerId === undefined
+                  ? {}
+                  : { managerId: localSnapshot.managerId }),
+              });
+              for (const event of localBuffered) yield* deliver(event);
+              for (const event of cloudBuffered) yield* deliver(event);
+              deliverLive = true;
+              return Effect.sync(() => {
+                cloudUnsubscribe();
+                localUnsubscribe();
+              });
+            }),
           ),
         [WS_METHODS.previewOpen]: (input) => previewManager.open(input),
         [WS_METHODS.previewResize]: (input) => previewManager.resize(input),

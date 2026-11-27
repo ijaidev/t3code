@@ -134,10 +134,17 @@ export const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerm
     if (snapshotId === undefined) return;
     reconcileTerminalIds(threadRef, serverOrderedTerminalIds, snapshotId);
   }, [reconcileTerminalIds, serverOrderedTerminalIds, snapshotId, threadRef]);
+  const cloudWorkspacePath = serverThread?.cloudWorkspace?.workspacePath ?? null;
   const worktreePath = serverThread?.worktreePath ?? draftThread?.worktreePath ?? null;
-  const effectiveWorktreePath = launchContext !== null ? launchContext.worktreePath : worktreePath;
+  const effectiveWorktreePath =
+    cloudWorkspacePath !== null
+      ? null
+      : launchContext !== null
+        ? launchContext.worktreePath
+        : worktreePath;
   const cwd =
     launchContext?.cwd ??
+    cloudWorkspacePath ??
     (project
       ? projectScriptCwd({
           project: { cwd: project.workspaceRoot },
@@ -291,17 +298,22 @@ export const PersistentThreadTerminalPanel = memo(function PersistentThreadTermi
     environmentId: threadRef.environmentId,
     threadId: threadRef.threadId,
   });
+  const cloudWorkspacePath = serverThread?.cloudWorkspace?.workspacePath ?? null;
   const threadWorktreePath = serverThread?.worktreePath ?? draftThread?.worktreePath ?? null;
   const activeSummary =
     knownTerminalSessions?.find((session) => session.target.terminalId === surface.activeTerminalId)
       ?.state.summary ?? null;
-  const worktreePath = resolveTerminalWorktreePath({
-    launchContext,
-    summary: activeSummary,
-    threadWorktreePath,
-  });
+  const worktreePath =
+    cloudWorkspacePath === null
+      ? resolveTerminalWorktreePath({
+          launchContext,
+          summary: activeSummary,
+          threadWorktreePath,
+        })
+      : null;
   const cwd =
     launchContext?.cwd ??
+    cloudWorkspacePath ??
     activeSummary?.cwd ??
     (project ? projectScriptCwd({ project: { cwd: project.workspaceRoot }, worktreePath }) : null);
   const runtimeEnv = project
@@ -315,14 +327,18 @@ export const PersistentThreadTerminalPanel = memo(function PersistentThreadTermi
         .summary ?? null;
     terminalLabelsById.set(terminalId, resolveTerminalSessionLabel(terminalId, summary, messages));
     if (!project) continue;
-    const terminalWorktreePath = resolveTerminalWorktreePath({
-      launchContext,
-      summary,
-      threadWorktreePath,
-    });
+    const terminalWorktreePath =
+      cloudWorkspacePath === null
+        ? resolveTerminalWorktreePath({
+            launchContext,
+            summary,
+            threadWorktreePath,
+          })
+        : null;
     terminalLaunchLocationsById.set(terminalId, {
       cwd:
         launchContext?.cwd ??
+        cloudWorkspacePath ??
         summary?.cwd ??
         projectScriptCwd({
           project: { cwd: project.workspaceRoot },

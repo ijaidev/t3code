@@ -115,7 +115,9 @@ import * as CloudProviderRuntime from "./sandbox/CloudProviderRuntime.ts";
 import * as CloudThreadRuntime from "./sandbox/CloudThreadRuntime.ts";
 import * as CloudThreadStore from "./sandbox/CloudThreadStore.ts";
 import * as CloudSandboxPreviewBridge from "./sandbox/CloudSandboxPreviewBridge.ts";
+import * as CloudTerminal from "./sandbox/CloudTerminal.ts";
 import * as CloudThreads from "./sandbox/CloudThreads.ts";
+import * as CloudWorkspace from "./sandbox/CloudWorkspace.ts";
 import * as SandboxAccounts from "./sandbox/SandboxAccounts.ts";
 import * as SandboxLifecycle from "./sandbox/SandboxLifecycle.ts";
 import * as SandboxStore from "./sandbox/SandboxStore.ts";
@@ -533,6 +535,8 @@ const layerCloudThreadRuntime = CloudThreadRuntime.layer.pipe(
 );
 const layerCloudProviderRuntime = CloudProviderRuntime.layer.pipe(Layer.provide(layerCloudThreads));
 const layerCloudReview = CloudReview.layer.pipe(Layer.provideMerge(layerCloudThreads));
+const layerCloudWorkspace = CloudWorkspace.layer.pipe(Layer.provide(layerCloudThreads));
+const layerCloudTerminal = CloudTerminal.layer.pipe(Layer.provide(layerCloudThreads));
 
 const layerGitWorkflow = GitWorkflowService.layer.pipe(
   Layer.provideMerge(layerVcsDriverRegistry),
@@ -627,6 +631,8 @@ const layerSandbox = Layer.merge(
     layerCloudThreadPorts,
     layerCloudThreadRuntime,
     layerCloudProviderRuntime,
+    layerCloudWorkspace,
+    layerCloudTerminal,
   ),
   Layer.effectDiscard(
     Effect.gen(function* () {
