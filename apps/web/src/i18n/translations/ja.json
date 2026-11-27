@@ -3446,6 +3446,8 @@
     " からの承認が必要です"
   ],
   "1b1131295f62c44c": "プロバイダーのプロセスが終了しています。応答するには子スレッドを中断または再起動してください。",
+  "07a7e181b515e047": "Reconnecting cloud sandbox",
+  "9336dec761acd231": "The thread continues when its native session reattaches.",
   "66d606fa31ccb153": "The sandbox could not be recreated",
   "25d0be29bc61c55c": "This sandbox was deleted. Unpushed work is gone; the transcript is still here.",
   "23bbe3d9843bcf61": "The sandbox was deleted outside T3 Code. Unpushed work is gone; the transcript is still here.",
@@ -4204,6 +4206,7 @@
   ],
   "4591f72298d54b74": "Provisioning",
   "5f4ba150db3ab861": "起動中",
+  "b17f1ecc9c039e26": "Recovering",
   "7342bfc328008926": "Running",
   "7a849eb2bd8b4258": "スリープ中",
   "eba6f410ffc4c9f8": "削除中",

@@ -4905,7 +4905,11 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           const cwd = threadInput.runtimePolicy?.cwd;
           const loaded = threads.has(sessionId);
           const state = register(providerThread, native, cwd ?? native.location.directory);
-          if (!loaded) yield* stopLeftoverRequests(state);
+          // A recovery resume keeps the approvals the controller still shows pending; a normal
+          // load drops requests T3 already expired with the old process.
+          if (!loaded && threadInput.preservePendingRequests !== true) {
+            yield* stopLeftoverRequests(state);
+          }
           if (!loaded && supportsNativeGoals()) {
             yield* readGoal(state).pipe(
               Effect.timeout(INVENTORY_TIMEOUT),

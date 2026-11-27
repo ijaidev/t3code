@@ -324,8 +324,8 @@ export interface ProviderSessionManagerV2Shape {
     threadId: ThreadId,
   ) => Stream.Stream<OrchestrationV2PromptSuggestion>;
   /**
-   * Reopens the provider session for a cloud turn that survived a server restart and
-   * reattaches it to the sandbox host so its remaining events reach the transcript.
+   * Reopens the legacy cloud host session for a turn that survived a server restart. Native
+   * cloud runs resume through `ProviderTurnStartService.resumeCloudTurn` instead.
    */
   readonly resumeCloudTurn: (input: {
     readonly threadId: ThreadId;

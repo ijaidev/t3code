@@ -3143,6 +3143,26 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
     }),
   );
 
+  it.effect("keeps a recovering session's pending requests open", () =>
+    Effect.gen(function* () {
+      const runtime = yield* openCode2ReplayRuntimeWithInstructions(
+        [
+          ...opening,
+          out("session.get", { sessionID: SESSION }),
+          replyData("session.get", sessionInfo()),
+        ],
+        { external: true },
+      );
+      yield* runtime.resumeThread({
+        providerThread: providerThread(yield* DateTime.now),
+        threadId,
+        modelSelection: bigPickle,
+        runtimePolicy: policy(),
+        preservePendingRequests: true,
+      });
+    }),
+  );
+
   it.effect("ends the turn when an answer to its request cannot be delivered", () =>
     Effect.gen(function* () {
       const failedReply = reply("permission.reply", {

@@ -797,6 +797,11 @@ export interface ProviderAdapterV2SessionRuntime {
     readonly threadId?: ThreadId;
     readonly modelSelection?: ModelSelection;
     readonly runtimePolicy?: ProviderAdapterV2RuntimePolicy;
+    /**
+     * A controller restart reattaches to the native session; its open approvals are still the
+     * user's to answer. A normal idle unload leaves them to be expired with the old process.
+     */
+    readonly preservePendingRequests?: boolean;
     /** The native session is the only copy of the thread's imported history: fail when it is gone. */
     readonly importedNativeSession?: boolean;
   }) => Effect.Effect<OrchestrationV2ProviderThread, ProviderAdapterV2Error>;

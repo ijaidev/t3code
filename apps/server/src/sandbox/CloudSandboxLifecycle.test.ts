@@ -336,6 +336,34 @@ describe("cloud sandbox lifecycle", () => {
     return test;
   });
 
+  it.effect("marks a cloud thread recovering while its native session reattaches", () => {
+    const test = Effect.gen(function* () {
+      const fake = yield* makeState();
+      return yield* Effect.gen(function* () {
+        yield* connect;
+        yield* prepare;
+        const cloud = yield* CloudThreads.CloudThreads;
+        const states = yield* Queue.unbounded<CloudSandboxState>();
+        yield* Effect.forkScoped(
+          cloud
+            .subscribeCloudSandbox(threadId)
+            .pipe(Stream.runForEach((state) => Queue.offer(states, state))),
+        );
+        expect((yield* Queue.take(states)).status).toBe("running");
+
+        yield* cloud.beginRecovery(threadId);
+        const recovering = yield* Queue.take(states);
+        expect(recovering.status).toBe("recovering");
+        expect(recovering.canSleep).toBe(false);
+        expect(recovering.sleepDisabledReason).toBe("not-running");
+
+        yield* cloud.endRecovery(threadId);
+        expect((yield* Queue.take(states)).status).toBe("running");
+      }).pipe(Effect.provide(makeLayer(fakeDriver(fake))));
+    });
+    return test;
+  });
+
   it.effect("sleeps an idle sandbox and wakes it before continuing", () => {
     const test = Effect.gen(function* () {
       const fake = yield* makeState();

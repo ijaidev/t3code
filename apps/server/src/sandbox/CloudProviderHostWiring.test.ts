@@ -17,7 +17,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeSocketServer from "@effect/platform-node/NodeSocketServer";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import { describe, expect, it } from "@effect/vitest";
-import { onTestFinished } from "vite-plus/test";
+import { afterAll } from "vite-plus/test";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -25,6 +25,7 @@ import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
 
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import { PROVIDER_ADAPTER_HOST_PROTOCOL_VERSION } from "@t3tools/provider-core/server/ProviderAdapterHostProtocol";
 import { serveProviderAdapterHost } from "@t3tools/provider-core/server/ProviderAdapterHost";
 
 import * as ServerConfig from "../config.ts";
@@ -167,18 +168,28 @@ const testLayer = (driver: SandboxProviderDriver) => {
   );
 };
 
+const bundleDirs: Array<string> = [];
+let previousBundle: string | undefined;
+let bundleEnvironmentCaptured = false;
 const mockProviderHostBundle = () => {
+  if (!bundleEnvironmentCaptured) {
+    previousBundle = process.env["T3CODE_PROVIDER_HOST_BUNDLE"];
+    bundleEnvironmentCaptured = true;
+  }
   const bundleDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-provider-host-bundle-"));
+  bundleDirs.push(bundleDir);
   const bundlePath = NodePath.join(bundleDir, "provider-adapter-host.mjs");
   NodeFS.writeFileSync(bundlePath, "process.exit(0);\n");
-  const previousBundle = process.env["T3CODE_PROVIDER_HOST_BUNDLE"];
   process.env["T3CODE_PROVIDER_HOST_BUNDLE"] = bundlePath;
-  onTestFinished(() => {
-    if (previousBundle === undefined) delete process.env["T3CODE_PROVIDER_HOST_BUNDLE"];
-    else process.env["T3CODE_PROVIDER_HOST_BUNDLE"] = previousBundle;
-    NodeFS.rmSync(bundleDir, { recursive: true, force: true });
-  });
 };
+
+afterAll(() => {
+  if (previousBundle === undefined) delete process.env["T3CODE_PROVIDER_HOST_BUNDLE"];
+  else process.env["T3CODE_PROVIDER_HOST_BUNDLE"] = previousBundle;
+  for (const bundleDir of bundleDirs) {
+    NodeFS.rmSync(bundleDir, { recursive: true, force: true });
+  }
+});
 
 describe("cloud provider host wiring", () => {
   it.effect("installs the pinned runtime once and reuses the host process", () => {
@@ -241,7 +252,7 @@ describe("cloud provider host wiring", () => {
                   ),
                 ),
               ).toBe(true);
-              expect(first.protocolVersion).toBe("1");
+              expect(first.protocolVersion).toBe(PROVIDER_ADAPTER_HOST_PROTOCOL_VERSION);
               expect(first.hostVersion).toBe(PROVIDER_ADAPTER_HOST_BUILD);
               expect(second.paths.attachmentsDir).toBe("/home/t3/.t3/attachments");
 

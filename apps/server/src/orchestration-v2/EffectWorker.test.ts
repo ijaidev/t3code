@@ -133,6 +133,7 @@ function layerExecutorFor(input: {
       ProviderTurnStartService.ProviderTurnStartServiceV2,
       ProviderTurnStartService.ProviderTurnStartServiceV2.of({
         failStartingRun: () => Effect.void,
+        resumeCloudTurn: () => record("resume"),
         start: () =>
           Effect.gen(function* () {
             yield* record("start");
@@ -230,6 +231,24 @@ it.effect.each([
       });
     }).pipe(Effect.provide(layer));
     assert.deepEqual(yield* Ref.get(events), dispatched);
+  }),
+);
+
+it.effect("resumes a cloud turn through provider turn start", () =>
+  Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const events = yield* Ref.make<ReadonlyArray<string>>([]);
+    const layer = layerExecutorFor({ events });
+    yield* Effect.gen(function* () {
+      const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+      yield* executor.execute({
+        ...restartEffect(now, { type: "detach" }),
+        id: "effect:cloud-resume",
+        commandId: CommandId.make("command:cloud-resume"),
+        request: { type: "cloud-thread.resume", runId },
+      });
+    }).pipe(Effect.provide(layer));
+    assert.deepEqual(yield* Ref.get(events), ["resume"]);
   }),
 );
 

@@ -309,6 +309,9 @@ export class CloudThreads extends Context.Service<
     readonly wakeCloudSandbox: (
       threadId: ThreadId,
     ) => Effect.Effect<CloudSandboxState, CloudThreadError>;
+    /** Marks an active cloud thread as reconnecting while its native session resumes. */
+    readonly beginRecovery: (threadId: ThreadId) => Effect.Effect<void>;
+    readonly endRecovery: (threadId: ThreadId) => Effect.Effect<void>;
     readonly recreateCloudSandbox: (
       threadId: ThreadId,
     ) => Effect.Effect<CloudSandboxState, CloudThreadError>;
@@ -351,7 +354,7 @@ const make = Effect.gen(function* () {
 
   const lifecycleLock = yield* Semaphore.make(1);
   const notifications = yield* PubSub.unbounded<ThreadId>();
-  const transitions = yield* Ref.make<ReadonlyMap<ThreadId, "waking">>(new Map());
+  const transitions = yield* Ref.make<ReadonlyMap<ThreadId, "waking" | "recovering">>(new Map());
   const providerHosts = yield* Ref.make<ReadonlyMap<ThreadId, ProviderHostProcessState>>(new Map());
   const providerHostLocks = yield* Ref.make<ReadonlyMap<ThreadId, Semaphore.Semaphore>>(new Map());
   const activity = yield* Ref.make<
@@ -571,6 +574,7 @@ const make = Effect.gen(function* () {
 
     let status: CloudSandboxStatus;
     if (record?.status === "lost") status = "lost";
+    else if (waking.get(threadId) === "recovering") status = "recovering";
     else if (waking.get(threadId) === "waking") status = "waking";
     else if (sandbox === null) {
       status =
@@ -593,7 +597,7 @@ const make = Effect.gen(function* () {
       else if (!pauseResume) sleepDisabledReason = "provider-no-sleep";
       else if (currentActivity.turns > 0) sleepDisabledReason = "active-turn";
       else if (currentActivity.previews.size > 0) sleepDisabledReason = "open-preview";
-    } else if (status === "provisioning" || status === "waking") {
+    } else if (status === "provisioning" || status === "waking" || status === "recovering") {
       sleepDisabledReason = "not-running";
     }
     const canSleep = status === "running" && sleepDisabledReason === undefined;
@@ -801,6 +805,27 @@ const make = Effect.gen(function* () {
 
   const wakeCloudSandbox: CloudThreads["Service"]["wakeCloudSandbox"] = (threadId) =>
     lifecycleLock.withPermits(1)(wakeCloudSandboxUnlocked(threadId));
+
+  const beginRecovery: CloudThreads["Service"]["beginRecovery"] = Effect.fn(
+    "CloudThreads.beginRecovery",
+  )(function* (threadId) {
+    const record = yield* getRecord(threadId);
+    if (Option.isNone(record) || record.value.status === "lost") return;
+    yield* Ref.update(transitions, (current) => new Map(current).set(threadId, "recovering"));
+    yield* notify(threadId);
+  });
+
+  const endRecovery: CloudThreads["Service"]["endRecovery"] = Effect.fn("CloudThreads.endRecovery")(
+    function* (threadId) {
+      yield* Ref.update(transitions, (current) => {
+        if (current.get(threadId) !== "recovering") return current;
+        const next = new Map(current);
+        next.delete(threadId);
+        return next;
+      });
+      yield* notify(threadId);
+    },
+  );
 
   const previewCloudSandboxDelete: CloudThreads["Service"]["previewCloudSandboxDelete"] = Effect.fn(
     "CloudThreads.previewCloudSandboxDelete",
@@ -1857,6 +1882,8 @@ const make = Effect.gen(function* () {
     subscribeCloudSandbox,
     sleepCloudSandbox,
     wakeCloudSandbox,
+    beginRecovery,
+    endRecovery,
     recreateCloudSandbox,
     previewCloudSandboxDelete,
     deleteCloudSandbox,
