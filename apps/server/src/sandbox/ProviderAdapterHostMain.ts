@@ -12,7 +12,10 @@ import {
 } from "@t3tools/provider-core/server/ProviderAdapterHost";
 import type { ProviderAdapterHostAdapterCreateInput } from "@t3tools/provider-core/server/ProviderAdapterHostProtocol";
 import * as SandboxProviderHost from "@t3tools/provider-core/server/SandboxProviderHost";
-import { sandboxProviderEnvironment } from "./ProviderAdapterHostEnvironment.ts";
+import {
+  PROVIDER_ADAPTER_HOST_BUILD,
+  sandboxProviderEnvironment,
+} from "./ProviderAdapterHostEnvironment.ts";
 import * as OpenCodeRuntime from "@t3tools/provider-opencode/server/OpenCodeRuntime";
 import * as OpenCodeServerLedger from "@t3tools/provider-opencode/server/OpenCodeServerLedger";
 import * as OpenCode2AdapterV2 from "@t3tools/provider-opencode/server/v2/adapter";
@@ -27,7 +30,6 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
 const DEFAULT_PORT = 8790;
-const HOST_VERSION = "t3-provider-adapter-host-v1";
 const OPENCODE_DRIVER = ProviderDriverKind.make("opencode");
 
 const decodeOpenCodeSettings = Schema.decodeUnknownEffect(OpenCodeSettings);
@@ -130,7 +132,7 @@ export const runProviderAdapterHostMain = async (): Promise<void> => {
         .run((socket) =>
           serveProviderAdapterHost(socket, {
             token,
-            hostVersion: process.env["T3_PROVIDER_HOST_BUILD"] ?? HOST_VERSION,
+            hostVersion: process.env["T3_PROVIDER_HOST_BUILD"] ?? PROVIDER_ADAPTER_HOST_BUILD,
             createAdapter,
           }).pipe(Effect.scoped),
         )

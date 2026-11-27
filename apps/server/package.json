@@ -17,7 +17,7 @@
   "scripts": {
     "dev": "node scripts/dev.ts",
     "dev:built": "vp run dev",
-    "build:bundle": "vp pack",
+    "build:bundle": "vp pack && vp run build:provider-host",
     "build:exe": "node scripts/cli.ts build-exe",
     "start": "node dist/bin.mjs",
     "speech:catalog:sync": "node scripts/sync-speech-catalog.ts",
@@ -32,7 +32,8 @@
     "record:kiro-replay": "node scripts/record-kiro-acp-replay-fixture.ts",
     "record:muse-replay": "node scripts/record-muse-msp-replay-fixture.ts",
     "generate": "graphqlgen",
-    "generate:expo-schema": "node scripts/fetch-expo-schema.ts"
+    "generate:expo-schema": "node scripts/fetch-expo-schema.ts",
+    "build:provider-host": "node scripts/cli.ts build-provider-host"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.321",

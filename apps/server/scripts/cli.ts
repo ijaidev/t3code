@@ -14,7 +14,7 @@ import { findEsmImportsOfExternalPackages } from "../../../scripts/lib/cli-execu
 import { injectLinuxArm64Sea } from "../../../scripts/lib/linux-arm64-sea.ts";
 import rootPackageJson from "../../../package.json" with { type: "json" };
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import { resolveSpawnCommand, type ResolvedSpawnCommand } from "@t3tools/shared/shell";
 import {
   ServerCliBootstrapTooLargeError,
   ServerCliBuildAssetMissingError,
@@ -102,6 +102,40 @@ const buildCmd = Command.make(
     }),
 ).pipe(Command.withDescription("Build the server package (tsdown + bundle web client)."));
 
+const packProviderHost = Effect.fn("packProviderHost")(function* (input: {
+  readonly serverDir: string;
+  readonly spawnCommand: ResolvedSpawnCommand;
+  readonly verbose: boolean;
+}) {
+  yield* runCommand(
+    ChildProcess.make(input.spawnCommand.command, input.spawnCommand.args, {
+      cwd: input.serverDir,
+      env: { ...process.env, T3CODE_PACK_PROVIDER_HOST: "1" },
+      stdout: input.verbose ? "inherit" : "ignore",
+      stderr: "inherit",
+      shell: input.spawnCommand.shell,
+    }),
+  );
+});
+
+const buildProviderHostCmd = Command.make(
+  "build-provider-host",
+  {
+    verbose: Flag.Boolean("verbose").pipe(Flag.withDefault(false)),
+  },
+  (config) =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const repoRoot = yield* RepoRoot;
+      const spawnCommand = yield* resolveSpawnCommand("vp", ["pack"]);
+      yield* packProviderHost({
+        serverDir: path.join(repoRoot, "apps/server"),
+        spawnCommand,
+        verbose: config.verbose,
+      });
+    }),
+).pipe(Command.withDescription("Build the self-contained sandbox provider host bundle."));
+
 const buildExeCmd = Command.make(
   "build-exe",
   {
@@ -145,6 +179,8 @@ const buildExeCmd = Command.make(
           }),
         );
 
+      // The sandbox host is embedded as one self-contained asset beside the CLI.
+      yield* packProviderHost({ serverDir, spawnCommand, verbose: config.verbose });
       yield* pack("bundle");
       const cliMainPath = path.join(cliAssetDir, "binMain.mjs");
       yield* pack(linuxArm64 ? "bootstrap" : "1");
@@ -170,6 +206,7 @@ const buildExeCmd = Command.make(
         yield* injectLinuxArm64Sea({
           bundlePath: bootstrapPath,
           cliAssetPath: cliMainPath,
+          providerHostAssetPath: path.join(serverDir, "dist/provider-adapter-host.mjs"),
           outputPath: path.join(serverDir, "dist-exe/t3"),
           nodeVersion: rootPackageJson.engines.node,
           verbose: config.verbose,
@@ -226,7 +263,7 @@ const publishCmd = Command.make(
 
 const cli = Command.make("cli").pipe(
   Command.withDescription("T3 server build & publish CLI."),
-  Command.withSubcommands([buildCmd, buildExeCmd, publishCmd]),
+  Command.withSubcommands([buildCmd, buildExeCmd, buildProviderHostCmd, publishCmd]),
 );
 
 Command.run(cli, { version: "0.0.0" }).pipe(

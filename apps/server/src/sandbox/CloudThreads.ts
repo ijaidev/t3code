@@ -1,33 +1,50 @@
+// @effect-diagnostics nodeBuiltinImport:off -- one unguessable token guards each sandbox host connection.
+import * as NodeCrypto from "node:crypto";
+
 import {
   type CloudSandboxDeleteRisk,
   type CloudSandboxState,
   type CloudSandboxStatus,
   type CloudSandboxSleepDisabledReason,
+  type ProviderDriverKind,
+  type ProviderInstanceId,
   type SandboxProviderAccountId,
   type SandboxTestSandbox,
+  type ServerSettings as ServerSettingsSchema,
   ThreadId,
 } from "@t3tools/contracts";
+import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
+import type { ProviderAdapterV2 } from "@t3tools/provider-core/server/ProviderAdapter";
+import type { ProviderAdapterHostPaths } from "@t3tools/provider-core/server/ProviderAdapterHostProtocol";
+import { PROVIDER_ADAPTER_HOST_PROTOCOL_VERSION } from "@t3tools/provider-core/server/ProviderAdapterHostProtocol";
+import * as RemoteProviderAdapter from "@t3tools/provider-core/server/RemoteProviderAdapter";
+
 import * as ServerSettings from "../serverSettings.ts";
+import * as CloudProviderHost from "./CloudProviderHost.ts";
 import * as CloudRepositoryCredential from "./CloudRepositoryCredential.ts";
 import * as CloudThreadPorts from "./CloudThreadPorts.ts";
 import * as CloudThreadStore from "./CloudThreadStore.ts";
 import * as SandboxAccounts from "./SandboxAccounts.ts";
 import * as SandboxLifecycle from "./SandboxLifecycle.ts";
-import type { SandboxProviderDriver } from "./SandboxProvider.ts";
+import type { SandboxProviderDriver, SandboxProviderProcess } from "./SandboxProvider.ts";
 import * as SandboxStore from "./SandboxStore.ts";
 import { CLOUD_THREAD_HOST_SCRIPT } from "./cloudThreadHostScript.ts";
+import { PROVIDER_ADAPTER_HOST_BUILD } from "./ProviderAdapterHostEnvironment.ts";
 import { THREAD_HOST_PROTOCOL_VERSION } from "./ThreadHost.ts";
 
 const HOST_SCRIPT_PATH = ".t3/thread-host/thread-host.py";
@@ -99,6 +116,27 @@ export interface CloudHostConnection {
   readonly pendingApprovalIds: ReadonlyArray<string>;
 }
 
+export interface CloudProviderHostInput {
+  readonly driver: ProviderDriverKind;
+  readonly instanceId: ProviderInstanceId;
+  readonly displayName?: string;
+  readonly accentColor?: string;
+  /** Provider settings already bound to the sandbox runtime by the caller. */
+  readonly config: unknown;
+  readonly settings: ServerSettingsSchema;
+  /** Resolved provider credentials; they only ever reach the host process environment. */
+  readonly environment: ReadonlyArray<{ readonly name: string; readonly value: string }>;
+}
+
+export interface CloudProviderHostConnection {
+  readonly adapter: ProviderAdapterV2["Service"];
+  readonly paths: ProviderAdapterHostPaths;
+  readonly protocolVersion: string;
+  readonly hostVersion: string | undefined;
+  /** Closes the controller connection; the host process stays ready for the next session. */
+  readonly close: Effect.Effect<void>;
+}
+
 export interface CloudThreadPrepareInput {
   readonly threadId: ThreadId;
   readonly accountId: SandboxProviderAccountId;
@@ -110,6 +148,14 @@ export interface CloudThreadPrepareInput {
    * pushed branch first and falls back to the base ref on the same branch.
    */
   readonly startFrom?: "base" | "branch";
+}
+
+interface ProviderHostProcessState {
+  readonly sandboxId: SandboxTestSandbox["id"];
+  readonly process: SandboxProviderProcess;
+  readonly token: string;
+  readonly port: number;
+  readonly paths: ProviderAdapterHostPaths;
 }
 
 const shellQuote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
@@ -232,6 +278,11 @@ export class CloudThreads extends Context.Service<
       threadId: ThreadId,
       options?: { readonly since?: number | "latest" },
     ) => Effect.Effect<CloudHostConnection, CloudThreadError>;
+    /** Starts or reuses the native provider adapter host and connects to it. */
+    readonly openProviderHost: (
+      threadId: ThreadId,
+      input: CloudProviderHostInput,
+    ) => Effect.Effect<CloudProviderHostConnection, CloudThreadError>;
     readonly deleteForThread: (threadId: ThreadId) => Effect.Effect<void, CloudThreadError>;
     /** Checks the provider so an externally deleted sandbox becomes a lost workspace. */
     readonly verifyCloudSandbox: (
@@ -284,6 +335,8 @@ const make = Effect.gen(function* () {
   const store = yield* SandboxStore.SandboxStore;
   const cloudThreads = yield* CloudThreadStore.CloudThreadStore;
   const cloudThreadPorts = yield* Effect.serviceOption(CloudThreadPorts.CloudThreadPorts);
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
 
   const clearPorts = (threadId: ThreadId) =>
     Option.match(cloudThreadPorts, {
@@ -296,6 +349,8 @@ const make = Effect.gen(function* () {
   const lifecycleLock = yield* Semaphore.make(1);
   const notifications = yield* PubSub.unbounded<ThreadId>();
   const transitions = yield* Ref.make<ReadonlyMap<ThreadId, "waking">>(new Map());
+  const providerHosts = yield* Ref.make<ReadonlyMap<ThreadId, ProviderHostProcessState>>(new Map());
+  const providerHostLocks = yield* Ref.make<ReadonlyMap<ThreadId, Semaphore.Semaphore>>(new Map());
   const activity = yield* Ref.make<
     ReadonlyMap<ThreadId, { readonly turns: number; readonly previews: ReadonlySet<string> }>
   >(new Map());
@@ -662,6 +717,7 @@ const make = Effect.gen(function* () {
             detail: `${driver.label} sandboxes cannot sleep.`,
           });
         }
+        yield* stopProviderHost(threadId);
         const sleeping = yield* lifecycle.pauseTestSandbox({ sandboxId: sandbox.id }).pipe(
           Effect.mapError(
             (error) =>
@@ -709,6 +765,7 @@ const make = Effect.gen(function* () {
         detail: `${driver.label} sandboxes cannot be woken after sleeping.`,
       });
     }
+    yield* stopProviderHost(threadId);
     yield* Ref.update(transitions, (current) => new Map(current).set(threadId, "waking"));
     yield* notify(threadId);
     const resumed = yield* lifecycle
@@ -813,6 +870,7 @@ const make = Effect.gen(function* () {
       return;
     }
     if (Option.isSome(sandbox)) {
+      yield* stopProviderHost(threadId);
       yield* store.remove(sandbox.value.id).pipe(Effect.ignore);
     }
     yield* Ref.update(activity, (current) => {
@@ -892,6 +950,7 @@ const make = Effect.gen(function* () {
             detail: `This sandbox has ${risk.changedFiles} changed file(s) and ${risk.unpushedCommits} unpushed commit(s). Confirm that they can be lost before deleting it.`,
           });
         }
+        yield* stopProviderHost(input.threadId);
         yield* markSandbox(current, { status: "deleting" });
         yield* notify(input.threadId);
         const deleted = yield* lifecycle
@@ -941,6 +1000,7 @@ const make = Effect.gen(function* () {
         }
         const stale = yield* getSandbox(threadId);
         if (Option.isSome(stale)) {
+          yield* stopProviderHost(threadId);
           yield* lifecycle
             .deleteThreadSandbox({ sandboxId: stale.value.id })
             .pipe(Effect.orElseSucceed(() => undefined));
@@ -995,6 +1055,7 @@ const make = Effect.gen(function* () {
   const deleteForThread: CloudThreads["Service"]["deleteForThread"] = Effect.fn(
     "CloudThreads.deleteForThread",
   )(function* (threadId) {
+    yield* stopProviderHost(threadId);
     const sandbox = yield* getSandbox(threadId);
     if (Option.isSome(sandbox)) {
       yield* lifecycle.deleteThreadSandbox({ sandboxId: sandbox.value.id }).pipe(
@@ -1311,6 +1372,289 @@ const make = Effect.gen(function* () {
     return written._tag === "Success";
   });
 
+  const providerHostLock = (threadId: ThreadId) =>
+    Ref.modify(providerHostLocks, (current) => {
+      const existing = current.get(threadId);
+      if (existing !== undefined) return [existing, current] as const;
+      const created = Semaphore.makeUnsafe(1);
+      const next = new Map(current);
+      next.set(threadId, created);
+      return [created, next] as const;
+    });
+
+  const stopProviderHost = Effect.fn("CloudThreads.stopProviderHost")(function* (
+    threadId: ThreadId,
+  ) {
+    const entry = (yield* Ref.get(providerHosts)).get(threadId);
+    if (entry === undefined) return;
+    yield* Ref.update(providerHosts, (current) => {
+      if (current.get(threadId) !== entry) return current;
+      const next = new Map(current);
+      next.delete(threadId);
+      return next;
+    });
+    yield* entry.process.kill.pipe(Effect.ignore);
+  });
+
+  const openProviderHost: CloudThreads["Service"]["openProviderHost"] = Effect.fn(
+    "CloudThreads.openProviderHost",
+  )(function* (threadId, input) {
+    // Waking blocks here, so a host starts only after the sandbox is running again.
+    yield* wakeCloudSandbox(threadId);
+    const sandbox = yield* requireSandbox(threadId);
+    const record = yield* getRecord(threadId);
+    if (Option.isNone(record)) {
+      return yield* new CloudThreadError({
+        operation: "start-host",
+        threadId,
+        detail: "No cloud sandbox is recorded for this thread.",
+      });
+    }
+    const threadRecord = record.value;
+    const { account, driver } = yield* resolveSandbox(sandbox, "start-host");
+    if (sandbox.providerSandboxId === null) {
+      return yield* new CloudThreadError({
+        operation: "start-host",
+        threadId,
+        detail: "The sandbox is still provisioning. Try again in a moment.",
+      });
+    }
+    const startProcess = driver.startProcess;
+    const portAccess = driver.portAccess;
+    const writeFile = driver.writeFile;
+    if (startProcess === undefined || portAccess === undefined || writeFile === undefined) {
+      return yield* new CloudThreadError({
+        operation: "start-host",
+        threadId,
+        detail: `${driver.label} cannot run a native provider host.`,
+      });
+    }
+    const providerSandboxId = sandbox.providerSandboxId;
+    const hostDir = CloudProviderHost.cloudProviderHostDir(threadRecord.homePath);
+    const runtimeDir = CloudProviderHost.cloudProviderHostRuntimeDir(threadRecord.homePath);
+    const paths = CloudProviderHost.cloudProviderHostPaths(
+      threadRecord.homePath,
+      threadRecord.workspacePath,
+    );
+    const lock = yield* providerHostLock(threadId);
+    return yield* lock.withPermits(1)(
+      Effect.gen(function* () {
+        let host = (yield* Ref.get(providerHosts)).get(threadId);
+        if (host !== undefined && host.sandboxId !== sandbox.id) {
+          yield* stopProviderHost(threadId);
+          host = undefined;
+        }
+        if (host === undefined) {
+          const bundle = yield* CloudProviderHost.readProviderAdapterHostBundle(fileSystem, path);
+          if (bundle === null) {
+            return yield* new CloudThreadError({
+              operation: "start-host",
+              threadId,
+              detail:
+                "This server build has no sandbox provider host bundle. Rebuild the server and retry.",
+            });
+          }
+          const bundlePath = `${hostDir}/provider-adapter-host.mjs`;
+          yield* run(
+            sandbox,
+            driver,
+            account,
+            CloudProviderHost.cloudProviderHostInstallCommand({
+              hostDir,
+              nodeVersion: CloudProviderHost.CLOUD_PROVIDER_NODE_VERSION,
+              opencodeVersion: CloudProviderHost.CLOUD_PROVIDER_OPENCODE_VERSION,
+            }),
+            "start-host",
+          );
+          yield* writeFile({
+            account,
+            providerSandboxId,
+            path: bundlePath,
+            data: bundle,
+          }).pipe(
+            Effect.mapError(
+              (error) =>
+                new CloudThreadError({
+                  operation: "start-host",
+                  threadId,
+                  detail: error.detail,
+                  statusCode: error.statusCode,
+                }),
+            ),
+          );
+          yield* run(
+            sandbox,
+            driver,
+            account,
+            [
+              "mkdir -p",
+              shellQuote(hostDir),
+              shellQuote(paths.stateDir),
+              shellQuote(paths.providerStatusCacheDir),
+              shellQuote(paths.attachmentsDir),
+            ].join(" "),
+            "start-host",
+          );
+          const token = NodeCrypto.randomBytes(32).toString("base64url");
+          const port = 8790;
+          const messages = yield* Queue.unbounded<CloudHostMessage>();
+          const stderrLines: Array<string> = [];
+          let pending = "";
+          const process = yield* startProcess({
+            account,
+            providerSandboxId,
+            command: CloudProviderHost.cloudProviderHostStartCommand({ hostDir, bundlePath }),
+            cwd: threadRecord.workspacePath,
+            envs: CloudProviderHost.cloudProviderHostEnvironment({
+              token,
+              port,
+              build: PROVIDER_ADAPTER_HOST_BUILD,
+              runtimeDir,
+              environment: input.environment,
+            }),
+            onStdout: (data) => {
+              pending += data;
+              const lines = pending.split("\n");
+              pending = lines.pop() ?? "";
+              for (const line of lines) {
+                const trimmed = line.trim();
+                if (trimmed === "") continue;
+                const listening = CloudProviderHost.parseCloudProviderHostListening(trimmed);
+                if (listening !== null) {
+                  Queue.offerUnsafe(messages, {
+                    type: "provider_host_listening",
+                    port: listening.port,
+                  });
+                }
+              }
+            },
+            onStderr: (data) => {
+              for (const line of data.split("\n")) {
+                if (line.trim() === "") continue;
+                stderrLines.push(line.trim());
+                if (stderrLines.length > 20) stderrLines.shift();
+              }
+            },
+          }).pipe(
+            Effect.mapError(
+              (error) =>
+                new CloudThreadError({
+                  operation: "start-host",
+                  threadId,
+                  detail: error.detail,
+                  statusCode: error.statusCode,
+                }),
+            ),
+          );
+          yield* Effect.forkScoped(
+            process.wait.pipe(
+              Effect.orElseSucceed(() => ({ exitCode: 1 })),
+              Effect.flatMap(({ exitCode }) =>
+                Queue.offer(messages, { type: "provider_host_exit", exitCode }),
+              ),
+              Effect.andThen(
+                Ref.update(providerHosts, (current) => {
+                  if (current.get(threadId)?.process !== process) return current;
+                  const next = new Map(current);
+                  next.delete(threadId);
+                  return next;
+                }),
+              ),
+            ),
+          );
+          const ready = Option.flatten(
+            yield* Stream.fromQueue(messages).pipe(
+              Stream.filter(
+                (message) =>
+                  message.type === "provider_host_listening" ||
+                  message.type === "provider_host_exit",
+              ),
+              Stream.runHead,
+              Effect.timeoutOption("60 seconds"),
+            ),
+          );
+          if (Option.isNone(ready) || ready.value.type !== "provider_host_listening") {
+            const detail =
+              Option.isSome(ready) && ready.value.type === "provider_host_exit"
+                ? (stderrLines.at(-1) ?? "The sandbox provider host stopped before it was ready.")
+                : "The sandbox provider host did not start.";
+            yield* process.kill.pipe(Effect.ignore);
+            return yield* new CloudThreadError({
+              operation: "start-host",
+              threadId,
+              detail,
+            });
+          }
+          const listeningPort =
+            typeof ready.value["port"] === "number" ? ready.value["port"] : port;
+          host = {
+            sandboxId: sandbox.id,
+            process,
+            token,
+            port: listeningPort,
+            paths,
+          };
+          yield* Ref.update(providerHosts, (current) => {
+            const next = new Map(current);
+            next.set(threadId, host);
+            return next;
+          });
+        }
+        const access = yield* portAccess({
+          account,
+          providerSandboxId,
+          port: host.port,
+        }).pipe(
+          Effect.mapError(
+            (error) =>
+              new CloudThreadError({
+                operation: "start-host",
+                threadId,
+                detail: error.detail,
+                statusCode: error.statusCode,
+              }),
+          ),
+        );
+        const connection = yield* RemoteProviderAdapter.connect({
+          url: CloudProviderHost.providerHostWebSocketUrl(access.url),
+          token: host.token,
+          driver: input.driver,
+          instanceId: input.instanceId,
+          ...(input.displayName === undefined ? {} : { displayName: input.displayName }),
+          ...(input.accentColor === undefined ? {} : { accentColor: input.accentColor }),
+          config: input.config,
+          settings: input.settings,
+          paths: host.paths,
+          headers: access.headers,
+          expectedProtocolVersion: PROVIDER_ADAPTER_HOST_PROTOCOL_VERSION,
+          expectedHostVersion: PROVIDER_ADAPTER_HOST_BUILD,
+          openTimeout: "20 seconds",
+          handshakeTimeout: "10 seconds",
+        }).pipe(
+          Effect.retry({ times: 2, schedule: Schedule.exponential("500 millis") }),
+          Effect.mapError(
+            (error) =>
+              new CloudThreadError({
+                operation: "start-host",
+                threadId,
+                detail: error.message,
+                cause: error,
+              }),
+          ),
+          Effect.provide(NodeSocket.layerWebSocketConstructor),
+          Effect.onError(() => stopProviderHost(threadId)),
+        );
+        return {
+          adapter: connection.adapter,
+          paths: host.paths,
+          protocolVersion: connection.protocolVersion,
+          hostVersion: connection.hostVersion,
+          close: connection.close,
+        };
+      }),
+    );
+  });
+
   const openHost: CloudThreads["Service"]["openHost"] = Effect.fn("CloudThreads.openHost")(
     function* (threadId, options) {
       // Waking blocks here, so a turn starts only after the sandbox is running again.
@@ -1488,6 +1832,7 @@ const make = Effect.gen(function* () {
     exec,
     writeAttachment,
     openHost,
+    openProviderHost,
     deleteForThread,
     verifyCloudSandbox,
     markCloudSandboxLost,

@@ -37,6 +37,10 @@ export class ProviderInstanceRegistry extends Context.Service<
     readonly getInstance: (
       instanceId: ProviderInstanceId,
     ) => Effect.Effect<ProviderInstance | undefined>;
+    /** The instance's resolved provider settings, for hosts that run it in another process. */
+    readonly getInstanceConfig: (
+      instanceId: ProviderInstanceId,
+    ) => Effect.Effect<Option.Option<unknown>>;
     readonly listInstances: Effect.Effect<ReadonlyArray<ProviderInstance>>;
     /** Resolved environment variables for an instance, including secret values it owns. */
     readonly getResolvedEnvironment?: (
@@ -59,6 +63,7 @@ interface LiveEntry {
   readonly scope: Scope.Closeable;
   readonly entry: ProviderInstanceConfig;
   readonly secrets: InstanceSecrets;
+  readonly config: unknown;
   readonly setPresentation: (entry: ProviderInstanceConfig) => void;
 }
 
@@ -372,6 +377,8 @@ const buildEntry = Effect.fn("ProviderInstanceRegistry.buildEntry")(function* <R
 
   const childScope = yield* Scope.fork(parentScope);
 
+  const resolvedConfig =
+    secrets.config.length === 0 ? typedConfig : withSettingsSecrets(typedConfig, secrets.config);
   const createResult = yield* driver
     .create({
       instanceId,
@@ -379,10 +386,7 @@ const buildEntry = Effect.fn("ProviderInstanceRegistry.buildEntry")(function* <R
       accentColor: entry.accentColor,
       environment: secrets.environment,
       enabled,
-      config:
-        secrets.config.length === 0
-          ? typedConfig
-          : withSettingsSecrets(typedConfig, secrets.config),
+      config: resolvedConfig,
     })
     .pipe(Effect.provideService(Scope.Scope, childScope), Effect.result);
   if (createResult._tag === "Failure") {
@@ -407,7 +411,7 @@ const buildEntry = Effect.fn("ProviderInstanceRegistry.buildEntry")(function* <R
   const { instance, setPresentation } = withLivePresentation(createResult.success, entry);
   return {
     kind: "live" as const,
-    live: { instance, scope: childScope, entry, secrets, setPresentation },
+    live: { instance, scope: childScope, entry, secrets, config: resolvedConfig, setPresentation },
   };
 });
 
@@ -744,6 +748,15 @@ export const makeProviderInstanceRegistry = Effect.fn(
 
   const registry: ProviderInstanceRegistry["Service"] = {
     getInstance: (id) => Ref.get(entries).pipe(Effect.map((map) => map.get(id)?.instance)),
+    getInstanceConfig: (id) =>
+      Ref.get(entries).pipe(
+        Effect.map((map) => {
+          const entry = map.get(id);
+          return entry === undefined || entry.config === undefined
+            ? Option.none<unknown>()
+            : Option.some(entry.config);
+        }),
+      ),
     getResolvedEnvironment: (id) =>
       Ref.get(entries).pipe(Effect.map((map) => map.get(id)?.secrets.environment)),
     listInstances: Ref.get(entries).pipe(

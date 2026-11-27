@@ -39,6 +39,7 @@ if (!TELEMETRY_CHANNELS.includes(telemetryChannel)) {
 // TEMPORARY one-time Node fix. Remove when fixed: https://github.com/nodejs/node/issues/67048
 // "bootstrap" stops at bin.mjs for scripts/cli.ts to inject (linux-arm64).
 const packMode = process.env.T3CODE_PACK_EXE;
+const packProviderHost = process.env.T3CODE_PACK_PROVIDER_HOST === "1";
 const packBootstrap = packMode === "1" || packMode === "bootstrap";
 const packExecutable = packBootstrap || packMode === "bundle";
 const cliAssetDir = process.env.T3CODE_CLI_ASSET_DIR ?? "";
@@ -111,14 +112,22 @@ export default mergeConfig(
         },
       ],
       // SEA embeds one entry; expose the history worker as a hidden subcommand.
-      entry: packBootstrap
-        ? ["src/bin.ts"]
-        : packExecutable
-          ? ["src/binMain.ts"]
-          : ["src/bin.ts", "src/claude-history-worker.ts"],
-      outDir: packBootstrap ? "dist-exe" : packExecutable ? cliAssetDir : "dist",
-      sourcemap: !packExecutable,
-      clean: true,
+      entry: packProviderHost
+        ? ["src/provider-adapter-host.ts"]
+        : packBootstrap
+          ? ["src/bin.ts"]
+          : packExecutable
+            ? ["src/binMain.ts"]
+            : ["src/bin.ts", "src/claude-history-worker.ts"],
+      outDir: packProviderHost
+        ? "dist"
+        : packBootstrap
+          ? "dist-exe"
+          : packExecutable
+            ? cliAssetDir
+            : "dist",
+      sourcemap: packProviderHost ? false : !packExecutable,
+      clean: !packProviderHost,
       // SEA can only resolve built-ins; keep dynamic imports inside each emitted module.
       ...(packExecutable ? { outputOptions: { codeSplitting: false } } : {}),
       ...(packMode === "1"
@@ -132,20 +141,34 @@ export default mergeConfig(
                 useCodeCache: false,
                 // The bootstrap loads the embedded CLI with require(esm).
                 execArgv: ["--require-module"],
-                assets: { "binMain.mjs": NodePath.join(cliAssetDir, "binMain.mjs") },
+                assets: {
+                  "binMain.mjs": NodePath.join(cliAssetDir, "binMain.mjs"),
+                  // The controller uploads this beside the workspace for a sandbox host.
+                  "provider-adapter-host.mjs": NodePath.join(
+                    import.meta.dirname,
+                    "dist/provider-adapter-host.mjs",
+                  ),
+                },
               },
             },
           }
         : {}),
       // jsonc-parser's UMD main requires its own files at runtime, which the bundle cannot follow.
       alias: { "jsonc-parser": "jsonc-parser/lib/esm/main.js" },
-      deps: {
-        // alwaysBundle=false has no opinion; neverBundle must retain transitive native acceleration.
-        alwaysBundle: shouldBundleCliDependency,
-        neverBundle: (id: string) =>
-          (packBootstrap && id === "./binMain.ts") || isExternalCliDependency(id),
-        onlyBundle: false,
-      },
+      deps: packProviderHost
+        ? {
+            // The sandbox uploads one file and has no node_modules beside it.
+            alwaysBundle: () => true,
+            neverBundle: (id: string) => id.startsWith("node:"),
+            onlyBundle: false,
+          }
+        : {
+            // alwaysBundle=false has no opinion; neverBundle must retain transitive native acceleration.
+            alwaysBundle: shouldBundleCliDependency,
+            neverBundle: (id: string) =>
+              (packBootstrap && id === "./binMain.ts") || isExternalCliDependency(id),
+            onlyBundle: false,
+          },
       banner: {
         js: "#!/usr/bin/env node\n",
       },
