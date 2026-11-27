@@ -111,6 +111,14 @@
       "types": "./src/server/ProviderAdapter.ts",
       "import": "./src/server/ProviderAdapter.ts"
     },
+    "./server/ProviderAdapterHost": {
+      "types": "./src/server/ProviderAdapterHost.ts",
+      "import": "./src/server/ProviderAdapterHost.ts"
+    },
+    "./server/ProviderAdapterHostProtocol": {
+      "types": "./src/server/ProviderAdapterHostProtocol.ts",
+      "import": "./src/server/ProviderAdapterHostProtocol.ts"
+    },
     "./server/providerAuthFlow": {
       "types": "./src/server/providerAuthFlow.ts",
       "import": "./src/server/providerAuthFlow.ts"
@@ -135,9 +143,17 @@
       "types": "./src/server/randomUuid.ts",
       "import": "./src/server/randomUuid.ts"
     },
+    "./server/RemoteProviderAdapter": {
+      "types": "./src/server/RemoteProviderAdapter.ts",
+      "import": "./src/server/RemoteProviderAdapter.ts"
+    },
     "./server/runtimeInstructions": {
       "types": "./src/server/runtimeInstructions.ts",
       "import": "./src/server/runtimeInstructions.ts"
+    },
+    "./server/SandboxProviderHost": {
+      "types": "./src/server/SandboxProviderHost.ts",
+      "import": "./src/server/SandboxProviderHost.ts"
     },
     "./server/selectionTransition": {
       "types": "./src/server/selectionTransition.ts",
