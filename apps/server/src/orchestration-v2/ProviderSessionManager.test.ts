@@ -6068,7 +6068,7 @@ it.effect("opens a supported cloud thread through the sandbox provider runtime",
     } as unknown as CloudThreadRuntime.CloudThreadRuntime["Service"]);
     const cloudProviderRuntime = CloudProviderRuntime.CloudProviderRuntime.of({
       supports: () => true,
-      openSession: (input) =>
+      openSession: (input: CloudProviderRuntime.CloudProviderRuntimeOpenInput) =>
         Effect.gen(function* () {
           yield* Ref.update(opened, (count) => count + 1);
           const now = yield* DateTime.now;

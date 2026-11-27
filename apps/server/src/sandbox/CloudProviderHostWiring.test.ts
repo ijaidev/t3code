@@ -17,10 +17,12 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeSocketServer from "@effect/platform-node/NodeSocketServer";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import { describe, expect, it } from "@effect/vitest";
+import { onTestFinished } from "vite-plus/test";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
+import * as Scope from "effect/Scope";
 
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { serveProviderAdapterHost } from "@t3tools/provider-core/server/ProviderAdapterHost";
@@ -62,10 +64,13 @@ const providerAdapter = {
   openSession: () => Effect.die("unused openSession"),
 } as unknown as ProviderAdapter.ProviderAdapterV2["Service"];
 
-const makeDriver = (state: {
-  readonly execs: Ref.Ref<ReadonlyArray<string>>;
-  readonly starts: Ref.Ref<number>;
-}): SandboxProviderDriver => {
+const makeDriver = (
+  state: {
+    readonly execs: Ref.Ref<ReadonlyArray<string>>;
+    readonly starts: Ref.Ref<number>;
+  },
+  hostScope: Scope.Scope,
+): SandboxProviderDriver => {
   let port = 0;
   return {
     kind: e2b,
@@ -111,7 +116,7 @@ const makeDriver = (state: {
                 Effect.succeed({ adapter: providerAdapter, onStop: Effect.void }),
             }).pipe(Effect.scoped),
           )
-          .pipe(Effect.forkScoped);
+          .pipe(Effect.forkIn(hostScope));
         input.onStdout(
           `${JSON.stringify({ type: "t3-provider-adapter-host", state: "listening", port })}\n`,
         );
@@ -122,16 +127,13 @@ const makeDriver = (state: {
           kill: Deferred.succeed(exited, undefined).pipe(Effect.asVoid),
           wait: Deferred.await(exited).pipe(Effect.as({ exitCode: 0 })),
         };
-      }),
+      }).pipe(Effect.provideService(Scope.Scope, hostScope)),
     portAccess: () => Effect.succeed({ url: `http://127.0.0.1:${port}`, headers: {} }),
   };
 };
 
-const testLayer = (state: {
-  readonly execs: Ref.Ref<ReadonlyArray<string>>;
-  readonly starts: Ref.Ref<number>;
-}) => {
-  const accounts = SandboxAccounts.layerFromDrivers([makeDriver(state)]);
+const testLayer = (driver: SandboxProviderDriver) => {
+  const accounts = SandboxAccounts.layerFromDrivers([driver]);
   const store = SandboxStore.layer;
   const cloudStore = CloudThreadStore.layer;
   const lifecycle = SandboxLifecycle.layer.pipe(Layer.provide(accounts), Layer.provide(store));
@@ -166,73 +168,81 @@ describe("cloud provider host wiring", () => {
     NodeFS.writeFileSync(bundlePath, "process.exit(0);\n");
     const previousBundle = process.env["T3CODE_PROVIDER_HOST_BUNDLE"];
     process.env["T3CODE_PROVIDER_HOST_BUNDLE"] = bundlePath;
-    return Effect.gen(function* () {
-      const accounts = yield* SandboxAccounts.SandboxAccounts;
-      yield* accounts.connect({
-        id: accountId,
-        config: {
-          kind: e2b,
-          label: "E2B",
-          apiKey: "valid-key",
-          template: "base",
-          enabled: true,
-        },
-      });
-      const cloud = yield* CloudThreads.CloudThreads;
-      const sandbox = yield* (yield* SandboxLifecycle.SandboxLifecycle).createThreadSandbox({
-        threadId,
-        accountId,
-      });
-      yield* (yield* CloudThreadStore.CloudThreadStore).upsert({
-        threadId,
-        sandboxId: sandbox.id,
-        accountId,
-        providerKind: e2b,
-        repositoryUrl: "https://github.com/example/public.git",
-        branch: "main",
-        baseRef: "main",
-        workspacePath: "/home/t3/.t3/threads/thread-provider-host",
-        homePath: "/home/t3",
-        status: "ready",
-        createdAt: "2026-11-27T00:00:00.000Z",
-        updatedAt: "2026-11-27T00:00:00.000Z",
-      });
+    onTestFinished(() => {
+      if (previousBundle === undefined) delete process.env["T3CODE_PROVIDER_HOST_BUNDLE"];
+      else process.env["T3CODE_PROVIDER_HOST_BUNDLE"] = previousBundle;
+      NodeFS.rmSync(bundleDir, { recursive: true, force: true });
+    });
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const hostScope = yield* Effect.scope;
+        const driver = makeDriver({ execs, starts }, hostScope);
+        return yield* Effect.gen(function* () {
+          const accounts = yield* SandboxAccounts.SandboxAccounts;
+          yield* accounts.connect({
+            id: accountId,
+            config: {
+              kind: e2b,
+              label: "E2B",
+              apiKey: "valid-key",
+              template: "base",
+              enabled: true,
+            },
+          });
+          const cloud = yield* CloudThreads.CloudThreads;
+          const sandbox = yield* (yield* SandboxLifecycle.SandboxLifecycle).createThreadSandbox({
+            threadId,
+            accountId,
+          });
+          yield* (yield* CloudThreadStore.CloudThreadStore).upsert({
+            threadId,
+            sandboxId: sandbox.id,
+            accountId,
+            providerKind: e2b,
+            repositoryUrl: "https://github.com/example/public.git",
+            branch: "main",
+            baseRef: "main",
+            workspacePath: "/home/t3/.t3/threads/thread-provider-host",
+            homePath: "/home/t3",
+            status: "ready",
+            createdAt: "2026-11-27T00:00:00.000Z",
+            updatedAt: "2026-11-27T00:00:00.000Z",
+          });
 
-      return yield* Effect.scoped(
-        Effect.gen(function* () {
-          const input = {
-            driver: driverKind,
-            instanceId,
-            config: { binaryPath: "/home/t3/.t3/provider-host/runtime/bin/opencode" },
-            settings: DEFAULT_SERVER_SETTINGS,
-            environment: [{ name: "OPENAI_API_KEY", value: "sk-test" }],
-          };
-          const first = yield* cloud.openProviderHost(threadId, input);
-          const second = yield* cloud.openProviderHost(threadId, input);
+          return yield* Effect.scoped(
+            Effect.gen(function* () {
+              const input = {
+                driver: driverKind,
+                instanceId,
+                config: { binaryPath: "/home/t3/.t3/provider-host/runtime/bin/opencode" },
+                settings: DEFAULT_SERVER_SETTINGS,
+                environment: [{ name: "OPENAI_API_KEY", value: "sk-test" }],
+              };
+              const first = yield* cloud.openProviderHost(threadId, input);
+              const second = yield* cloud.openProviderHost(threadId, input);
 
-          expect(yield* Ref.get(starts)).toBe(1);
-          expect(
-            (yield* Ref.get(execs)).some((command) =>
-              command.includes(
-                `'@opencode/cli@${CloudProviderHost.CLOUD_PROVIDER_OPENCODE_VERSION}'`,
-              ),
-            ),
-          ).toBe(true);
-          expect(first.protocolVersion).toBe("1");
-          expect(first.hostVersion).toBe(PROVIDER_ADAPTER_HOST_BUILD);
-          expect(second.paths.attachmentsDir).toBe("/home/t3/.t3/attachments");
-          yield* Effect.all([first.close, second.close]);
-        }),
-      );
-    }).pipe(
-      Effect.ensuring(
-        Effect.sync(() => {
-          if (previousBundle === undefined) delete process.env["T3CODE_PROVIDER_HOST_BUNDLE"];
-          else process.env["T3CODE_PROVIDER_HOST_BUNDLE"] = previousBundle;
-          NodeFS.rmSync(bundleDir, { recursive: true, force: true });
-        }),
-      ),
-      Effect.provide(testLayer({ execs, starts })),
+              expect(yield* Ref.get(starts)).toBe(1);
+              expect(
+                (yield* Ref.get(execs)).some((command) =>
+                  command.includes(
+                    `'@opencode/cli@${CloudProviderHost.CLOUD_PROVIDER_OPENCODE_VERSION}'`,
+                  ),
+                ),
+              ).toBe(true);
+              expect(first.protocolVersion).toBe("1");
+              expect(first.hostVersion).toBe(PROVIDER_ADAPTER_HOST_BUILD);
+              expect(second.paths.attachmentsDir).toBe("/home/t3/.t3/attachments");
+
+              const rotated = yield* cloud.openProviderHost(threadId, {
+                ...input,
+                environment: [{ name: "OPENAI_API_KEY", value: "sk-rotated" }],
+              });
+              expect(yield* Ref.get(starts)).toBe(2);
+              yield* Effect.all([first.close, second.close, rotated.close]);
+            }),
+          );
+        }).pipe(Effect.provide(testLayer(driver)));
+      }),
     );
   });
 });

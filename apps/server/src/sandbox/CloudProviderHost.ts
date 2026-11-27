@@ -1,9 +1,12 @@
 // @effect-diagnostics nodeBuiltinImport:off -- SEA exposes the embedded host bundle through node:sea.
 import * as NodeSea from "node:sea";
 
+import { DEFAULT_SERVER_SETTINGS, type ServerSettings } from "@t3tools/contracts";
 import type { ProviderAdapterHostPaths } from "@t3tools/provider-core/server/ProviderAdapterHostProtocol";
+import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 
 /**
@@ -84,7 +87,9 @@ export const cloudProviderHostStartCommand = (input: {
     `  pid="$(cat "$pid_file" 2>/dev/null || true)"`,
     `  case "$pid" in`,
     `    ''|*[!0-9]*) ;;`,
-    `    *) if kill -0 "$pid" 2>/dev/null; then kill "$pid" 2>/dev/null || true; sleep 1; fi ;;`,
+    `    *) if kill -0 "$pid" 2>/dev/null && tr '\\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q '__provider-adapter-host'; then`,
+    `         kill "$pid" 2>/dev/null || true; sleep 1`,
+    `       fi ;;`,
     `  esac`,
     `  rm -f "$pid_file"`,
     "fi",
@@ -163,6 +168,30 @@ export const cloudOpenCodeHostConfig = (config: unknown, runtimeDir: string): un
   };
 };
 
+/**
+ * The host only needs non-secret server policy. Provider config travels separately,
+ * and the sandbox account, speech, and secret-provider stores stay on the controller.
+ */
+export const cloudProviderHostSettings = (settings: ServerSettings): ServerSettings => ({
+  ...DEFAULT_SERVER_SETTINGS,
+  enableProviderUpdateChecks: settings.enableProviderUpdateChecks,
+  backgroundActivity: settings.backgroundActivity,
+  backgroundActivityProfile: settings.backgroundActivityProfile,
+  enableAgentBrowserAccess: settings.enableAgentBrowserAccess,
+  enableAgentDeviceAccess: settings.enableAgentDeviceAccess,
+});
+
+/** Host stderr is untrusted and may carry a credential; keep the public detail short. */
+export const providerHostFailureDetail = (line: string | undefined): string => {
+  if (line === undefined || line.trim() === "") {
+    return "The sandbox provider host stopped before it was ready.";
+  }
+  return line
+    .trim()
+    .slice(0, 400)
+    .replaceAll(/\b(sk-[A-Za-z0-9_-]+|e2b_[A-Za-z0-9_-]+|Bearer\s+[A-Za-z0-9._-]+)/g, "[redacted]");
+};
+
 const PROVIDER_HOST_BUNDLE_NAME = "provider-adapter-host.mjs";
 
 /**
@@ -174,13 +203,16 @@ export const readProviderAdapterHostBundle = Effect.fn("CloudProviderHost.readBu
   path: Path.Path,
 ) {
   if (NodeSea.isSea()) {
-    try {
-      return new Uint8Array(NodeSea.getRawAsset(PROVIDER_HOST_BUNDLE_NAME));
-    } catch {
-      return null;
-    }
+    return yield* Effect.try({
+      try: () => new Uint8Array(NodeSea.getRawAsset(PROVIDER_HOST_BUNDLE_NAME)),
+      catch: () => null,
+    }).pipe(Effect.orElseSucceed(() => null));
   }
-  const override = process.env["T3CODE_PROVIDER_HOST_BUNDLE"]?.trim();
+  const override = Option.getOrUndefined(
+    yield* Config.option(Config.String("T3CODE_PROVIDER_HOST_BUNDLE")).pipe(
+      Effect.orElseSucceed(() => Option.none()),
+    ),
+  )?.trim();
   const candidates = [
     ...(override === undefined || override === "" ? [] : [override]),
     path.join(import.meta.dirname, PROVIDER_HOST_BUNDLE_NAME),

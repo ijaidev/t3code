@@ -168,6 +168,7 @@ const testLayer = (state: FakeState) => {
       }),
     writeAttachment: () => Effect.succeed(false),
     openHost: () => Effect.die("unused"),
+    openProviderHost: () => Effect.die("unused"),
     deleteForThread: () => Effect.void,
     getCloudSandboxState: () => Effect.succeedNone,
     verifyCloudSandbox: () => Effect.succeedNone,

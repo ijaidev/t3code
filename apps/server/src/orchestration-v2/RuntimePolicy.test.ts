@@ -106,6 +106,7 @@ const layerWithPolicy = (
     Layer.provide(
       Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
         getInstance: (instanceId) => Effect.succeed(providerInstanceFor(instanceId)),
+        getInstanceConfig: () => Effect.succeedNone,
         listInstances: Effect.succeed([]),
         listUnavailable: Effect.succeed([]),
         streamChanges: Stream.empty,

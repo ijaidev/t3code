@@ -27,7 +27,7 @@ import type { ProviderAdapterHostPaths } from "@t3tools/provider-core/server/Pro
 import * as ServerConfig from "../config.ts";
 import * as CloudProviderRuntime from "./CloudProviderRuntime.ts";
 import * as CloudThreads from "./CloudThreads.ts";
-import type { CloudThreadStore } from "./CloudThreadStore.ts";
+import type { CloudThreadRecord } from "./CloudThreadStore.ts";
 
 const threadId = ThreadId.make("thread-cloud-opencode");
 const instanceId = ProviderInstanceId.make("opencode");
@@ -42,11 +42,11 @@ const paths: ProviderAdapterHostPaths = {
   attachmentsDir: "/home/t3/.t3/attachments",
 };
 
-const record: CloudThreadStore.CloudThreadRecord = {
+const record: CloudThreadRecord = {
   threadId,
-  sandboxId: "sandbox-1" as CloudThreadStore.CloudThreadRecord["sandboxId"],
-  accountId: "e2b-work" as CloudThreadStore.CloudThreadRecord["accountId"],
-  providerKind: "e2b" as CloudThreadStore.CloudThreadRecord["providerKind"],
+  sandboxId: "sandbox-1" as CloudThreadRecord["sandboxId"],
+  accountId: "e2b-work" as CloudThreadRecord["accountId"],
+  providerKind: "e2b" as CloudThreadRecord["providerKind"],
   repositoryUrl: "https://github.com/example/public.git",
   branch: "main",
   baseRef: "main",
@@ -58,6 +58,7 @@ const record: CloudThreadStore.CloudThreadRecord = {
 };
 
 const makeTurnInput = (attachmentId: string): ProviderAdapter.ProviderAdapterV2TurnInput => ({
+  appThread: {} as never,
   threadId,
   runId: RunId.make("run-1"),
   runOrdinal: 1,
@@ -76,11 +77,11 @@ const makeTurnInput = (attachmentId: string): ProviderAdapter.ProviderAdapterV2T
         id: attachmentId,
         name: "notes.txt",
         mimeType: "text/plain",
-        size: 5,
+        sizeBytes: 5,
       } as ProviderAdapter.ProviderAdapterV2TurnInput["message"]["attachments"][number],
     ],
     createdBy: "user",
-    creationSource: "client",
+    creationSource: "web",
   },
   modelSelection,
   runtimePolicy: { runtimeMode: "full-access", interactionMode: "default", cwd: paths.cwd },
@@ -120,7 +121,9 @@ const makeFakeSession = (events: Queue.Queue<ProviderAdapter.ProviderAdapterV2Ev
     },
     events: Stream.fromQueue(events),
     ensureThread: () => Effect.die("unused ensureThread"),
-    resumeThread: ({ providerThread }) => Effect.succeed(providerThread),
+    resumeThread: (
+      input: Parameters<ProviderAdapter.ProviderAdapterV2SessionRuntime["resumeThread"]>[0],
+    ) => Effect.succeed(input.providerThread),
     startTurn: () => Effect.void,
     steerTurn: () => Effect.void,
     interruptTurn: () => Effect.void,
@@ -152,11 +155,17 @@ describe("cloud provider runtime", () => {
       let ends = 0;
       let opened: CloudThreads.CloudProviderHostInput | null = null;
       let startTurns = 0;
+      let compactTurns = 0;
+      let failWrite = false;
       const session = makeFakeSession(events);
       const trackedSession: ProviderAdapter.ProviderAdapterV2SessionRuntime = {
         ...session,
         startTurn: () => {
           startTurns += 1;
+          return Effect.void;
+        },
+        compactThread: () => {
+          compactTurns += 1;
           return Effect.void;
         },
       };
@@ -178,7 +187,7 @@ describe("cloud provider runtime", () => {
         },
         writeAttachment: (_threadId: ThreadId, path: string) => {
           written.push(path);
-          return Effect.succeed(true);
+          return Effect.succeed(!failWrite);
         },
         beginTurn: () => {
           begins += 1;
@@ -213,7 +222,28 @@ describe("cloud provider runtime", () => {
             },
             environment: [{ name: "OPENAI_API_KEY", value: "sk-test" }],
             config: { binaryPath: "/usr/local/bin/opencode", customModels: [] },
-            settings: DEFAULT_SERVER_SETTINGS,
+            settings: {
+              ...DEFAULT_SERVER_SETTINGS,
+              sandboxProviders: {
+                "e2b-work": {
+                  kind: "e2b",
+                  label: "E2B",
+                  apiKey: "e2b_super_secret",
+                  template: "base",
+                  enabled: true,
+                },
+              },
+              cloudSpeechCredentials: {
+                provider: "openai",
+                apiKey: "sk-speech-secret",
+              },
+              providerInstances: {
+                opencode: {
+                  driver: "opencode",
+                  config: { serverPassword: "sk-provider-secret" },
+                },
+              },
+            } as never,
           },
           adapter,
         );
@@ -224,6 +254,11 @@ describe("cloud provider runtime", () => {
           serverPassword: "",
           customModels: [],
         });
+        const hello = JSON.stringify(opened?.settings);
+        expect(hello).not.toContain("e2b_super_secret");
+        expect(hello).not.toContain("sk-speech-secret");
+        expect(hello).not.toContain("sk-provider-secret");
+        expect(opened?.settings.sandboxProviders).toEqual({});
 
         yield* runtime.startTurn(makeTurnInput(attachmentId));
         expect(startTurns).toBe(1);
@@ -238,6 +273,18 @@ describe("cloud provider runtime", () => {
         } as ProviderAdapter.ProviderAdapterV2Event);
         yield* runtime.events.pipe(Stream.take(1), Stream.runDrain);
         expect(ends).toBe(1);
+
+        const compact = runtime.compactThread;
+        expect(compact).toBeDefined();
+        if (compact === undefined) return;
+        yield* compact(makeTurnInput(attachmentId));
+        expect(compactTurns).toBe(1);
+        expect(startTurns).toBe(1);
+
+        failWrite = true;
+        const failed = yield* runtime.startTurn(makeTurnInput(attachmentId)).pipe(Effect.flip);
+        expect(failed._tag).toBe("ProviderAdapterProtocolError");
+        expect(ends).toBe(2);
       }).pipe(Effect.scoped, Effect.provide(testLayer(cloud)));
     }),
   );

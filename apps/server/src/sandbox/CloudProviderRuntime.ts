@@ -82,7 +82,7 @@ const make = Effect.gen(function* () {
         driver: base.driver,
         instanceId: input.modelSelection.instanceId,
         config: CloudProviderHost.cloudOpenCodeHostConfig(input.config, runtimeDir),
-        settings: input.settings,
+        settings: CloudProviderHost.cloudProviderHostSettings(input.settings),
         environment: input.environment,
       })
       .pipe(
@@ -117,11 +117,17 @@ const make = Effect.gen(function* () {
           .readFile(localPath)
           .pipe(Effect.catchCause(() => Effect.succeed(new Uint8Array())));
         if (bytes.length === 0) continue;
-        yield* cloudThreads.writeAttachment(
+        const written = yield* cloudThreads.writeAttachment(
           input.threadId,
           `${host.paths.attachmentsDir}/${relativePath}`,
           bytes,
         );
+        if (!written) {
+          return yield* new ProviderAdapterProtocolError({
+            driver: base.driver,
+            detail: `The sandbox could not stage attachment ${attachment.name}.`,
+          });
+        }
       }
     });
 
@@ -132,6 +138,16 @@ const make = Effect.gen(function* () {
         Effect.andThen(runtime.startTurn(turnInput)),
         Effect.onError(() => cloudThreads.endTurn(input.threadId)),
       );
+    const compactNativeThread = runtime.compactThread;
+    const compactThread =
+      compactNativeThread === undefined
+        ? undefined
+        : (turnInput: ProviderAdapterV2TurnInput) =>
+            beginTurn.pipe(
+              Effect.andThen(stageAttachments(turnInput.message.attachments)),
+              Effect.andThen(compactNativeThread(turnInput)),
+              Effect.onError(() => cloudThreads.endTurn(input.threadId)),
+            );
     const resumeNativeTurn = runtime.resumeTurn;
     const resumeTurn =
       resumeNativeTurn === undefined
@@ -150,7 +166,7 @@ const make = Effect.gen(function* () {
         ),
       ),
       startTurn,
-      ...(runtime.compactThread === undefined ? {} : { compactThread: startTurn }),
+      ...(compactThread === undefined ? {} : { compactThread }),
       ...(resumeTurn === undefined ? {} : { resumeTurn }),
       steerTurn: (turnInput) =>
         stageAttachments(turnInput.message.attachments).pipe(

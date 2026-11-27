@@ -1,3 +1,4 @@
+import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 
 import * as CloudProviderHost from "./CloudProviderHost.ts";
@@ -26,6 +27,8 @@ describe("cloud provider host", () => {
 
     expect(command).toContain("pid_file='/home/t3/.t3/provider-host/host.pid'");
     expect(command).toContain('kill -0 "$pid"');
+    expect(command).toContain("cmdline");
+    expect(command).toContain("__provider-adapter-host");
     expect(command).toContain('echo $$ > "$pid_file"');
     expect(command).toContain(
       "exec '/home/t3/.t3/provider-host/runtime/bin/node' '/home/t3/.t3/provider-host/provider-adapter-host.mjs' __provider-adapter-host",
@@ -82,6 +85,53 @@ describe("cloud provider host", () => {
       serverPassword: "",
       customModels: [],
     });
+  });
+
+  it("caps and redacts the public host failure detail", () => {
+    expect(
+      CloudProviderHost.providerHostFailureDetail(
+        `failed with sk-live-secret and e2b_another_secret ${"x".repeat(500)}`,
+      ),
+    ).toMatch(/^failed with \[redacted\] and \[redacted\]/);
+    expect(
+      CloudProviderHost.providerHostFailureDetail(`failed with sk-live-secret ${"x".repeat(500)}`)
+        .length,
+    ).toBeLessThanOrEqual(400);
+    expect(CloudProviderHost.providerHostFailureDetail(undefined)).toBe(
+      "The sandbox provider host stopped before it was ready.",
+    );
+  });
+
+  it("sends only non-secret settings to the sandbox host", () => {
+    const narrowed = CloudProviderHost.cloudProviderHostSettings({
+      ...DEFAULT_SERVER_SETTINGS,
+      enableProviderUpdateChecks: false,
+      sandboxProviders: {
+        "e2b-work": {
+          kind: "e2b",
+          label: "E2B",
+          apiKey: "e2b_super_secret",
+          template: "base",
+          enabled: true,
+        },
+      },
+      cloudSpeechCredentials: {
+        provider: "openai",
+        apiKey: "sk-speech-secret",
+      },
+      providerInstances: {
+        opencode: {
+          driver: "opencode",
+          config: { serverPassword: "sk-provider-secret" },
+        },
+      },
+    } as never);
+
+    expect(narrowed.enableProviderUpdateChecks).toBe(false);
+    expect(narrowed.sandboxProviders).toEqual({});
+    expect(narrowed.providerInstances).toEqual({});
+    expect(JSON.stringify(narrowed)).not.toContain("e2b_super_secret");
+    expect(JSON.stringify(narrowed)).not.toContain("sk-speech-secret");
   });
 
   it("keeps host state and attachments under the sandbox home", () => {

@@ -69,6 +69,7 @@ const instances = [
 const layerInstanceRegistry = Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
   getInstance: (instanceId) =>
     Effect.succeed(instances.find((instance) => instance.instanceId === instanceId)),
+  getInstanceConfig: () => Effect.succeedNone,
   listInstances: Effect.succeed(instances),
   listUnavailable: Effect.succeed([]),
   streamChanges: Stream.empty,
@@ -153,6 +154,7 @@ it.effect(
               Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
                 getInstance: (id) =>
                   Effect.succeed(related.find((instance) => instance.instanceId === id)),
+                getInstanceConfig: () => Effect.succeedNone,
                 listInstances: Effect.succeed(related),
               }),
             ),
@@ -215,6 +217,7 @@ it.effect("interrupts admitted session startup when a shared peer signs out", ()
             Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
               getInstance: (id) =>
                 Effect.succeed(related.find((instance) => instance.instanceId === id)),
+              getInstanceConfig: () => Effect.succeedNone,
               listInstances: Effect.succeed(related),
             }),
           ),

@@ -25,6 +25,7 @@ import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
+import type * as Scope from "effect/Scope";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
@@ -156,9 +157,11 @@ interface ProviderHostProcessState {
   readonly token: string;
   readonly port: number;
   readonly paths: ProviderAdapterHostPaths;
+  readonly generation: string;
 }
 
 const shellQuote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 /**
  * Git reads this header from the process environment. Keeping it out of the command line and
@@ -282,7 +285,7 @@ export class CloudThreads extends Context.Service<
     readonly openProviderHost: (
       threadId: ThreadId,
       input: CloudProviderHostInput,
-    ) => Effect.Effect<CloudProviderHostConnection, CloudThreadError>;
+    ) => Effect.Effect<CloudProviderHostConnection, CloudThreadError, Scope.Scope>;
     readonly deleteForThread: (threadId: ThreadId) => Effect.Effect<void, CloudThreadError>;
     /** Checks the provider so an externally deleted sandbox becomes a lost workspace. */
     readonly verifyCloudSandbox: (
@@ -1436,15 +1439,25 @@ const make = Effect.gen(function* () {
       threadRecord.homePath,
       threadRecord.workspacePath,
     );
+    const generation = encodeJson({
+      instanceId: input.instanceId,
+      config: input.config,
+      settings: input.settings,
+      environment: input.environment,
+    });
     const lock = yield* providerHostLock(threadId);
     return yield* lock.withPermits(1)(
       Effect.gen(function* () {
-        let host = (yield* Ref.get(providerHosts)).get(threadId);
-        if (host !== undefined && host.sandboxId !== sandbox.id) {
-          yield* stopProviderHost(threadId);
-          host = undefined;
-        }
+        const cachedHost = (yield* Ref.get(providerHosts)).get(threadId);
+        const host =
+          cachedHost !== undefined &&
+          cachedHost.sandboxId === sandbox.id &&
+          cachedHost.generation === generation
+            ? cachedHost
+            : undefined;
+        let activeHost: ProviderHostProcessState;
         if (host === undefined) {
+          if (cachedHost !== undefined) yield* stopProviderHost(threadId);
           const bundle = yield* CloudProviderHost.readProviderAdapterHostBundle(fileSystem, path);
           if (bundle === null) {
             return yield* new CloudThreadError({
@@ -1587,23 +1600,27 @@ const make = Effect.gen(function* () {
           }
           const listeningPort =
             typeof ready.value["port"] === "number" ? ready.value["port"] : port;
-          host = {
+          const started: ProviderHostProcessState = {
             sandboxId: sandbox.id,
             process,
             token,
             port: listeningPort,
             paths,
+            generation,
           };
+          activeHost = started;
           yield* Ref.update(providerHosts, (current) => {
             const next = new Map(current);
-            next.set(threadId, host);
+            next.set(threadId, started);
             return next;
           });
+        } else {
+          activeHost = host;
         }
         const access = yield* portAccess({
           account,
           providerSandboxId,
-          port: host.port,
+          port: activeHost.port,
         }).pipe(
           Effect.mapError(
             (error) =>
@@ -1617,14 +1634,14 @@ const make = Effect.gen(function* () {
         );
         const connection = yield* RemoteProviderAdapter.connect({
           url: CloudProviderHost.providerHostWebSocketUrl(access.url),
-          token: host.token,
+          token: activeHost.token,
           driver: input.driver,
           instanceId: input.instanceId,
           ...(input.displayName === undefined ? {} : { displayName: input.displayName }),
           ...(input.accentColor === undefined ? {} : { accentColor: input.accentColor }),
           config: input.config,
           settings: input.settings,
-          paths: host.paths,
+          paths: activeHost.paths,
           headers: access.headers,
           expectedProtocolVersion: PROVIDER_ADAPTER_HOST_PROTOCOL_VERSION,
           expectedHostVersion: PROVIDER_ADAPTER_HOST_BUILD,
@@ -1646,7 +1663,7 @@ const make = Effect.gen(function* () {
         );
         return {
           adapter: connection.adapter,
-          paths: host.paths,
+          paths: activeHost.paths,
           protocolVersion: connection.protocolVersion,
           hostVersion: connection.hostVersion,
           close: connection.close,
