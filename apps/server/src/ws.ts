@@ -135,6 +135,7 @@ import * as DocumentText from "./provider/DocumentText.ts";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
 import * as SandboxAccounts from "./sandbox/SandboxAccounts.ts";
 import * as SandboxLifecycle from "./sandbox/SandboxLifecycle.ts";
+import * as CloudTargets from "./sandbox/CloudTargets.ts";
 import * as CloudThreadPorts from "./sandbox/CloudThreadPorts.ts";
 import * as CloudThreads from "./sandbox/CloudThreads.ts";
 import { projectPublicRemote } from "./sandbox/CloudRepository.ts";
@@ -1662,36 +1663,10 @@ export const layerWsRpc = (
         const remote = yield* projectPublicRemote(projectService, gitWorkflow, input.projectId);
         const providers = yield* sandboxAccounts.list;
         return {
-          targets: providers.accounts.map((account) => {
-            const provider = providers.providers.find(
-              (candidate) => candidate.kind === account.kind,
-            );
-            const enabled =
-              remote?.type === "url" &&
-              account.enabled &&
-              provider?.capabilities.create === true &&
-              provider.capabilities.exec === true;
-            const disabledReason =
-              remote === null
-                ? ("no-remote" as const)
-                : remote.type === "credentials"
-                  ? ("unsafe-remote" as const)
-                  : !account.enabled
-                    ? ("account-disabled" as const)
-                    : provider === undefined
-                      ? ("provider-unavailable" as const)
-                      : provider.capabilities.create !== true
-                        ? ("no-create" as const)
-                        : provider.capabilities.exec !== true
-                          ? ("no-exec" as const)
-                          : undefined;
-            return {
-              accountId: account.id,
-              providerKind: account.kind,
-              label: account.label,
-              enabled,
-              ...(disabledReason === undefined ? {} : { disabledReason }),
-            };
+          targets: CloudTargets.sandboxCloudTargets({
+            remote,
+            accounts: providers.accounts,
+            providers: providers.providers,
           }),
         };
       });

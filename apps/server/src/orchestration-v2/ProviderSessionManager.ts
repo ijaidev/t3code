@@ -3,6 +3,7 @@ import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   CommandId,
+  DEFAULT_SERVER_SETTINGS,
   isOrchestrationV2WorkActive,
   ModelSelection,
   type OrchestrationV2AppThread,
@@ -76,7 +77,9 @@ import {
   endRunlessRootTurns,
 } from "@t3tools/provider-core/server/subagentProjection";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import * as CloudProviderRuntime from "../sandbox/CloudProviderRuntime.ts";
 import * as CloudThreadRuntime from "../sandbox/CloudThreadRuntime.ts";
 
 const DEFAULT_IDLE_TIMEOUT_MS = 2 * 60 * 1000;
@@ -484,6 +487,12 @@ export const layerWithOptions = (
     Effect.gen(function* () {
       const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
       const cloudRuntime = yield* Effect.serviceOption(CloudThreadRuntime.CloudThreadRuntime);
+      const cloudProviderRuntime = yield* Effect.serviceOption(
+        CloudProviderRuntime.CloudProviderRuntime,
+      );
+      const providerInstances = yield* Effect.serviceOption(
+        ProviderInstanceRegistry.ProviderInstanceRegistry,
+      );
       const fileSystem = yield* FileSystem.FileSystem;
       const mcpSessionRegistry = yield* McpSessionRegistry.McpSessionRegistry;
       const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
@@ -3320,6 +3329,42 @@ export const layerWithOptions = (
                   Option.isSome(cloudRuntime) &&
                   (yield* cloudRuntime.value.hasThread(input.threadId))
                 ) {
+                  if (
+                    Option.isSome(cloudProviderRuntime) &&
+                    cloudProviderRuntime.value.supports(adapter.driver)
+                  ) {
+                    const environment =
+                      registry.getResolvedEnvironment === undefined
+                        ? []
+                        : ((yield* registry.getResolvedEnvironment(
+                            input.modelSelection.instanceId,
+                          )) ?? []);
+                    const instanceConfig = Option.isSome(providerInstances)
+                      ? yield* providerInstances.value
+                          .getInstanceConfig(input.modelSelection.instanceId)
+                          .pipe(
+                            Effect.map(Option.getOrUndefined),
+                            Effect.orElseSucceed(() => undefined),
+                          )
+                      : undefined;
+                    const settings = Option.isSome(serverSettings)
+                      ? yield* serverSettings.value.getSettings.pipe(
+                          Effect.orElseSucceed(() => DEFAULT_SERVER_SETTINGS),
+                        )
+                      : DEFAULT_SERVER_SETTINGS;
+                    return yield* cloudProviderRuntime.value.openSession(
+                      {
+                        threadId: input.threadId,
+                        providerSessionId: input.providerSessionId,
+                        modelSelection: input.modelSelection,
+                        runtimePolicy: input.runtimePolicy,
+                        environment,
+                        config: instanceConfig,
+                        settings,
+                      },
+                      adapter,
+                    );
+                  }
                   const environment =
                     registry.getResolvedEnvironment === undefined
                       ? []

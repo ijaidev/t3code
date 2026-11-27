@@ -1,3 +1,6 @@
+/** Version of the host entrypoint bundle; the controller refuses a different build. */
+export const PROVIDER_ADAPTER_HOST_BUILD = "t3-provider-adapter-host-v1";
+
 /**
  * The host process needs its control variables, but the agent and every tool it
  * spawns must not inherit them. A tool that prints its environment could

@@ -115,6 +115,7 @@ const layerTestProviderInstanceRegistry = Layer.merge(
   Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
     getInstance: (instanceId) =>
       Effect.succeed(instanceId === providerInstance.instanceId ? providerInstance : undefined),
+    getInstanceConfig: () => Effect.succeedNone,
     listInstances: Effect.succeed([providerInstance]),
     listUnavailable: Effect.succeed([]),
     streamChanges: Stream.empty,

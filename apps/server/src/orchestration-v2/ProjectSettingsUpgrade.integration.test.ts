@@ -162,6 +162,7 @@ const layerRuntime = (dbPath: string) => {
     Layer.provide(
       Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
         getInstance: () => Effect.undefined,
+        getInstanceConfig: () => Effect.succeedNone,
         listInstances: Effect.succeed([]),
         listUnavailable: Effect.succeed([]),
         streamChanges: Stream.empty,

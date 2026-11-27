@@ -64,6 +64,7 @@ import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
+import * as CloudProviderRuntime from "../sandbox/CloudProviderRuntime.ts";
 import * as CloudThreadRuntime from "../sandbox/CloudThreadRuntime.ts";
 import * as CommandOutputHub from "./CommandOutputHub.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -690,6 +691,7 @@ function layerTest(input: {
   readonly projectServiceLayer?: Layer.Layer<ProjectService.ProjectService>;
   readonly installationGateLayer?: Layer.Layer<ProviderInstallationGate.ProviderInstallationGate>;
   readonly cloudRuntimeLayer?: Layer.Layer<CloudThreadRuntime.CloudThreadRuntime>;
+  readonly cloudProviderRuntimeLayer?: Layer.Layer<CloudProviderRuntime.CloudProviderRuntime>;
 }) {
   const layerConfiguredEventSink =
     input.flakyReleaseWrites !== undefined
@@ -792,6 +794,9 @@ function layerTest(input: {
           ...(input.serverSettingsLayer === undefined ? [] : [input.serverSettingsLayer]),
           ...(input.projectServiceLayer === undefined ? [] : [input.projectServiceLayer]),
           ...(input.cloudRuntimeLayer === undefined ? [] : [input.cloudRuntimeLayer]),
+          ...(input.cloudProviderRuntimeLayer === undefined
+            ? []
+            : [input.cloudProviderRuntimeLayer]),
         ),
       ),
     ),
@@ -6046,6 +6051,79 @@ it.effect("ProviderSessionManagerV2 gives a delegated child its project's device
       delegatedBy: ThreadId.make("thread-provider-session-manager-parent"),
     });
     assert.isTrue(child?.capabilities?.has("device"));
+  }),
+);
+
+it.effect("opens a supported cloud thread through the sandbox provider runtime", () =>
+  Effect.gen(function* () {
+    const testState = yield* Ref.make(emptyState);
+    const opened = yield* Ref.make(0);
+    const legacyOpened = yield* Ref.make(0);
+    const cloudRuntime = CloudThreadRuntime.CloudThreadRuntime.of({
+      hasThread: () => Effect.succeed(true),
+      openSession: () =>
+        Ref.update(legacyOpened, (count) => count + 1).pipe(
+          Effect.andThen(Effect.die("the legacy cloud host must not run")),
+        ),
+    } as unknown as CloudThreadRuntime.CloudThreadRuntime["Service"]);
+    const cloudProviderRuntime = CloudProviderRuntime.CloudProviderRuntime.of({
+      supports: () => true,
+      openSession: (input: CloudProviderRuntime.CloudProviderRuntimeOpenInput) =>
+        Effect.gen(function* () {
+          yield* Ref.update(opened, (count) => count + 1);
+          const now = yield* DateTime.now;
+          return {
+            instanceId: modelSelection.instanceId,
+            driver: CODEX_DRIVER,
+            providerSessionId: input.providerSessionId,
+            providerSession: makeProviderSession({
+              providerSessionId: input.providerSessionId,
+              now,
+            }),
+            events: Stream.never,
+            ensureThread: () => Effect.die("unused ensureThread"),
+            resumeThread: ({ providerThread }) => Effect.succeed(providerThread),
+            startTurn: () => Effect.die("unused startTurn"),
+            steerTurn: () => Effect.die("unused steerTurn"),
+            interruptTurn: () => Effect.void,
+            respondToRuntimeRequest: () => Effect.void,
+            readThreadSnapshot: () => Effect.die("unused readThreadSnapshot"),
+            rollbackThread: () => Effect.die("unused rollbackThread"),
+            forkThread: () => Effect.die("unused forkThread"),
+          } satisfies ProviderAdapter.ProviderAdapterV2SessionRuntime;
+        }),
+    } as unknown as CloudProviderRuntime.CloudProviderRuntime["Service"]);
+
+    return yield* Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const threadId = ThreadId.make("thread-provider-session-manager-cloud-provider");
+      const providerSessionId = yield* idAllocator.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId,
+      });
+      yield* eventSink.write({
+        events: [
+          yield* makeThreadCreatedEvent({ idAllocator, threadId, now: yield* DateTime.now }),
+        ],
+      });
+      yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+      assert.equal(yield* Ref.get(opened), 1);
+      assert.equal(yield* Ref.get(legacyOpened), 0);
+    }).pipe(
+      Effect.provide(
+        layerTest({
+          state: testState,
+          idleTimeoutMs: 1_000,
+          cloudRuntimeLayer: Layer.succeed(CloudThreadRuntime.CloudThreadRuntime, cloudRuntime),
+          cloudProviderRuntimeLayer: Layer.succeed(
+            CloudProviderRuntime.CloudProviderRuntime,
+            cloudProviderRuntime,
+          ),
+        }),
+      ),
+    );
   }),
 );
 

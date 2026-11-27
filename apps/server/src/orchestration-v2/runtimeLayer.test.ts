@@ -226,6 +226,7 @@ const layerTestProviderInstanceRegistry = Layer.merge(
           antigravityProviderInstance,
         ].find((instance) => instanceId === instance.instanceId),
       ),
+    getInstanceConfig: () => Effect.succeedNone,
     listInstances: Effect.succeed([
       providerInstance,
       alternateProviderInstance,

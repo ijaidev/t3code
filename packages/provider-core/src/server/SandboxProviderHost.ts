@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off -- attachment ids are stored with their original extension.
+import * as NodeFS from "node:fs";
+
 import type { ServerSettings } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -65,7 +68,16 @@ export const make = Effect.fn("SandboxProviderHost.make")(function* (
       if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) {
         return null;
       }
-      return candidate;
+      if (NodeFS.existsSync(candidate)) return candidate;
+      // The controller stores attachments as `<id><extension>`, like the local host.
+      let entries: ReadonlyArray<string>;
+      try {
+        entries = NodeFS.readdirSync(attachmentsRoot);
+      } catch {
+        return candidate;
+      }
+      const withExtension = entries.find((entry) => entry.startsWith(`${attachment.id}.`));
+      return withExtension === undefined ? candidate : path.join(attachmentsRoot, withExtension);
     },
     credentials: Effect.fn("ProviderHost.credentials")(function (namespace, bindingId) {
       const key = credentialKey(namespace, bindingId);
