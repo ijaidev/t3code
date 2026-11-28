@@ -293,6 +293,34 @@ describe("cloud threads", () => {
     return state;
   });
 
+  it.effect("deletes a thread's sandbox and record once, and is idempotent", () => {
+    const state = Effect.gen(function* () {
+      const fake = yield* makeState();
+      const driver = fakeDriver(fake);
+      return yield* Effect.gen(function* () {
+        yield* connect;
+        const cloud = yield* CloudThreads.CloudThreads;
+        yield* cloud.prepare({
+          threadId,
+          accountId,
+          cloneUrl: "https://github.com/example/public.git",
+          baseRef: "main",
+          branch: "main",
+        });
+        yield* cloud.deleteForThread(threadId);
+        expect(yield* Ref.get(fake.calls)).toContain("delete");
+        expect((yield* cloud.getRecord(threadId))._tag).toBe("None");
+        expect((yield* cloud.getSandbox(threadId))._tag).toBe("None");
+
+        // A retried deletion must not fail or delete a second sandbox.
+        yield* cloud.deleteForThread(threadId);
+        const deletes = (yield* Ref.get(fake.calls)).filter((call) => call === "delete");
+        expect(deletes).toHaveLength(1);
+      }).pipe(Effect.provide(testLayer(driver)));
+    });
+    return state;
+  });
+
   it.effect("reports a failed attachment write instead of claiming it was staged", () => {
     const state = Effect.gen(function* () {
       const fake = yield* makeState();

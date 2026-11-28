@@ -671,6 +671,17 @@ export const layerExecutor: Layer.Layer<
                   }),
               ),
             );
+          case "cloud-thread.cleanup":
+            return resourceCleanup.cleanupCloudThread(effect.threadId).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationEffectExecutionError({
+                    effectId: effect.id,
+                    effectType: effect.request.type,
+                    cause,
+                  }),
+              ),
+            );
           case "attachment.cleanup": {
             const request = effect.request;
             return Effect.gen(function* () {

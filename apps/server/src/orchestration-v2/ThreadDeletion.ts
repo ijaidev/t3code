@@ -227,6 +227,13 @@ export const planThreadDeletion = Effect.fn("ThreadDeletion.planThreadDeletion")
     threadId: command.threadId,
     request: { type: "preview.cleanup" },
   });
+  // Local threads have no cloud record; the cleanup is idempotent and keeps one deletion path.
+  effects.push({
+    id: `effect:${command.commandId}:cloud-thread.cleanup`,
+    commandId: command.commandId,
+    threadId: command.threadId,
+    request: { type: "cloud-thread.cleanup" },
+  });
   const attachmentIds = Array.from(new Set(input.attachmentIds));
   if (attachmentIds.length > 0) {
     effects.push({

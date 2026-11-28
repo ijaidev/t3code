@@ -260,6 +260,7 @@ describe("sandbox accounts", () => {
         const listed = yield* accounts.list;
         expect(listed.providers.map((provider) => provider.kind)).toEqual([E2B]);
         expect(listed.accounts[0]?.id).toBe(accountId);
+        expect(listed.accounts[0]?.hasCredential).toBe(true);
       }).pipe(Effect.provide(testLayer([fakeDriver(E2B, fake)])));
     }),
   );
@@ -294,6 +295,27 @@ describe("sandbox lifecycle", () => {
         yield* lifecycle.deleteTestSandbox({ sandboxId: created.sandbox.id });
         expect(yield* store.list).toEqual([]);
         expect(yield* Ref.get(fake.calls)).toEqual(["create", "pause", "resume", "exec", "delete"]);
+      }).pipe(Effect.provide(testLayer([fakeDriver(E2B, fake)])));
+    }),
+  );
+
+  it.effect("deletes an existing sandbox after its account is turned off", () =>
+    Effect.gen(function* () {
+      const fake = yield* state();
+      yield* Effect.gen(function* () {
+        yield* connect();
+        const settings = yield* ServerSettingsModule.ServerSettingsService;
+        const lifecycle = yield* SandboxLifecycle.SandboxLifecycle;
+        const store = yield* SandboxStore.SandboxStore;
+        const created = yield* lifecycle.createTestSandbox({ accountId });
+        const account = (yield* settings.getSettings).sandboxProviders[accountId]!;
+        yield* settings.updateSettings({
+          sandboxProviders: { [accountId]: { ...account, enabled: false } },
+        });
+
+        yield* lifecycle.deleteTestSandbox({ sandboxId: created.sandbox.id });
+        expect(yield* store.list).toEqual([]);
+        expect(yield* Ref.get(fake.calls)).toEqual(["create", "delete"]);
       }).pipe(Effect.provide(testLayer([fakeDriver(E2B, fake)])));
     }),
   );
