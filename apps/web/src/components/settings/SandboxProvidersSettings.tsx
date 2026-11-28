@@ -37,6 +37,7 @@ import {
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { Spinner } from "../ui/spinner";
+import { Switch } from "../ui/switch";
 import { toastManager } from "../ui/toast";
 import { SecretInput } from "./SecretInput";
 import { useSettingsScope } from "./SettingsScopeContext";
@@ -64,6 +65,7 @@ const CAPABILITY_LABELS = {
   pauseResume: msg("pause/resume"),
   snapshots: msg("snapshots"),
   privatePorts: msg("private ports"),
+  harness: msg("agent harness"),
 };
 
 const capabilitySummary = (
@@ -76,6 +78,7 @@ const capabilitySummary = (
     capabilities.pauseResume ? CAPABILITY_LABELS.pauseResume : null,
     capabilities.snapshots ? CAPABILITY_LABELS.snapshots : null,
     capabilities.privatePorts ? CAPABILITY_LABELS.privatePorts : null,
+    capabilities.harness ? CAPABILITY_LABELS.harness : null,
   ].flatMap((value) => (value === null ? [] : [resolve(value)]));
   return values.join(" · ");
 };
@@ -177,6 +180,7 @@ function EnvironmentSandboxProviders(props: {
   >;
   const sandboxes = sandboxesQuery.data?.sandboxes ?? [];
   const providers = providersQuery.data?.providers ?? [];
+  const accountSummaries = providersQuery.data?.accounts ?? [];
   const readOnly = projectScoped || !canManage;
   const accountLabel = (accountId: SandboxProviderAccountId) => {
     const entry = accounts.find(([id]) => id === accountId);
@@ -265,56 +269,83 @@ function EnvironmentSandboxProviders(props: {
             description={gt("Connect a provider to create a test sandbox.")}
           />
         ) : null}
-        {accounts.map(([id, account]) => (
-          <SettingsRow
-            key={id}
-            title={account.label}
-            description={gt("{kind} · template {template}", {
-              kind: account.kind,
-              template: account.template,
-            })}
-            control={
-              <div className="flex flex-wrap items-center justify-end gap-1.5">
-                <Button
-                  size="xs"
-                  variant="ghost"
-                  disabled={readOnly || busy}
-                  onClick={() =>
-                    void run(
-                      () => testAccount({ environmentId, input: { accountId: id } }),
-                      gt("{label} connection works.", { label: account.label }),
-                    )
-                  }
-                >
-                  <T>Test</T>
-                </Button>
-                <Button
-                  size="xs"
-                  variant="outline"
-                  disabled={readOnly || busy}
-                  onClick={() => {
-                    setProvisioningAccount(id);
-                    void run(
-                      () => createSandbox({ environmentId, input: { accountId: id } }),
-                      gt("Test sandbox created on {account}.", { account: account.label }),
-                    ).finally(() => setProvisioningAccount(null));
-                  }}
-                >
-                  <T>Create test sandbox</T>
-                </Button>
-                <Button
-                  size="icon-sm"
-                  variant="ghost-muted"
-                  aria-label={gt("Disconnect {label}", { label: account.label })}
-                  disabled={readOnly || busy}
-                  onClick={() => setDisconnecting(id)}
-                >
-                  <Trash2Icon className="size-3.5" />
-                </Button>
-              </div>
-            }
-          />
-        ))}
+        {accounts.map(([id, account]) => {
+          const summary = accountSummaries.find((candidate) => candidate.id === id);
+          const status = !account.enabled
+            ? gt("Turned off")
+            : summary?.hasCredential === false
+              ? gt("API key unavailable")
+              : undefined;
+          return (
+            <SettingsRow
+              key={id}
+              title={account.label}
+              description={gt("{kind} · template {template}", {
+                kind: account.kind,
+                template: account.template,
+              })}
+              status={status}
+              control={
+                <div className="flex flex-wrap items-center justify-end gap-1.5">
+                  <Switch
+                    size="sm"
+                    checked={account.enabled}
+                    disabled={readOnly || busy}
+                    aria-label={gt("Enable {label}", { label: account.label })}
+                    onCheckedChange={(enabled) => {
+                      setBusy(true);
+                      void updateSettings({
+                        environmentId,
+                        input: {
+                          patch: { sandboxProviders: { [id]: { ...account, enabled } } },
+                        },
+                      }).then((result) => {
+                        setBusy(false);
+                        if (result._tag === "Failure") reportFailure(result.cause);
+                      });
+                    }}
+                  />
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    disabled={readOnly || busy}
+                    onClick={() =>
+                      void run(
+                        () => testAccount({ environmentId, input: { accountId: id } }),
+                        gt("{label} connection works.", { label: account.label }),
+                      )
+                    }
+                  >
+                    <T>Test</T>
+                  </Button>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    disabled={readOnly || busy}
+                    onClick={() => {
+                      setProvisioningAccount(id);
+                      void run(
+                        () => createSandbox({ environmentId, input: { accountId: id } }),
+                        gt("Test sandbox created on {account}.", { account: account.label }),
+                      ).finally(() => setProvisioningAccount(null));
+                    }}
+                  >
+                    <T>Create test sandbox</T>
+                  </Button>
+                  <Button
+                    size="icon-sm"
+                    variant="ghost-muted"
+                    aria-label={gt("Disconnect {label}", { label: account.label })}
+                    disabled={readOnly || busy}
+                    onClick={() => setDisconnecting(id)}
+                  >
+                    <Trash2Icon className="size-3.5" />
+                  </Button>
+                </div>
+              }
+            />
+          );
+        })}
       </SettingsSection>
 
       <SettingsSection title={gt("Lifecycle")}>

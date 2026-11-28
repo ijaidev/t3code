@@ -9,6 +9,7 @@ import {
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
+import { ProviderInstanceId } from "./providerInstance.ts";
 import { SettingsSecretValue } from "./settingsSecretValue.ts";
 
 export const SandboxProviderKind = TrimmedNonEmptyString.check(
@@ -53,6 +54,8 @@ export const SandboxProviderCapabilities = Schema.Struct({
   delete: Schema.Boolean,
   snapshots: Schema.Boolean,
   privatePorts: Schema.Boolean,
+  /** Whether the provider can host a native provider harness beside the workspace. */
+  harness: Schema.optionalKey(Schema.Boolean),
   /** Provider control-plane ports that are never app previews. */
   reservedPorts: Schema.optionalKey(Schema.Array(PositiveInt)),
   sizes: Schema.Array(SandboxProviderSize),
@@ -93,6 +96,8 @@ export const SandboxProviderAccountSummary = Schema.Struct({
   label: SandboxProviderLabel,
   template: TrimmedNonEmptyString,
   enabled: Schema.Boolean,
+  /** False when the account's stored API key cannot be read; absent on older servers. */
+  hasCredential: Schema.optionalKey(Schema.Boolean),
 });
 export type SandboxProviderAccountSummary = typeof SandboxProviderAccountSummary.Type;
 
@@ -139,9 +144,13 @@ export const SandboxCloudTarget = Schema.Struct({
       "no-remote",
       "unsafe-remote",
       "account-disabled",
+      "no-credential",
       "provider-unavailable",
       "no-create",
       "no-exec",
+      "no-harness",
+      "harness-unavailable",
+      "sign-in-unavailable",
     ]),
   ),
 });
@@ -149,6 +158,8 @@ export type SandboxCloudTarget = typeof SandboxCloudTarget.Type;
 
 export const SandboxListCloudTargetsInput = Schema.Struct({
   projectId: ProjectId,
+  /** The provider instance the new thread will use, so the list can refuse its harness. */
+  instanceId: Schema.optionalKey(ProviderInstanceId),
 });
 export type SandboxListCloudTargetsInput = typeof SandboxListCloudTargetsInput.Type;
 

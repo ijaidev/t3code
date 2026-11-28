@@ -51,6 +51,7 @@ import {
 
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
+import * as CloudTargets from "../sandbox/CloudTargets.ts";
 import * as CloudThreads from "../sandbox/CloudThreads.ts";
 import { projectPublicRemote } from "../sandbox/CloudRepository.ts";
 import type * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
@@ -58,6 +59,7 @@ import { parseGitCloneProgressLine } from "../project/gitCloneProgress.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
@@ -306,6 +308,9 @@ const make = Effect.gen(function* () {
   const checkpointStore = yield* CheckpointStore.CheckpointStore;
   const setupScripts = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
+  const providerInstances = yield* Effect.serviceOption(
+    ProviderInstanceRegistry.ProviderInstanceRegistry,
+  );
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const textGeneration = yield* TextGeneration.TextGeneration;
   const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
@@ -1557,6 +1562,36 @@ const make = Effect.gen(function* () {
         commandId: input.commandId,
         instanceId: input.modelSelection.instanceId,
       });
+      // Refuse before allocating a sandbox when this provider has no harness there.
+      if (input.workspaceStrategy.type === "cloud" && Option.isSome(providerInstances)) {
+        const instance = yield* providerInstances.value.getInstance(
+          input.modelSelection.instanceId,
+        );
+        if (instance !== undefined) {
+          const harness = CloudTargets.cloudHarnessCapability({
+            driver: instance.driverKind,
+            config: Option.getOrUndefined(
+              yield* providerInstances.value.getInstanceConfig(input.modelSelection.instanceId),
+            ),
+          });
+          if (!harness.supported) {
+            return yield* mapError(
+              input,
+              "provision-worktree",
+            )(
+              "This provider cannot run in a cloud sandbox yet. Pick another provider or start the thread locally.",
+            );
+          }
+          if (!harness.credentialSupported) {
+            return yield* mapError(
+              input,
+              "provision-worktree",
+            )(
+              "This provider's sign-in cannot be used in a cloud sandbox. Use an API key or start the thread locally.",
+            );
+          }
+        }
+      }
       return yield* Effect.gen(function* () {
         // Recover ids from accepted launch receipts before allocating; retries have no client id and new ids collide with receipts.
         const reusableLaunchReceipt =

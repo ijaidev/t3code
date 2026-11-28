@@ -1202,22 +1202,7 @@ export default function ChatView(props: ChatViewProps) {
       ? scopeProjectRef(activeThreadEnvironmentId, activeThreadProjectId)
       : null;
   const activeProject = useProject(activeProjectRef);
-  const cloudTargetsQuery = useEnvironmentQuery(
-    activeProject && isLocalDraftThread
-      ? serverEnvironment.sandboxCloudTargets({
-          environmentId,
-          input: { projectId: activeProject.id },
-        })
-      : null,
-    messages,
-  );
-  const cloudTargets = cloudTargetsQuery.data?.targets ?? [];
   const [selectedCloudAccountId, setSelectedCloudAccountId] = useState<string | null>(null);
-  const selectedCloudTarget =
-    cloudTargets.find((target) => target.accountId === selectedCloudAccountId) ??
-    cloudTargets.find((target) => target.enabled) ??
-    cloudTargets[0] ??
-    null;
   const activeProjectSettings = resolveProjectSettings(
     settings,
     activeProject?.id ?? null,
@@ -1447,6 +1432,25 @@ export default function ChatView(props: ChatViewProps) {
   });
   const selectedProvider = selectedProviderEntry?.driverKind ?? requestedDriverKind;
   const activeProviderInstanceId = selectedProviderEntry?.instanceId ?? null;
+  // The target's harness reason follows the provider the draft will actually use.
+  const cloudTargetsQuery = useEnvironmentQuery(
+    activeProject && isLocalDraftThread
+      ? serverEnvironment.sandboxCloudTargets({
+          environmentId,
+          input: {
+            projectId: activeProject.id,
+            ...(activeProviderInstanceId === null ? {} : { instanceId: activeProviderInstanceId }),
+          },
+        })
+      : null,
+    messages,
+  );
+  const cloudTargets = cloudTargetsQuery.data?.targets ?? [];
+  const selectedCloudTarget =
+    cloudTargets.find((target) => target.accountId === selectedCloudAccountId) ??
+    cloudTargets.find((target) => target.enabled) ??
+    cloudTargets[0] ??
+    null;
   const activeProviderStatus = selectedProviderEntry?.snapshot ?? null;
   const activeUsageModel =
     [

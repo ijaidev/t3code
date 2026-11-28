@@ -16,7 +16,18 @@ export class SandboxProviderRegistry extends Context.Service<
 
 const make = (drivers: ReadonlyArray<SandboxProviderDriver>) =>
   SandboxProviderRegistry.of({
-    list: drivers.map(({ kind, label, capabilities }) => ({ kind, label, capabilities })),
+    list: drivers.map((driver) => ({
+      kind: driver.kind,
+      label: driver.label,
+      capabilities: {
+        ...driver.capabilities,
+        // The declared flag is a claim; the host methods are what actually run a harness.
+        harness:
+          driver.startProcess !== undefined &&
+          driver.portAccess !== undefined &&
+          driver.writeFile !== undefined,
+      },
+    })),
     find: (kind) => drivers.find((driver) => driver.kind === kind),
   });
 

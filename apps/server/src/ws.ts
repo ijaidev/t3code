@@ -1755,11 +1755,28 @@ export const layerWsRpc = (
       ) {
         const remote = yield* projectPublicRemote(projectService, gitWorkflow, input.projectId);
         const providers = yield* sandboxAccounts.list;
+        const requestedInstanceId = input.instanceId;
+        const instance =
+          requestedInstanceId === undefined
+            ? undefined
+            : yield* providerInstances.getInstance(requestedInstanceId);
+        const harness =
+          requestedInstanceId === undefined
+            ? undefined
+            : instance === undefined
+              ? { supported: false, credentialSupported: false }
+              : CloudTargets.cloudHarnessCapability({
+                  driver: instance.driverKind,
+                  config: Option.getOrUndefined(
+                    yield* providerInstances.getInstanceConfig(requestedInstanceId),
+                  ),
+                });
         return {
           targets: CloudTargets.sandboxCloudTargets({
             remote,
             accounts: providers.accounts,
             providers: providers.providers,
+            ...(harness === undefined ? {} : { harness }),
           }),
         };
       });

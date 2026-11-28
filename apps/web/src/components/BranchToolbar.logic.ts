@@ -132,12 +132,26 @@ export function resolveCloudTargetDisabledReason(
       );
     case "account-disabled":
       return resolve(msg("Enable this provider account in Settings to start a cloud thread."));
+    case "no-credential":
+      return resolve(
+        msg("Reconnect this provider account with a usable API key to start a cloud thread."),
+      );
     case "provider-unavailable":
       return resolve(msg("This sandbox provider is not available."));
     case "no-create":
       return resolve(msg("This sandbox provider cannot create sandboxes."));
     case "no-exec":
       return resolve(msg("This sandbox provider cannot run commands."));
+    case "no-harness":
+      return resolve(msg("This sandbox provider cannot run a provider harness."));
+    case "harness-unavailable":
+      return resolve(msg("This provider cannot run in a cloud sandbox yet."));
+    case "sign-in-unavailable":
+      return resolve(
+        msg(
+          "This provider's sign-in cannot be used in a cloud sandbox. Use an API key or run it locally.",
+        ),
+      );
   }
 }
 

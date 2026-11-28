@@ -1,11 +1,18 @@
 import {
+  ProviderDriverKind,
   SandboxProviderAccountId,
   SandboxProviderKind,
   type SandboxProviderCapabilities,
+  type SandboxProviderSummary,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 
-import { sandboxCloudTargets } from "./CloudTargets.ts";
+import {
+  cloudHarnessCapability,
+  type CloudHarnessCapability,
+  type CloudTargetRemote,
+  sandboxCloudTargets,
+} from "./CloudTargets.ts";
 
 const e2b = SandboxProviderKind.make("e2b");
 const accountId = SandboxProviderAccountId.make("e2b-work");
@@ -17,59 +24,108 @@ const capabilities: SandboxProviderCapabilities = {
   delete: true,
   snapshots: true,
   privatePorts: true,
+  harness: true,
   sizes: [{ id: "small", label: "Small", cpuCount: 2, memoryMB: 1024 }],
   regions: [{ id: "us", label: "United States" }],
 };
 
-const account = { id: accountId, kind: e2b, label: "E2B", template: "base", enabled: true };
+const account = {
+  id: accountId,
+  kind: e2b,
+  label: "E2B",
+  template: "base",
+  enabled: true,
+  hasCredential: true,
+};
 const provider = { kind: e2b, label: "E2B", capabilities };
+const supportedHarness: CloudHarnessCapability = {
+  supported: true,
+  credentialSupported: true,
+};
+
+const target = (
+  input: Partial<{
+    readonly remote: CloudTargetRemote;
+    readonly accounts: ReadonlyArray<typeof account>;
+    readonly providers: ReadonlyArray<SandboxProviderSummary>;
+    readonly harness: CloudHarnessCapability;
+  }> = {},
+) =>
+  sandboxCloudTargets({
+    remote: { type: "url" },
+    accounts: [account],
+    providers: [provider],
+    harness: supportedHarness,
+    ...input,
+  })[0];
 
 describe("sandbox cloud targets", () => {
   it("offers an enabled provider for a project with a Git remote", () => {
-    expect(
-      sandboxCloudTargets({ remote: { type: "url" }, accounts: [account], providers: [provider] }),
-    ).toEqual([{ accountId, providerKind: e2b, label: "E2B", enabled: true }]);
+    expect(target()).toEqual({ accountId, providerKind: e2b, label: "E2B", enabled: true });
   });
 
   it("keeps the target visible with the reason it cannot start", () => {
+    expect(target({ remote: null })?.disabledReason).toBe("no-remote");
+    expect(target({ remote: { type: "credentials" } })?.disabledReason).toBe("unsafe-remote");
+    expect(target({ accounts: [{ ...account, enabled: false }] })?.disabledReason).toBe(
+      "account-disabled",
+    );
+    expect(target({ accounts: [{ ...account, hasCredential: false }] })?.disabledReason).toBe(
+      "no-credential",
+    );
+    expect(target({ providers: [] })?.disabledReason).toBe("provider-unavailable");
     expect(
-      sandboxCloudTargets({
-        remote: null,
-        accounts: [account],
-        providers: [provider],
-      })[0]?.disabledReason,
-    ).toBe("no-remote");
-    expect(
-      sandboxCloudTargets({
-        remote: { type: "credentials" },
-        accounts: [account],
-        providers: [provider],
-      })[0]?.disabledReason,
-    ).toBe("unsafe-remote");
-    expect(
-      sandboxCloudTargets({
-        remote: { type: "url" },
-        accounts: [{ ...account, enabled: false }],
-        providers: [provider],
-      })[0]?.disabledReason,
-    ).toBe("account-disabled");
-    expect(
-      sandboxCloudTargets({ remote: { type: "url" }, accounts: [account], providers: [] })[0]
-        ?.disabledReason,
-    ).toBe("provider-unavailable");
-    expect(
-      sandboxCloudTargets({
-        remote: { type: "url" },
-        accounts: [account],
+      target({
         providers: [{ ...provider, capabilities: { ...capabilities, create: false } }],
-      })[0]?.disabledReason,
+      })?.disabledReason,
     ).toBe("no-create");
     expect(
-      sandboxCloudTargets({
-        remote: { type: "url" },
-        accounts: [account],
+      target({
         providers: [{ ...provider, capabilities: { ...capabilities, exec: false } }],
-      })[0]?.disabledReason,
+      })?.disabledReason,
     ).toBe("no-exec");
+    expect(
+      target({
+        providers: [{ ...provider, capabilities: { ...capabilities, harness: false } }],
+      })?.disabledReason,
+    ).toBe("no-harness");
+  });
+
+  it("checks the selected harness and its sign-in", () => {
+    expect(
+      target({ harness: { supported: false, credentialSupported: true } })?.disabledReason,
+    ).toBe("harness-unavailable");
+    expect(
+      target({ harness: { supported: true, credentialSupported: false } })?.disabledReason,
+    ).toBe("sign-in-unavailable");
+  });
+});
+
+describe("cloud harness capability", () => {
+  it.each(["opencode", "claudeAgent", "codex"])("supports %s", (driver) => {
+    expect(
+      cloudHarnessCapability({
+        driver: ProviderDriverKind.make(driver),
+        config: {},
+      }),
+    ).toEqual({ supported: true, credentialSupported: true });
+  });
+
+  it("refuses providers without a sandbox adapter", () => {
+    expect(
+      cloudHarnessCapability({
+        driver: ProviderDriverKind.make("cursor"),
+        config: {},
+      }),
+    ).toEqual({ supported: false, credentialSupported: true });
+  });
+
+  it("refuses managed Codex sign-in, which cannot enter the sandbox", () => {
+    expect(
+      cloudHarnessCapability({
+        driver: ProviderDriverKind.make("codex"),
+        config: { setupMode: "managed" },
+      }),
+    ).toEqual({ supported: true, credentialSupported: false });
   });
 });
