@@ -257,6 +257,15 @@
   ],
   "packageOverrides": [
     {
+      "name": "effect-codex-app-server",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/ijaidev/t3code",
+      "generatedNotice": {
+        "licenseId": "MIT",
+        "copyrights": ["Copyright (c) 2026 T3 Code contributors"]
+      }
+    },
+    {
       "name": "entities",
       "version": "8.1.0",
       "license": "BSD-2-Clause",
