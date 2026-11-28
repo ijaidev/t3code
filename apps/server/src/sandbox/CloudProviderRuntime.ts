@@ -30,6 +30,7 @@ import * as CloudProviderHost from "./CloudProviderHost.ts";
 import * as CloudThreads from "./CloudThreads.ts";
 
 const CLAUDE_DRIVER = ProviderDriverKind.make("claudeAgent");
+const CODEX_DRIVER = ProviderDriverKind.make("codex");
 
 /** The Python host stored a synthetic native id; Claude Code has no such conversation. */
 const isLegacyCloudNativeThreadId = (nativeId: string | null | undefined): boolean =>
@@ -116,7 +117,9 @@ const make = Effect.gen(function* () {
         config:
           base.driver === CLAUDE_DRIVER
             ? CloudProviderHost.cloudClaudeHostConfig(input.config, runtimeDir)
-            : CloudProviderHost.cloudOpenCodeHostConfig(input.config, runtimeDir),
+            : base.driver === CODEX_DRIVER
+              ? CloudProviderHost.cloudCodexHostConfig(input.config, runtimeDir)
+              : CloudProviderHost.cloudOpenCodeHostConfig(input.config, runtimeDir),
         settings: CloudProviderHost.cloudProviderHostSettings(input.settings),
         environment: input.environment,
       })

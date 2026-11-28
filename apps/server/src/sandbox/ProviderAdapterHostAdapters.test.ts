@@ -11,6 +11,7 @@ import * as FileSystem from "effect/FileSystem";
 import { createProviderAdapterHostAdapter } from "./ProviderAdapterHostAdapters.ts";
 
 const claudeDriver = ProviderDriverKind.make("claudeAgent");
+const codexDriver = ProviderDriverKind.make("codex");
 
 describe("sandbox provider adapter host adapters", () => {
   it.effect("builds the real Claude adapter from sandbox paths", () =>
@@ -41,13 +42,65 @@ describe("sandbox provider adapter host adapters", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("refuses a driver the host cannot run", () =>
+  it.effect("builds the real Codex adapter from sandbox paths", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-codex-host-" });
-      const error = yield* createProviderAdapterHostAdapter({
-        driver: ProviderDriverKind.make("codex"),
+      const paths = {
+        cwd: `${root}/workspace`,
+        baseDir: `${root}/host`,
+        stateDir: `${root}/host/state`,
+        providerStatusCacheDir: `${root}/host/cache`,
+        attachmentsDir: `${root}/attachments`,
+      };
+
+      const created = yield* createProviderAdapterHostAdapter({
+        driver: codexDriver,
         instanceId: ProviderInstanceId.make("codex"),
+        displayName: "Codex",
+        accentColor: undefined,
+        config: { binaryPath: `${root}/bin/codex`, homePath: `${root}/home` },
+        settings: DEFAULT_SERVER_SETTINGS,
+        paths,
+      });
+
+      expect(created.adapter.driver).toBe(codexDriver);
+      expect(created.adapter.instanceId).toBe(ProviderInstanceId.make("codex"));
+      expect(yield* created.onStop).toBeUndefined();
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("refuses managed Codex sign-in inside the sandbox", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-codex-managed-" });
+      const error = yield* createProviderAdapterHostAdapter({
+        driver: codexDriver,
+        instanceId: ProviderInstanceId.make("codex"),
+        displayName: "Codex",
+        accentColor: undefined,
+        config: { setupMode: "managed", binaryPath: `${root}/bin/codex`, homePath: `${root}/home` },
+        settings: DEFAULT_SERVER_SETTINGS,
+        paths: {
+          cwd: root,
+          baseDir: `${root}/host`,
+          stateDir: `${root}/host/state`,
+          providerStatusCacheDir: `${root}/host/cache`,
+          attachmentsDir: `${root}/attachments`,
+        },
+      }).pipe(Effect.flip);
+
+      expect(error.code).toBe("invalid_config");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("refuses a driver the host cannot run", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-cursor-host-" });
+      const error = yield* createProviderAdapterHostAdapter({
+        driver: ProviderDriverKind.make("cursor"),
+        instanceId: ProviderInstanceId.make("cursor"),
         displayName: undefined,
         accentColor: undefined,
         config: {},
