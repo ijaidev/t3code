@@ -2709,18 +2709,27 @@ export const layerWsRpc = (
             if (input.instanceId === undefined) {
               yield* usageLimitSources.refresh;
             }
-            let providers = yield* input.cwd !== undefined && input.instanceId !== undefined
-              ? providerRegistry.refreshWorkspaceSnapshot({
-                  instanceId: input.instanceId,
-                  cwd: input.cwd,
-                  scanCwd: yield* projectService.workspaceScanDirectory(input.cwd),
-                  fresh: input.fresh === true,
-                })
-              : input.reloadSecrets === true
+            let providers: ReadonlyArray<ServerProvider>;
+            const refreshCwd = input.cwd;
+            const refreshInstanceId = input.instanceId;
+            if (refreshCwd !== undefined && refreshInstanceId !== undefined) {
+              const cloudWorkspace = yield* cloudWorkspaceFor(refreshCwd);
+              // A cloud workspace lives in the sandbox, so the controller has nothing local to scan.
+              providers = Option.isSome(cloudWorkspace)
+                ? yield* providerRegistry.refreshInstance(refreshInstanceId)
+                : yield* providerRegistry.refreshWorkspaceSnapshot({
+                    instanceId: refreshInstanceId,
+                    cwd: refreshCwd,
+                    scanCwd: yield* projectService.workspaceScanDirectory(refreshCwd),
+                    fresh: input.fresh === true,
+                  });
+            } else {
+              providers = yield* input.reloadSecrets === true
                 ? providerRegistry.reloadSecretsAndRefresh(input.instanceId)
                 : input.instanceId !== undefined
                   ? providerRegistry.refreshInstance(input.instanceId)
                   : providerRegistry.refresh();
+            }
             if (input.refreshModels) {
               const instances = yield* providerInstances.listInstances;
               for (const instance of instances) {

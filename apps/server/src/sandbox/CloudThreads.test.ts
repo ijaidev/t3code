@@ -309,6 +309,8 @@ describe("cloud threads", () => {
         });
         yield* cloud.deleteForThread(threadId);
         expect(yield* Ref.get(fake.calls)).toContain("delete");
+        const execs = yield* Ref.get(fake.execs);
+        expect(execs.some((command) => command.includes("/proc/[0-9]*"))).toBe(true);
         expect((yield* cloud.getRecord(threadId))._tag).toBe("None");
         expect((yield* cloud.getSandbox(threadId))._tag).toBe("None");
 

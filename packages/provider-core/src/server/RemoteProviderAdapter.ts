@@ -101,11 +101,10 @@ const encodeClientMessage = Schema.encodeSync(
 const decodeServerMessage = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.toCodecJson(ProviderAdapterHostServerMessage)),
 );
+const isRemoteProviderAdapterError = Schema.is(RemoteProviderAdapterError);
 const decodeSessionDescriptor = Schema.decodeUnknownSync(
   Schema.toCodecJson(ProviderAdapterHostSessionDescriptor),
 );
-const decodeError = Schema.decodeUnknownOption(ProviderAdapterV2Error);
-const isRemoteProviderAdapterError = Schema.is(RemoteProviderAdapterError);
 
 const decodeSnapshotValue = Schema.decodeUnknownSync(
   Schema.toCodecJson(ProviderAdapterHostThreadSnapshot),
@@ -507,15 +506,7 @@ export const connect = (
           pending.delete(message.id);
           return message.ok
             ? Deferred.succeed(deferred, message.result)
-            : Deferred.fail(
-                deferred,
-                Option.getOrElse(decodeError(message.error), () =>
-                  protocolError(
-                    options.driver,
-                    "The sandbox provider host sent an unreadable error.",
-                  ),
-                ),
-              );
+            : Deferred.fail(deferred, message.error);
         }
         case "event": {
           const session = sessions.get(message.sessionId);

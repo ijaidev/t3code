@@ -99,6 +99,41 @@ describe("E2B sandbox provider", () => {
       }),
   );
 
+  it.effect("retries with the Hobby lifetime when E2B rejects a 24-hour create", () =>
+    Effect.gen(function* () {
+      const seen: Array<Record<string, unknown>> = [];
+      const driver = makeE2BSandboxProvider(
+        client({
+          create: async (input) => {
+            seen.push(input);
+            if (seen.length === 1) {
+              throw Object.assign(new Error("Timeout cannot be greater than 1 hours"), {
+                statusCode: 400,
+              });
+            }
+            return { sandboxId: "e2b-sandbox-1" };
+          },
+        }),
+      );
+      const created = yield* driver.create({
+        account,
+        instanceId: "instance-1",
+        template: "base",
+        timeoutMs: 24 * 60 * 60_000,
+      });
+      expect(created.providerSandboxId).toBe("e2b-sandbox-1");
+      expect(seen.map((entry) => entry.timeoutMs)).toEqual([24 * 60 * 60_000, 60 * 60_000]);
+      expect(seen[1]).toEqual({
+        template: "base",
+        apiKey: "e2b_secret_key",
+        timeoutMs: 60 * 60_000,
+        idempotencyKey: "instance-1",
+        metadata: { "t3.instance": "instance-1" },
+        network: { allowPublicTraffic: false, maskRequestHost: "localhost:${PORT}" },
+      });
+    }),
+  );
+
   it.effect("finds a create the provider accepted using its instance metadata", () =>
     Effect.gen(function* () {
       const seen: Array<Record<string, unknown>> = [];

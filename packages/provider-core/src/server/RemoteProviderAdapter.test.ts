@@ -217,11 +217,13 @@ const appThread = Schema.decodeSync(OrchestrationV2AppThread)({
 const makeFakeAdapter = (input: {
   readonly calls: string[];
   readonly events: Queue.Queue<ProviderAdapter.ProviderAdapterV2Event>;
+  readonly failure?: ProviderAdapter.ProviderAdapterV2Error;
 }): ProviderAdapter.ProviderAdapterV2["Service"] => ({
   instanceId,
   driver,
   checksVersionAtHandshake: true,
-  getCapabilities: () => Effect.succeed(capabilities),
+  getCapabilities: () =>
+    input.failure === undefined ? Effect.succeed(capabilities) : Effect.fail(input.failure),
   planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
   openSession: (sessionInput) =>
     Effect.sync(() => {
@@ -308,9 +310,14 @@ const startHost = (input: {
   readonly stopped: Deferred.Deferred<void>;
   readonly expectedDriver?: ProviderDriverKind;
   readonly acceptConfig?: (config: unknown) => boolean;
+  readonly failure?: ProviderAdapter.ProviderAdapterV2Error;
 }): Effect.Effect<HostHandle, never, NodeServices.NodeServices | Scope.Scope> =>
   Effect.gen(function* () {
-    const fake = makeFakeAdapter({ calls: input.calls, events: input.events });
+    const fake = makeFakeAdapter({
+      calls: input.calls,
+      events: input.events,
+      ...(input.failure === undefined ? {} : { failure: input.failure }),
+    });
     const server = yield* NodeSocketServer.makeWebSocket({
       host: "127.0.0.1",
       port: 0,
@@ -515,6 +522,36 @@ describe("remote provider adapter", () => {
           Effect.timeoutOption("5 seconds"),
         );
         expect(Option.isSome(stoppedResult)).toBe(true);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("returns structured host errors to the controller", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const calls: string[] = [];
+        const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
+        const hostRef = yield* Ref.make<SandboxProviderHost.SandboxProviderHost | null>(null);
+        const stopped = yield* Deferred.make<void>();
+        const fileSystem = yield* FileSystem.FileSystem;
+        const root = yield* fileSystem.makeTempDirectory({ prefix: "t3-remote-adapter-" });
+        const paths = makePaths(root);
+        const failure = new ProviderAdapter.ProviderAdapterProtocolError({
+          driver,
+          detail: "the host adapter refused",
+          cause: new Error("inner failure"),
+        });
+        const host = yield* startHost({ calls, events, hostRef, stopped, failure });
+
+        const connection = yield* connect({ url: host.url, paths });
+        const result = yield* connection.adapter
+          .getCapabilities()
+          .pipe(Effect.match({ onFailure: (error) => error, onSuccess: () => null }));
+        expect(result === null ? null : result._tag).toBe("ProviderAdapterProtocolError");
+        expect(result === null ? null : result.message).toBe(
+          "opencode provider protocol error: the host adapter refused.",
+        );
+        yield* connection.close;
       }),
     ).pipe(Effect.provide(testLayer)),
   );

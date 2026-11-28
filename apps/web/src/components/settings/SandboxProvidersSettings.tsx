@@ -675,7 +675,10 @@ function ConnectSandboxAccountDialog(props: {
   const gt = useGT();
   const [label, setLabel] = useState(props.provider.label);
   const [apiKey, setApiKey] = useState("");
-  const [template, setTemplate] = useState("base");
+  const [template, setTemplate] = useState(
+    // E2B's base template has 512 MiB, which cannot hold a provider host beside the workspace.
+    props.provider.kind === "e2b" ? "code-interpreter-v1" : "base",
+  );
   const [submitted, setSubmitted] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);

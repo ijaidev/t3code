@@ -60,6 +60,17 @@ describe("cloud provider host", () => {
     );
   });
 
+  it("kills leftover host processes by their private runtime prefix", () => {
+    const command = CloudProviderHost.cloudProviderHostCleanupCommand({
+      hostDir: "/home/t3/.t3/provider-host",
+    });
+
+    expect(command).toContain("for dir in /proc/[0-9]*");
+    expect(command).toContain('pid="${dir#/proc/}"');
+    expect(command).toContain("'/home/t3/.t3/provider-host/runtime/bin/'*");
+    expect(command).toContain('kill -KILL "$pid"');
+  });
+
   it("keeps provider environment out of the host control channel", () => {
     const environment = CloudProviderHost.cloudProviderHostEnvironment({
       token: "host-token",

@@ -1487,14 +1487,39 @@ const make = Effect.gen(function* () {
     threadId: ThreadId,
   ) {
     const entry = (yield* Ref.get(providerHosts)).get(threadId);
-    if (entry === undefined) return;
-    yield* Ref.update(providerHosts, (current) => {
-      if (current.get(threadId) !== entry) return current;
-      const next = new Map(current);
-      next.delete(threadId);
-      return next;
-    });
-    yield* entry.process.kill.pipe(Effect.ignore);
+    if (entry !== undefined) {
+      yield* Ref.update(providerHosts, (current) => {
+        if (current.get(threadId) !== entry) return current;
+        const next = new Map(current);
+        next.delete(threadId);
+        return next;
+      });
+    }
+    // A host may have outlived a previous controller process; its detached provider
+    // servers keep its credentials until something kills them.
+    yield* Effect.gen(function* () {
+      const sandbox = yield* getSandbox(threadId);
+      if (
+        Option.isNone(sandbox) ||
+        sandbox.value.status !== "running" ||
+        sandbox.value.providerSandboxId === null
+      ) {
+        return;
+      }
+      const record = yield* getRecord(threadId);
+      if (Option.isNone(record)) return;
+      const { account, driver } = yield* resolveSandbox(sandbox.value, "start-host");
+      if (driver.exec === undefined) return;
+      yield* driver.exec({
+        account,
+        providerSandboxId: sandbox.value.providerSandboxId,
+        command: CloudProviderHost.cloudProviderHostCleanupCommand({
+          hostDir: CloudProviderHost.cloudProviderHostDir(record.value.homePath),
+        }),
+        timeoutMs: 15_000,
+      });
+    }).pipe(Effect.ignoreCause);
+    if (entry !== undefined) yield* entry.process.kill.pipe(Effect.ignore);
   });
 
   const openProviderHost: CloudThreads["Service"]["openProviderHost"] = Effect.fn(
@@ -1604,6 +1629,13 @@ const make = Effect.gen(function* () {
               shellQuote(paths.providerStatusCacheDir),
               shellQuote(paths.attachmentsDir),
             ].join(" "),
+            "start-host",
+          );
+          yield* run(
+            sandbox,
+            driver,
+            account,
+            CloudProviderHost.cloudProviderHostCleanupCommand({ hostDir }),
             "start-host",
           );
           const token = NodeCrypto.randomBytes(32).toString("base64url");

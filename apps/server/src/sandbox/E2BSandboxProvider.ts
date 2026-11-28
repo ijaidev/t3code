@@ -16,6 +16,8 @@ import {
 const E2B_KIND = SandboxProviderKind.make("e2b");
 const E2B_DEFAULT_API_DOMAIN = "e2b.app";
 const E2B_CREATE_TIMEOUT_MS = 120_000;
+/** Hobby accounts cap sandbox lifetimes at one hour; Pro accounts accept up to 24 hours. */
+const E2B_HOBBY_MAX_TIMEOUT_MS = 60 * 60_000;
 const E2B_REQUEST_TIMEOUT_MS = 60_000;
 const E2B_EXEC_TIMEOUT_MS = 120_000;
 const MAX_ERROR_DETAIL_LENGTH = 300;
@@ -251,22 +253,33 @@ export const makeE2BSandboxProvider = (
     attempt(account, "validate-credential", () => client.list({ apiKey: account.apiKey })).pipe(
       Effect.asVoid,
     ),
-  create: (input) =>
-    attempt(input.account, "create", () =>
-      client.create({
-        template: input.template,
-        apiKey: input.account.apiKey,
-        timeoutMs: input.timeoutMs,
-        idempotencyKey: input.instanceId,
-        metadata: { "t3.instance": input.instanceId },
-        // A preview is only ever reachable through the controlling server, never from this URL.
-        network: {
-          allowPublicTraffic: false,
-          // The port makes the app-visible Host agree with the preview's rewritten Origin.
-          maskRequestHost: "localhost:${PORT}",
-        },
-      }),
-    ).pipe(Effect.map((created) => ({ providerSandboxId: created.sandboxId }))),
+  create: (input) => {
+    const create = (timeoutMs: number) =>
+      attempt(input.account, "create", () =>
+        client.create({
+          template: input.template,
+          apiKey: input.account.apiKey,
+          timeoutMs,
+          idempotencyKey: input.instanceId,
+          metadata: { "t3.instance": input.instanceId },
+          // A preview is only ever reachable through the controlling server, never from this URL.
+          network: {
+            allowPublicTraffic: false,
+            // The port makes the app-visible Host agree with the preview's rewritten Origin.
+            maskRequestHost: "localhost:${PORT}",
+          },
+        }),
+      );
+    return create(input.timeoutMs).pipe(
+      Effect.catchIf(
+        (error) =>
+          error.statusCode === 400 &&
+          error.detail.toLowerCase().includes("timeout cannot be greater"),
+        () => create(E2B_HOBBY_MAX_TIMEOUT_MS),
+      ),
+      Effect.map((created) => ({ providerSandboxId: created.sandboxId })),
+    );
+  },
   findCreated: (account, instanceId) =>
     attempt(account, "find-created", () =>
       client.list({

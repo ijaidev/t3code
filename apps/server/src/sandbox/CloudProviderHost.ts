@@ -153,6 +153,26 @@ export const cloudProviderHostStartCommand = (input: {
   ].join("\n");
 };
 
+/**
+ * A host killed with SIGKILL leaves its detached provider processes alive with
+ * the injected credentials. Kill anything still running from this host's prefix
+ * before starting a replacement or after stopping the host.
+ */
+export const cloudProviderHostCleanupCommand = (input: { readonly hostDir: string }) => {
+  const binPrefix = `${input.hostDir}/${RUNTIME_DIR}/bin/`;
+  return [
+    "for dir in /proc/[0-9]*; do",
+    `  pid="\${dir#/proc/}"`,
+    `  [ "$pid" = "$$" ] && continue`,
+    `  command="$(tr '\\0' '\\n' < "$dir/cmdline" 2>/dev/null | head -n 1)" || continue`,
+    '  case "$command" in',
+    `    ${shellQuote(binPrefix)}*) kill -KILL "$pid" 2>/dev/null || true ;;`,
+    "  esac",
+    "done",
+    "true",
+  ].join("\n");
+};
+
 export const cloudProviderHostEnvironment = (input: {
   readonly token: string;
   readonly port: number;
