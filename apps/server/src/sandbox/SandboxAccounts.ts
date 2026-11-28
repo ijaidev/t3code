@@ -35,12 +35,14 @@ export type ResolvedSandboxAccount = {
 const accountSummary = (
   id: SandboxProviderAccountId,
   account: SandboxProviderAccountConfig,
+  hasCredential = true,
 ): SandboxProviderAccountSummary => ({
   id,
   kind: account.kind,
   label: account.label,
   template: account.template,
   enabled: account.enabled,
+  hasCredential,
 });
 
 const settingsError = (operation: "connect-account" | "disconnect-account", cause: unknown) =>
@@ -65,6 +67,7 @@ export class SandboxAccounts extends Context.Service<
     readonly disconnect: (accountId: SandboxProviderAccountId) => Effect.Effect<void, SandboxError>;
     readonly resolve: (
       accountId: SandboxProviderAccountId,
+      options?: { readonly allowDisabled?: boolean },
     ) => Effect.Effect<ResolvedSandboxAccount, SandboxError>;
   }
 >()("t3/sandbox/SandboxAccounts") {}
@@ -77,6 +80,7 @@ const make = Effect.gen(function* () {
 
   const resolveStored = Effect.fn("SandboxAccounts.resolveStored")(function* (
     accountId: SandboxProviderAccountId,
+    options?: { readonly allowDisabled?: boolean },
   ) {
     const settings = yield* settingsService.getSettings.pipe(Effect.mapError(settingsReadError));
     const account = settings.sandboxProviders[accountId];
@@ -86,7 +90,8 @@ const make = Effect.gen(function* () {
         detail: "That sandbox provider account is no longer connected.",
       });
     }
-    if (!account.enabled) {
+    // Deleting an existing sandbox must outlive the switch that turns off new ones.
+    if (!account.enabled && options?.allowDisabled !== true) {
       return yield* new SandboxError({
         operation: "connect-account",
         detail: `${account.label} is turned off. Turn it on in Settings → Sandbox providers.`,
@@ -133,14 +138,27 @@ const make = Effect.gen(function* () {
     } satisfies ResolvedSandboxAccount;
   });
 
+  // A missing or unreadable key keeps the account visible so the target can say why it is off.
+  const accountHasCredential = (account: SandboxProviderAccountConfig) =>
+    requireSettingsSecret(secretResolver, account.apiKey).pipe(
+      Effect.map((apiKey) => apiKey.trim() !== ""),
+      Effect.orElseSucceed(() => false),
+    );
+
   const list = settingsService.getSettings.pipe(
     Effect.mapError(settingsReadError),
-    Effect.map((settings) => ({
-      providers: registry.list,
-      accounts: Object.entries(settings.sandboxProviders).map(([id, account]) =>
-        accountSummary(id as SandboxProviderAccountId, account),
-      ),
-    })),
+    Effect.flatMap((settings) =>
+      Effect.forEach(
+        Object.entries(settings.sandboxProviders),
+        ([id, account]) =>
+          accountHasCredential(account).pipe(
+            Effect.map((hasCredential) =>
+              accountSummary(id as SandboxProviderAccountId, account, hasCredential),
+            ),
+          ),
+        { concurrency: 4 },
+      ).pipe(Effect.map((accounts) => ({ providers: registry.list, accounts }))),
+    ),
   );
 
   const connect = Effect.fn("SandboxAccounts.connect")(function* (

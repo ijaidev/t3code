@@ -25,6 +25,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  SandboxProviderAccountId,
   OrchestrationV2ThreadProjectionJson,
   ScheduledTaskId,
   type ServerProvider,
@@ -55,6 +56,7 @@ import * as ProjectStore from "./ProjectStore.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ProviderRegistryMock from "../provider/testUtils/providerRegistryMock.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ScheduledTasks from "../scheduledTasks/ScheduledTaskService.ts";
@@ -158,6 +160,7 @@ interface HarnessOptions {
     dispatch: ThreadManagement.ThreadManagementService["Service"]["dispatch"],
   ) => ReturnType<ThreadManagement.ThreadManagementService["Service"]["dispatch"]>;
   readonly isGitRepository?: CheckpointStore.CheckpointStore["Service"]["isGitRepository"];
+  readonly providerInstances?: Layer.Layer<ProviderInstanceRegistry.ProviderInstanceRegistry>;
 }
 
 function makeHarness(options: HarnessOptions = {}) {
@@ -290,6 +293,7 @@ function makeHarness(options: HarnessOptions = {}) {
         layerReceipts,
         layerOrchestrator,
         IdAllocator.layer,
+        options.providerInstances ?? Layer.empty,
         options.getLaunchSettings === undefined
           ? Layer.empty
           : Layer.mock(ServerSettings.ServerSettingsService)({
@@ -2247,6 +2251,80 @@ it.effect("replays a server-allocated launch", () =>
     }).pipe(Effect.provide(harness.layer));
   }),
 );
+
+const providerInstancesLayer = (input: {
+  readonly environment: ReadonlyArray<{ readonly name: string; readonly value: string }>;
+  readonly present?: boolean;
+}) =>
+  Layer.succeed(
+    ProviderInstanceRegistry.ProviderInstanceRegistry,
+    ProviderInstanceRegistry.ProviderInstanceRegistry.of({
+      getInstance: () =>
+        Effect.succeed(
+          input.present === false
+            ? undefined
+            : ({
+                instanceId: modelSelection.instanceId,
+                driverKind: ProviderDriverKind.make("claudeAgent"),
+                enabled: true,
+              } as never),
+        ),
+      getInstanceConfig: () => Effect.succeedNone,
+      getResolvedEnvironment: () => Effect.succeed(input.environment),
+    } as unknown as ProviderInstanceRegistry.ProviderInstanceRegistry["Service"]),
+  );
+
+const cloudWorkspace = {
+  type: "cloud" as const,
+  accountId: SandboxProviderAccountId.make("e2b-work"),
+  baseRef: "main",
+};
+
+it.effect("refuses a cloud launch when the provider has no sandbox credential", () => {
+  const harness = makeHarness({ providerInstances: providerInstancesLayer({ environment: [] }) });
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const failed = yield* launches
+      .launch(
+        launchInput({
+          command: "command:launch:cloud-no-credential",
+          thread: "thread:launch:cloud-no-credential",
+          message: "Hello",
+          workspace: cloudWorkspace,
+        }),
+      )
+      .pipe(Effect.flip);
+    assert.equal(failed._tag, "ThreadLaunchError");
+    if (failed._tag === "ThreadLaunchError") {
+      assert.equal(failed.operation, "provision-worktree");
+      assert.include(String(failed.cause), "sign-in cannot be used in a cloud sandbox");
+    }
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("refuses a cloud launch when the provider instance is gone", () => {
+  const harness = makeHarness({
+    providerInstances: providerInstancesLayer({ environment: [], present: false }),
+  });
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const failed = yield* launches
+      .launch(
+        launchInput({
+          command: "command:launch:cloud-missing-instance",
+          thread: "thread:launch:cloud-missing-instance",
+          message: "Hello",
+          workspace: cloudWorkspace,
+        }),
+      )
+      .pipe(Effect.flip);
+    assert.equal(failed._tag, "ThreadLaunchError");
+    if (failed._tag === "ThreadLaunchError") {
+      assert.equal(failed.operation, "provision-worktree");
+      assert.include(String(failed.cause), "no longer available");
+    }
+  }).pipe(Effect.provide(harness.layer));
+});
 
 it.effect("replays an accepted launch after the project disables the instance", () => {
   const harness = makeHarness();

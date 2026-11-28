@@ -42,6 +42,7 @@ const capabilities: SandboxProviderCapabilities = {
   delete: true,
   snapshots: false,
   privatePorts: true,
+  harness: true,
   // The toolbox, terminal, and recordings dashboards are never app previews.
   reservedPorts: [22222, 2280, 2281, 22220, 33333],
   sizes: [

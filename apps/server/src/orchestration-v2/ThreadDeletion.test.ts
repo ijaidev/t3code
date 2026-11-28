@@ -14,6 +14,8 @@ import {
   RunAttemptId,
   RunId,
   RuntimeRequestId,
+  SandboxProviderAccountId,
+  SandboxProviderKind,
   ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -299,8 +301,75 @@ it.effect("queues provider and resource cleanup and preserves an earlier deletio
         { type: "scheduled-tasks.cleanup" },
         { type: "terminal.cleanup" },
         { type: "preview.cleanup" },
+        { type: "cloud-thread.cleanup" },
         { type: "attachment.cleanup", attachmentIds: ["shared_file"] },
       ],
+    );
+  }).pipe(Effect.provide(IdAllocator.layer)),
+);
+
+it.effect("keeps a cloud transcript and its links while queueing sandbox cleanup", () =>
+  Effect.gen(function* () {
+    const base = makeProjection();
+    const pullRequests = [
+      {
+        host: "github.com",
+        repository: "example/repo",
+        number: 7,
+        url: "https://github.com/example/repo/pull/7",
+        source: "manual" as const,
+        linkedAt: "2026-09-01T00:00:00.000Z",
+        snapshot: null,
+        stack: null,
+      },
+    ];
+    const projection: OrchestrationV2ThreadProjection = {
+      ...base,
+      thread: {
+        ...base.thread,
+        cloudWorkspace: {
+          accountId: SandboxProviderAccountId.make("e2b-work"),
+          providerKind: SandboxProviderKind.make("e2b"),
+          workspacePath: "/home/t3/.t3/threads/thread:delete-plan",
+        },
+        pullRequests,
+      },
+      messages: [
+        {
+          id: MessageId.make("message:cloud:kept"),
+          threadId,
+          createdBy: "user",
+          creationSource: "web",
+          runId: null,
+          nodeId: null,
+          role: "user",
+          text: "Keep this transcript",
+          attachments: [],
+          streaming: false,
+          createdAt,
+          updatedAt: createdAt,
+        },
+      ],
+    };
+    const plan = yield* planThreadDeletion({
+      command,
+      projection,
+      attachmentIds: [],
+      now: deletedAt,
+      idAllocator: yield* IdAllocator.IdAllocatorV2,
+    });
+    const deleted = plan.events.reduce(applyToProjection, projection);
+    assert.deepEqual(deleted.thread.deletedAt, deletedAt);
+    assert.deepEqual(deleted.thread.pullRequests, pullRequests);
+    assert.deepEqual(
+      deleted.messages.map((message) => message.text),
+      ["Keep this transcript"],
+    );
+    assert.deepEqual(
+      plan.effects
+        .map((effect) => effect.request)
+        .filter((request) => request.type === "cloud-thread.cleanup"),
+      [{ type: "cloud-thread.cleanup" }],
     );
   }).pipe(Effect.provide(IdAllocator.layer)),
 );

@@ -133,6 +133,7 @@ const fakeCapabilities: SandboxProviderCapabilities = {
   delete: true,
   snapshots: false,
   privatePorts: false,
+  harness: false,
   sizes: [{ id: "small", label: "Small", cpuCount: 1, memoryMB: 1024 }],
   regions: [{ id: "us", label: "United States" }],
 };
@@ -610,6 +611,11 @@ describe.each(harnesses)("$name sandbox provider", ({ make }) => {
     expect(typeof driver.writeFile).toBe("function");
     expect(typeof driver.startProcess).toBe("function");
     expect(driver.capabilities.privatePorts).toBe(driver.portAccess !== undefined);
+    expect(driver.capabilities.harness).toBe(
+      driver.writeFile !== undefined &&
+        driver.startProcess !== undefined &&
+        driver.portAccess !== undefined,
+    );
     expect(driver.capabilities.sizes.length).toBeGreaterThan(0);
     expect(driver.capabilities.regions.length).toBeGreaterThan(0);
   });

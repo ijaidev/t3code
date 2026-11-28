@@ -454,7 +454,10 @@ const make = Effect.gen(function* () {
     return yield* lifecycleLock.withPermits(1)(
       Effect.gen(function* () {
         const record = yield* getRecord(input.sandboxId);
-        const { account, driver } = yield* accounts.resolve(record.accountId);
+        // A disabled account still has to be able to clean up the sandboxes it already made.
+        const { account, driver } = yield* accounts.resolve(record.accountId, {
+          allowDisabled: true,
+        });
         const found =
           record.providerSandboxId === null
             ? yield* driver

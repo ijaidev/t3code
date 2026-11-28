@@ -3,6 +3,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import { resolveAttachmentRelativePath } from "../attachmentPaths.ts";
@@ -10,13 +11,21 @@ import { parseAttachmentFileExtension, resolveAttachmentPathById } from "../atta
 import * as ServerConfig from "../config.ts";
 import * as DeviceService from "../device/DeviceService.ts";
 import * as PreviewManager from "../preview/Manager.ts";
+import * as CloudThreads from "../sandbox/CloudThreads.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
 
 export class ResourceCleanupError extends Schema.TaggedError<ResourceCleanupError>()(
   "ResourceCleanupError",
   {
-    operation: Schema.Literals(["terminal", "preview", "device", "attachment", "scheduled-tasks"]),
+    operation: Schema.Literals([
+      "terminal",
+      "preview",
+      "device",
+      "attachment",
+      "scheduled-tasks",
+      "cloud-thread",
+    ]),
     threadId: Schema.optional(Schema.String),
     attachmentId: Schema.optional(Schema.String),
     cause: Schema.Defect(),
@@ -25,6 +34,8 @@ export class ResourceCleanupError extends Schema.TaggedError<ResourceCleanupErro
 
 export class ResourceCleanupService extends Context.Reference<{
   readonly cleanupScheduledTasks: (threadId: ThreadId) => Effect.Effect<void, ResourceCleanupError>;
+  /** Destroys a cloud thread's sandbox and hosted state; local records stay. */
+  readonly cleanupCloudThread: (threadId: ThreadId) => Effect.Effect<void, ResourceCleanupError>;
   readonly cleanupTerminals: (threadId: string) => Effect.Effect<void, ResourceCleanupError>;
   readonly cleanupPreviews: (threadId: string) => Effect.Effect<void, ResourceCleanupError>;
   /** Releases the thread's device claims, as `device_close` does; the devices stay booted. */
@@ -35,6 +46,7 @@ export class ResourceCleanupService extends Context.Reference<{
 }>("t3/orchestration-v2/ResourceCleanupService", {
   defaultValue: () => ({
     cleanupScheduledTasks: () => Effect.void,
+    cleanupCloudThread: () => Effect.void,
     cleanupTerminals: () => Effect.void,
     cleanupPreviews: () => Effect.void,
     cleanupDevices: () => Effect.void,
@@ -51,7 +63,20 @@ export const layer = Layer.effect(
     const fileSystem = yield* FileSystem.FileSystem;
     const config = yield* ServerConfig.ServerConfig;
     const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
+    const cloudThreads = yield* Effect.serviceOption(CloudThreads.CloudThreads);
     return {
+      cleanupCloudThread: Effect.fn("ResourceCleanupService.cleanupCloudThread")(function (
+        threadId: ThreadId,
+      ) {
+        if (Option.isNone(cloudThreads)) return Effect.void;
+        return cloudThreads.value
+          .deleteForThread(threadId)
+          .pipe(
+            Effect.mapError(
+              (cause) => new ResourceCleanupError({ operation: "cloud-thread", threadId, cause }),
+            ),
+          );
+      }),
       cleanupScheduledTasks: Effect.fn("ResourceCleanupService.cleanupScheduledTasks")(function (
         threadId: ThreadId,
       ) {

@@ -101,6 +101,7 @@ const layerCleanup = Layer.effect(
     const fileSystem = yield* FileSystem.FileSystem;
     return {
       cleanupScheduledTasks: () => Effect.void,
+      cleanupCloudThread: () => Effect.void,
       cleanupTerminals: () => Effect.void,
       cleanupPreviews: () => Effect.void,
       cleanupDevices: () => Effect.void,

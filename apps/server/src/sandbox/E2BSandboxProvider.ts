@@ -27,6 +27,7 @@ const capabilities: SandboxProviderCapabilities = {
   delete: true,
   snapshots: true,
   privatePorts: true,
+  harness: true,
   reservedPorts: [49983, 50005],
   sizes: [
     { id: "small", label: "2 vCPU · 1 GiB", cpuCount: 2, memoryMB: 1024 },

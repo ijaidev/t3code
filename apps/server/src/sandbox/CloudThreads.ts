@@ -1183,7 +1183,17 @@ const make = Effect.gen(function* () {
       next.delete(threadId);
       return next;
     });
-    yield* cloudThreads.remove(threadId).pipe(Effect.ignore);
+    yield* cloudThreads.remove(threadId).pipe(
+      Effect.mapError(
+        (cause) =>
+          new CloudThreadError({
+            operation: "delete",
+            threadId,
+            detail: cause.message,
+            cause,
+          }),
+      ),
+    );
     yield* clearPorts(threadId);
     yield* notify(threadId);
   });

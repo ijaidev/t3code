@@ -114,6 +114,7 @@ import * as CloudThreadPorts from "./sandbox/CloudThreadPorts.ts";
 import * as CloudProviderRuntime from "./sandbox/CloudProviderRuntime.ts";
 import * as CloudThreadRuntime from "./sandbox/CloudThreadRuntime.ts";
 import * as CloudThreadStore from "./sandbox/CloudThreadStore.ts";
+import * as CloudTargetList from "./sandbox/CloudTargetList.ts";
 import * as CloudSandboxPreviewBridge from "./sandbox/CloudSandboxPreviewBridge.ts";
 import * as CloudTerminal from "./sandbox/CloudTerminal.ts";
 import * as CloudThreads from "./sandbox/CloudThreads.ts";
@@ -524,6 +525,7 @@ const layerCloudThreads = CloudThreads.layer.pipe(
   Layer.provide(layerCloudRepositoryCredential),
   Layer.provide(layerCloudThreadPorts),
 );
+const layerCloudTargetList = CloudTargetList.layer.pipe(Layer.provide(layerSandboxAccounts));
 const layerCloudThreadGit = CloudThreadGit.layer.pipe(
   Layer.provideMerge(layerCloudThreads),
   Layer.provideMerge(layerCloudRepositoryCredential),
@@ -627,6 +629,7 @@ const layerSandbox = Layer.merge(
   Layer.mergeAll(
     layerSandboxStorage,
     layerSandboxLifecycle,
+    layerCloudTargetList,
     layerCloudThreads,
     layerCloudThreadPorts,
     layerCloudThreadRuntime,
