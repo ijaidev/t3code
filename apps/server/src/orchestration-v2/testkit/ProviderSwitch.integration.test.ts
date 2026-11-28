@@ -43,7 +43,7 @@ import {
   ClaudeAppendSystemPromptFileError,
   ClaudeBackgroundWorkBlocksQueryReplacementError,
   ClaudeProviderCapabilitiesV2,
-} from "../Adapters/ClaudeAdapterV2.ts";
+} from "@t3tools/provider-claude/server/adapter";
 import {
   CodexProviderCapabilitiesV2,
   canReuseCodexContextUsage,

@@ -118,7 +118,7 @@ export default mergeConfig(
           ? ["src/bin.ts"]
           : packExecutable
             ? ["src/binMain.ts"]
-            : ["src/bin.ts", "src/claude-history-worker.ts"],
+            : ["src/bin.ts"],
       outDir: packProviderHost
         ? "dist"
         : packBootstrap

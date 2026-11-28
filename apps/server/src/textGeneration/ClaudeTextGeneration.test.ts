@@ -20,7 +20,7 @@ import {
 } from "../provider/ClaudeModelCatalog.testFixtures.ts";
 import * as TextGeneration from "./TextGeneration.ts";
 import { sanitizeThreadTitle } from "@t3tools/provider-core/server/textGenerationUtils";
-import { makeClaudeTextGeneration } from "./ClaudeTextGeneration.ts";
+import { makeClaudeTextGeneration } from "@t3tools/provider-claude/server/textGeneration";
 import { writeFakeCli } from "@t3tools/provider-testing/fakeCli";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
@@ -106,9 +106,11 @@ function withFakeClaudeEnv<A, E, R>(
     };
 
     const config = decodeClaudeSettings(input.claudeConfig ?? {});
+    const { attachmentsDir } = yield* ServerConfig.ServerConfig;
     const textGeneration = yield* makeClaudeTextGeneration(
       config,
       environment,
+      attachmentsDir,
       Effect.succeed(SYNTHETIC_CLAUDE_MODEL_CATALOG),
     );
     return yield* effectFn(textGeneration);

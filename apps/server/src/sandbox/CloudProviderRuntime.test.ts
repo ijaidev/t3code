@@ -289,11 +289,72 @@ describe("cloud provider runtime", () => {
     }),
   );
 
+  it.effect("binds Claude settings to the sandbox runtime", () =>
+    Effect.gen(function* () {
+      const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
+      let opened: CloudThreads.CloudProviderHostInput | null = null;
+      const claudeInstanceId = ProviderInstanceId.make("claude-agent");
+      const claudeSelection: ModelSelection = {
+        instanceId: claudeInstanceId,
+        model: "claude-agent/sonnet",
+      };
+      const claudeDriver = ProviderDriverKind.make("claudeAgent");
+      const adapter = {
+        ...makeFakeAdapter(events),
+        driver: claudeDriver,
+      } as unknown as ProviderAdapter.ProviderAdapterV2["Service"];
+      const cloud = {
+        getRecord: () => Effect.succeedSome(record),
+        openProviderHost: (_threadId: ThreadId, input: CloudThreads.CloudProviderHostInput) => {
+          opened = input;
+          return Effect.succeed({
+            adapter,
+            paths,
+            protocolVersion: "1",
+            hostVersion: "t3-provider-adapter-host-v1",
+            close: Effect.void,
+          });
+        },
+        beginTurn: () => Effect.void,
+        endTurn: () => Effect.void,
+      } as unknown as CloudThreads.CloudThreads["Service"];
+
+      return yield* Effect.gen(function* () {
+        const service = yield* CloudProviderRuntime.CloudProviderRuntime;
+        expect(service.supports(claudeDriver)).toBe(true);
+        yield* service.openSession(
+          {
+            threadId,
+            providerSessionId: ProviderSessionId.make("session-1"),
+            modelSelection: claudeSelection,
+            runtimePolicy: {
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              cwd: paths.cwd,
+            },
+            environment: [{ name: "ANTHROPIC_API_KEY", value: "sk-ant-test" }],
+            config: { binaryPath: "/usr/local/bin/claude", homePath: "/home/me/.claude" },
+            settings: DEFAULT_SERVER_SETTINGS,
+          },
+          adapter,
+        );
+
+        expect(opened?.driver).toBe(claudeDriver);
+        expect(opened?.config).toEqual({
+          binaryPath: "/home/t3/.t3/provider-host/runtime/bin/claude",
+          homePath: "",
+        });
+        expect(opened?.environment).toEqual([{ name: "ANTHROPIC_API_KEY", value: "sk-ant-test" }]);
+      }).pipe(Effect.scoped, Effect.provide(testLayer(cloud)));
+    }),
+  );
+
   it.effect("refuses providers without a sandbox host implementation", () =>
     Effect.gen(function* () {
       const service = yield* CloudProviderRuntime.CloudProviderRuntime;
       expect(service.supports(driver)).toBe(true);
-      expect(service.supports(ProviderDriverKind.make("claudeAgent"))).toBe(false);
+      expect(service.supports(ProviderDriverKind.make("claudeAgent"))).toBe(true);
+      expect(service.supports(ProviderDriverKind.make("codex"))).toBe(false);
     }).pipe(Effect.provide(testLayer({} as CloudThreads.CloudThreads["Service"]))),
   );
 });

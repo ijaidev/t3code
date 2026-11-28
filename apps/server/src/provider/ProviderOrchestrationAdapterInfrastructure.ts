@@ -3,8 +3,9 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import * as ClaudeAdapterV2 from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
+import * as ClaudeAdapterV2 from "@t3tools/provider-claude/server/adapter";
 import * as CodexAdapterV2 from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
+import * as PortScanner from "../preview/PortScanner.ts";
 import * as ProviderProcesses from "../process/providerProcesses.ts";
 import type * as CursorAgentSdk from "@t3tools/provider-cursor/server/CursorAgentSdk";
 import * as CursorAgentSdkProcessRunner from "@t3tools/provider-cursor/server/CursorAgentSdkProcessRunner";
@@ -59,8 +60,21 @@ const resolveCursorWorkerLaunch = Effect.gen(function* () {
 });
 
 /** Reuse the continuation worker's exact layer reference so memoization shares one queue. */
+const claudeQueryRunnerLayer = Layer.unwrap(
+  Effect.gen(function* () {
+    const portDiscovery = yield* Effect.serviceOption(PortScanner.PortDiscovery);
+    const providerProcesses = yield* ProviderProcesses.ProviderProcesses;
+    return ClaudeAdapterV2.makeLayerQueryRunner({
+      ...(portDiscovery._tag === "Some" ? { trackAgent: portDiscovery.value.trackAgent } : {}),
+      ...(providerProcesses.register === undefined
+        ? {}
+        : { registerProcess: providerProcesses.register }),
+    });
+  }),
+);
+
 export const layer = Layer.mergeAll(
-  ClaudeAdapterV2.layerQueryRunner,
+  claudeQueryRunnerLayer,
   CodexAdapterV2.layerAppServerClientFactory,
   Layer.unwrap(
     Effect.gen(function* () {

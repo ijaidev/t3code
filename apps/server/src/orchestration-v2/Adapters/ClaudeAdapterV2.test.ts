@@ -87,7 +87,7 @@ import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 
 import * as PortScanner from "../../preview/PortScanner.ts";
 import { attachmentRelativePath } from "../../attachmentStore.ts";
-import { WorkflowAgentTranscriptReadObserver } from "../workflowAgentTranscript.ts";
+import { WorkflowAgentTranscriptReadObserver } from "@t3tools/provider-claude/server/workflowAgentTranscript";
 import * as ServerConfig from "../../config.ts";
 import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
 import { T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH } from "@t3tools/provider-core/server/orchestrationInstructions";
@@ -101,18 +101,18 @@ import { ProjectToolkit } from "../../mcp/toolkits/project/tools.ts";
 import { WorktreeToolkit } from "../../mcp/toolkits/worktree/tools.ts";
 import { ThreadToolkit } from "../../mcp/toolkits/thread/tools.ts";
 import { OrchestratorToolkit } from "../../mcp/toolkits/orchestrator/tools.ts";
-import { ClaudeExecutableFileCheck } from "../../provider/Drivers/ClaudeExecutable.ts";
+import { ClaudeExecutableFileCheck } from "@t3tools/provider-claude/server/ClaudeExecutable";
 import {
   BUNDLED_CLAUDE_MODEL_CATALOG,
   type ClaudeModelCatalog,
   resolveClaudeModelCatalog,
   scopeClaudeModelCatalog,
   withClaudeCodeModelRoutes,
-} from "../../provider/ClaudeModelCatalog.ts";
+} from "@t3tools/provider-claude/server/ClaudeModelCatalog";
 import {
   makeClaudeCodeModelRoutes,
   resolveClaudeModelSettingsKey,
-} from "../../provider/ClaudeCodeModelRoutes.ts";
+} from "@t3tools/provider-claude/server/codeModelRoutes";
 import { resolveProviderCatalog } from "../../provider/ModelManifest.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import { AGENT_FEEDBACK_INSTRUCTIONS } from "@t3tools/provider-core/server/runtimeInstructions";
@@ -122,7 +122,7 @@ import {
   makeProviderFailure,
   PROVIDER_RETRY_BUDGET_MS,
 } from "@t3tools/provider-core/server/failure";
-import * as ClaudeAdapterV2 from "./ClaudeAdapterV2.ts";
+import * as ClaudeAdapterV2 from "@t3tools/provider-claude/server/adapter";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderInstallationGate from "../../provider/ProviderInstallationGate.ts";
 import { ClaudeOrchestratorReplayHarness } from "./ClaudeAdapterV2.testkit.ts";

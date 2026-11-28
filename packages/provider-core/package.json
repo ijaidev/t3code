@@ -206,6 +206,70 @@
     "./server/usageLimits": {
       "types": "./src/server/usageLimits.ts",
       "import": "./src/server/usageLimits.ts"
+    },
+    "./server/ClaudeModelManifest": {
+      "types": "./src/server/ClaudeModelManifest.ts",
+      "import": "./src/server/ClaudeModelManifest.ts"
+    },
+    "./server/mcpElicitation": {
+      "types": "./src/server/mcpElicitation.ts",
+      "import": "./src/server/mcpElicitation.ts"
+    },
+    "./server/modelManifest": {
+      "types": "./src/server/modelManifest.ts",
+      "import": "./src/server/modelManifest.ts"
+    },
+    "./server/providerCompatibility": {
+      "types": "./src/server/providerCompatibility.ts",
+      "import": "./src/server/providerCompatibility.ts"
+    },
+    "./server/providerProcesses": {
+      "types": "./src/server/providerProcesses.ts",
+      "import": "./src/server/providerProcesses.ts"
+    },
+    "./server/SpawnWorker": {
+      "types": "./src/server/SpawnWorker.ts",
+      "import": "./src/server/SpawnWorker.ts"
+    },
+    "./server/workflowFileRead": {
+      "types": "./src/server/workflowFileRead.ts",
+      "import": "./src/server/workflowFileRead.ts"
+    },
+    "./server/attachments": {
+      "types": "./src/server/attachments.ts",
+      "import": "./src/server/attachments.ts"
+    },
+    "./server/attachmentPaths": {
+      "types": "./src/server/attachmentPaths.ts",
+      "import": "./src/server/attachmentPaths.ts"
+    },
+    "./server/imageMime": {
+      "types": "./src/server/imageMime.ts",
+      "import": "./src/server/imageMime.ts"
+    },
+    "./server/resetCreditCoordinator": {
+      "types": "./src/server/resetCreditCoordinator.ts",
+      "import": "./src/server/resetCreditCoordinator.ts"
+    },
+    "./server/providerEventLogging": {
+      "types": "./src/server/providerEventLogging.ts",
+      "import": "./src/server/providerEventLogging.ts"
+    },
+    "./server/ports": {
+      "types": "./src/server/ports.ts",
+      "import": "./src/server/ports.ts"
+    },
+    "./server/ProviderInstallationGate": {
+      "types": "./src/server/ProviderInstallationGate.ts",
+      "import": "./src/server/ProviderInstallationGate.ts"
+    },
+    "./server/ProviderTextDeltaCoalescer": {
+      "types": "./src/server/ProviderTextDeltaCoalescer.ts",
+      "import": "./src/server/ProviderTextDeltaCoalescer.ts"
+    },
+    "./server/McpAppSnapshot": {
+      "types": "./src/server/McpAppSnapshot.ts",
+      "import": "./src/server/McpAppSnapshot.ts"
     }
   },
   "scripts": {
@@ -213,6 +277,7 @@
     "test": "vp test run --config ../../vite.config.ts --dir ."
   },
   "dependencies": {
+    "@effect/platform-node-shared": "catalog:",
     "@t3tools/contracts": "workspace:*",
     "@t3tools/shared": "workspace:*",
     "effect": "catalog:"

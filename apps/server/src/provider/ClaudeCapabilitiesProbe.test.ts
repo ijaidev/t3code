@@ -15,7 +15,7 @@ import {
   probeClaudeCapabilities,
   probeClaudeWorkspaceSnapshot,
   spawnClaudeProbeThroughEnv,
-} from "./ClaudeProvider.ts";
+} from "@t3tools/provider-claude/server/provider";
 
 vi.mock("@anthropic-ai/claude-agent-sdk", { spy: true });
 

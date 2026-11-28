@@ -23,7 +23,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import { envTrampoline, supportsEnvChdir } from "@t3tools/shared/envTrampoline";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import * as SpawnWorker from "../process/SpawnWorker.ts";
+import * as SpawnWorker from "@t3tools/provider-core/server/SpawnWorker";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import {
   query as claudeQuery,
@@ -47,17 +47,17 @@ import {
   spawnAndCollect,
   type ServerProviderDraft,
 } from "@t3tools/provider-core/server/snapshotProbe";
-import { resolveClaudeSdkExecutablePath } from "./Drivers/ClaudeExecutable.ts";
+import { resolveClaudeSdkExecutablePath } from "./ClaudeExecutable.ts";
 import {
   claudeSignedOutMessage,
   hasClaudeManagedMcpConfig,
   makeClaudeEnvironment,
-} from "./Drivers/ClaudeHome.ts";
+} from "./ClaudeHome.ts";
 import {
   customClaudeApiEndpointHost,
   discoverClaudeSkills,
   readClaudeSettingsEnv,
-} from "./Drivers/ClaudeSkills.ts";
+} from "./ClaudeSkills.ts";
 import type { ProviderWorkspaceSnapshot } from "@t3tools/provider-core/server/driver";
 import { makeUnavailableUsageLimits } from "@t3tools/provider-core/server/usageLimits";
 import {

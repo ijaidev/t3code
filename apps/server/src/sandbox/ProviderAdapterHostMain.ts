@@ -1,38 +1,16 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeSocketServer from "@effect/platform-node/NodeSocketServer";
-import { ProviderDriverKind, settingsSecretLiteral } from "@t3tools/contracts";
-import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
-import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
-import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
-import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
-import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
-import {
-  ProviderAdapterHostRefusal,
-  serveProviderAdapterHost,
-} from "@t3tools/provider-core/server/ProviderAdapterHost";
-import type { ProviderAdapterHostAdapterCreateInput } from "@t3tools/provider-core/server/ProviderAdapterHostProtocol";
-import * as SandboxProviderHost from "@t3tools/provider-core/server/SandboxProviderHost";
-import {
-  PROVIDER_ADAPTER_HOST_BUILD,
-  sandboxProviderEnvironment,
-} from "./ProviderAdapterHostEnvironment.ts";
-import * as OpenCodeRuntime from "@t3tools/provider-opencode/server/OpenCodeRuntime";
-import * as OpenCodeServerLedger from "@t3tools/provider-opencode/server/OpenCodeServerLedger";
-import * as OpenCode2AdapterV2 from "@t3tools/provider-opencode/server/v2/adapter";
-import * as OpenCode2Client from "@t3tools/provider-opencode/server/v2/OpenCode2Client";
-import * as OpenCode2Server from "@t3tools/provider-opencode/server/v2/OpenCode2Server";
-import { OpenCodeSettings } from "@t3tools/provider-opencode/settings";
-import * as Digest from "effect/crypto/Digest";
-import * as SecureRandom from "effect/crypto/SecureRandom";
+import { serveProviderAdapterHost } from "@t3tools/provider-core/server/ProviderAdapterHost";
+import { runClaudeHistoryWorker } from "@t3tools/provider-claude/claudeHistoryWorker";
 import * as Effect from "effect/Effect";
-import { FetchHttpClient } from "effect/http";
-import * as Layer from "effect/Layer";
-import * as Schema from "effect/Schema";
+
+import {
+  clearProviderHostControlEnvironment,
+  PROVIDER_ADAPTER_HOST_BUILD,
+} from "./ProviderAdapterHostEnvironment.ts";
+import { createProviderAdapterHostAdapter } from "./ProviderAdapterHostAdapters.ts";
 
 const DEFAULT_PORT = 8790;
-const OPENCODE_DRIVER = ProviderDriverKind.make("opencode");
-
-const decodeOpenCodeSettings = Schema.decodeUnknownEffect(OpenCodeSettings);
 
 const listeningLine = (port: number) =>
   `${JSON.stringify({
@@ -41,74 +19,12 @@ const listeningLine = (port: number) =>
     port,
   })}\n`;
 
-const createAdapter = Effect.fn("ProviderAdapterHostMain.createAdapter")(function* (
-  input: ProviderAdapterHostAdapterCreateInput,
-) {
-  if (input.driver !== OPENCODE_DRIVER) {
-    return yield* new ProviderAdapterHostRefusal({
-      code: "unsupported_driver",
-      reason: `This sandbox build cannot run the ${input.driver} provider.`,
-    });
-  }
-  const config = yield* decodeOpenCodeSettings(input.config).pipe(
-    Effect.mapError(
-      () =>
-        new ProviderAdapterHostRefusal({
-          code: "invalid_config",
-          reason: "The sandbox host rejected the OpenCode provider settings.",
-        }),
-    ),
-  );
-  const host = yield* SandboxProviderHost.make({
-    paths: input.paths,
-    settings: input.settings,
-  });
-  const openCodeRuntimeLayer = OpenCodeRuntime.layer.pipe(
-    Layer.provide(OpenCodeServerLedger.layer({ stateDir: input.paths.stateDir })),
-  );
-  const adapter = yield* Effect.gen(function* () {
-    const client = yield* OpenCode2Client.make;
-    const runtime = yield* OpenCodeRuntime.OpenCodeRuntime;
-    const server = yield* OpenCode2Server.make({
-      binaryPath: config.binaryPath,
-      serverUrl: config.serverUrl,
-      serverPassword: settingsSecretLiteral(config.serverPassword),
-      directory: input.paths.cwd,
-      environment: sandboxProviderEnvironment(process.env),
-    }).pipe(
-      Effect.provideService(OpenCode2Client.OpenCode2Client, client),
-      Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, runtime),
-    );
-    return yield* OpenCode2AdapterV2.make(input.instanceId).pipe(
-      Effect.provideService(OpenCode2Server.OpenCode2Server, server),
-    );
-  }).pipe(
-    Effect.provide(
-      Layer.mergeAll(
-        Layer.succeed(ProviderHost.ProviderHost, host.host),
-        Layer.succeed(
-          ProviderEventLoggers.ProviderEventLoggers,
-          ProviderEventLoggers.NoOpProviderEventLoggers,
-        ),
-        IdAllocator.layer,
-        McpProviderSessions.layer,
-        ProviderContinuationRequests.layer,
-        Digest.layerWebCrypto,
-        SecureRandom.layerWebCrypto,
-      ),
-    ),
-    Effect.provide(openCodeRuntimeLayer),
-    Effect.provide(FetchHttpClient.layer),
-    Effect.mapError(
-      () =>
-        new ProviderAdapterHostRefusal({
-          code: "adapter_unavailable",
-          reason: "The sandbox could not start the OpenCode provider adapter.",
-        }),
-    ),
-  );
-  return { adapter, onStop: host.clearCredentials };
-});
+export const runClaudeHistoryWorkerIfRequested = async (): Promise<boolean> => {
+  const [subcommand, method, sessionId, options] = process.argv.slice(2);
+  if (subcommand !== "__claude-history") return false;
+  await runClaudeHistoryWorker(method ?? "", sessionId ?? "", options);
+  return true;
+};
 
 export const runProviderAdapterHostMain = async (): Promise<void> => {
   const token = process.env["T3_PROVIDER_HOST_TOKEN"];
@@ -119,6 +35,9 @@ export const runProviderAdapterHostMain = async (): Promise<void> => {
   }
   const port = Number(process.env["T3_PROVIDER_HOST_PORT"] ?? DEFAULT_PORT);
   const host = process.env["T3_PROVIDER_HOST_BIND"] ?? "0.0.0.0";
+  const build = process.env["T3_PROVIDER_HOST_BUILD"] ?? PROVIDER_ADAPTER_HOST_BUILD;
+  // The harness and every tool it spawns must not inherit the controller channel.
+  clearProviderHostControlEnvironment(process.env);
 
   await Effect.runPromise(
     Effect.gen(function* () {
@@ -132,8 +51,8 @@ export const runProviderAdapterHostMain = async (): Promise<void> => {
         .run((socket) =>
           serveProviderAdapterHost(socket, {
             token,
-            hostVersion: process.env["T3_PROVIDER_HOST_BUILD"] ?? PROVIDER_ADAPTER_HOST_BUILD,
-            createAdapter,
+            hostVersion: build,
+            createAdapter: createProviderAdapterHostAdapter,
           }).pipe(Effect.scoped),
         )
         .pipe(Effect.forkScoped);

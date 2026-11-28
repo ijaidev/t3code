@@ -18,10 +18,7 @@ import { GitWorkflowService } from "../git/GitWorkflowService.ts";
 import { TaskFolders } from "../workspace/TaskFolders.ts";
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import { PreviewAutomationBroker } from "../mcp/PreviewAutomationBroker.ts";
-import {
-  CLAUDE_PROVIDER,
-  makeClaudeQueryOptions,
-} from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
+import { CLAUDE_PROVIDER, makeClaudeQueryOptions } from "@t3tools/provider-claude/server/adapter";
 import { OrchestratorV2 } from "../orchestration-v2/Orchestrator.ts";
 import { ProviderAdapterRegistryV2 } from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import { ThreadIssueService } from "../orchestration-v2/ThreadIssueService.ts";

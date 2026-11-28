@@ -29,14 +29,10 @@ import {
   resolveClaudeCatalogEffort,
   resolveClaudeModelSlug,
   scopeClaudeModelCatalog,
-} from "../provider/ClaudeModelCatalog.ts";
-import {
-  hasClaudeManagedMcpConfig,
-  makeClaudeEnvironment,
-} from "../provider/Drivers/ClaudeHome.ts";
-import { readClaudeLaunchArgSettings } from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
-import { resolveAttachmentPath } from "../attachmentStore.ts";
-import * as ServerConfig from "../config.ts";
+} from "./ClaudeModelCatalog.ts";
+import { hasClaudeManagedMcpConfig, makeClaudeEnvironment } from "./ClaudeHome.ts";
+import { readClaudeLaunchArgSettings } from "./adapter.ts";
+import { resolveAttachmentPath } from "@t3tools/provider-core/server/attachments";
 
 const CLAUDE_TIMEOUT_MS = 180_000;
 /** `--tools` takes bare names; patterns go in the allow list. */
@@ -103,7 +99,8 @@ function claudeErrorResult(stdout: string): string | undefined {
 
 export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(function* (
   claudeSettings: ClaudeSettings,
-  environment?: NodeJS.ProcessEnv,
+  environment: NodeJS.ProcessEnv | undefined,
+  attachmentsDir: string,
   modelCatalog: Effect.Effect<ClaudeModelCatalog> = Effect.succeed(BUNDLED_CLAUDE_MODEL_CATALOG),
   routeModelCatalog: (
     catalog: ClaudeModelCatalog,
@@ -113,7 +110,6 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
   const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const serverConfig = yield* ServerConfig.ServerConfig;
   const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment);
   const scopedModelCatalog = modelCatalog.pipe(
     Effect.map((catalog) => scopeClaudeModelCatalog(catalog, claudeSettings.customModels)),
@@ -162,7 +158,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     for (const attachment of attachments ?? []) {
       if (attachment.type !== "image") continue;
       const attachmentPath = resolveAttachmentPath({
-        attachmentsDir: serverConfig.attachmentsDir,
+        attachmentsDir,
         attachment,
       });
       if (!attachmentPath) continue;

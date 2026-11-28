@@ -54,8 +54,8 @@ import {
   mapCodexModelCapabilities,
   type CodexAppServerProviderSnapshot,
 } from "./CodexProvider.ts";
-import { BUNDLED_CLAUDE_MODEL_CATALOG } from "./ClaudeModelCatalog.ts";
-import { checkClaudeProviderStatus } from "./ClaudeProvider.ts";
+import { BUNDLED_CLAUDE_MODEL_CATALOG } from "@t3tools/provider-claude/server/ClaudeModelCatalog";
+import { checkClaudeProviderStatus } from "@t3tools/provider-claude/server/provider";
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as AntigravityInstallation from "./AntigravityInstallation.ts";
 import * as ModelManifest from "./ModelManifest.ts";

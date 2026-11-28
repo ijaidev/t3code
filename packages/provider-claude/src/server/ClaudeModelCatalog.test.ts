@@ -1,7 +1,10 @@
 import { assert, describe, it } from "@effect/vitest";
 import { type ModelSelection, ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
 
-import { resolveProviderCatalog, type ModelManifestData } from "./ModelManifest.ts";
+import {
+  resolveProviderCatalog,
+  type ModelManifestData,
+} from "@t3tools/provider-core/server/modelManifest";
 import {
   BUNDLED_CLAUDE_MODEL_CATALOG,
   capClaudeCatalogEffort,

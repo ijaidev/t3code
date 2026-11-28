@@ -7,7 +7,6 @@ describe("cloud provider host", () => {
   it("installs the pinned server and OpenCode runtimes into a private prefix", () => {
     const command = CloudProviderHost.cloudProviderHostInstallCommand({
       hostDir: "/home/t3/.t3/provider-host",
-      opencodeVersion: "2.4.2",
       nodeVersion: "22.16.0",
     });
 
@@ -17,6 +16,19 @@ describe("cloud provider host", () => {
     expect(command).toContain("'@opencode/cli@2.4.2'");
     expect(command).toContain('test -x "$prefix/bin/node"');
     expect(command).toContain('test -x "$prefix/bin/opencode"');
+  });
+
+  it("installs the pinned Claude Code CLI for a Claude host", () => {
+    const command = CloudProviderHost.cloudProviderHostInstallCommand({
+      hostDir: "/home/t3/.t3/provider-host",
+      nodeVersion: "22.16.0",
+      driver: "claudeAgent" as never,
+    });
+
+    expect(command).toContain("'node@22.16.0'");
+    expect(command).toContain("'@anthropic-ai/claude-code@2.1.321'");
+    expect(command).not.toContain("@opencode/cli");
+    expect(command).toContain('test -x "$prefix/bin/claude"');
   });
 
   it("replaces only the host named by its own pid file", () => {
@@ -84,6 +96,23 @@ describe("cloud provider host", () => {
       serverUrl: "",
       serverPassword: "",
       customModels: [],
+    });
+  });
+
+  it("binds Claude to the sandbox runtime and home", () => {
+    expect(
+      CloudProviderHost.cloudClaudeHostConfig(
+        {
+          binaryPath: "/Users/me/.local/bin/claude",
+          homePath: "/Users/me/.claude",
+          launchArgs: "--chrome",
+        },
+        "/home/t3/.t3/provider-host/runtime",
+      ),
+    ).toEqual({
+      binaryPath: "/home/t3/.t3/provider-host/runtime/bin/claude",
+      homePath: "",
+      launchArgs: "--chrome",
     });
   });
 

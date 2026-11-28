@@ -3,7 +3,7 @@ import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import {
   makeProviderTextDeltaCoalescer,
   type ProviderTextDeltaUpdate,
-} from "./ProviderTextDeltaCoalescer.ts";
+} from "@t3tools/provider-core/server/ProviderTextDeltaCoalescer";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {

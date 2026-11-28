@@ -29,7 +29,7 @@ import * as ServerConfig from "../config.ts";
 import * as CloudProviderHost from "./CloudProviderHost.ts";
 import * as CloudThreads from "./CloudThreads.ts";
 
-const OPENCODE_DRIVER = ProviderDriverKind.make("opencode");
+const CLAUDE_DRIVER = ProviderDriverKind.make("claudeAgent");
 
 export interface CloudProviderRuntimeOpenInput {
   readonly threadId: ThreadId;
@@ -58,7 +58,8 @@ const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const { attachmentsDir } = yield* ServerConfig.ServerConfig;
 
-  const supports = (driver: ProviderDriverKind) => driver === OPENCODE_DRIVER;
+  const supports = (driver: ProviderDriverKind) =>
+    CloudProviderHost.cloudProviderHostSupportsDriver(driver);
 
   const openSession: CloudProviderRuntime["Service"]["openSession"] = Effect.fn(
     "CloudProviderRuntime.openSession",
@@ -81,7 +82,10 @@ const make = Effect.gen(function* () {
       .openProviderHost(input.threadId, {
         driver: base.driver,
         instanceId: input.modelSelection.instanceId,
-        config: CloudProviderHost.cloudOpenCodeHostConfig(input.config, runtimeDir),
+        config:
+          base.driver === CLAUDE_DRIVER
+            ? CloudProviderHost.cloudClaudeHostConfig(input.config, runtimeDir)
+            : CloudProviderHost.cloudOpenCodeHostConfig(input.config, runtimeDir),
         settings: CloudProviderHost.cloudProviderHostSettings(input.settings),
         environment: input.environment,
       })

@@ -35,7 +35,7 @@ vi.mock("../orchestration-v2/runtimeLayer.ts", () => {
   hooks.importsAttempted.push("runtimeLayer");
   throw new Error("runtime import failed");
 });
-vi.mock("../claudeHistoryWorker.ts", async () => {
+vi.mock("@t3tools/provider-claude/claudeHistoryWorker", async () => {
   hooks.importsAttempted.push("claudeHistoryWorker");
   hooks.historyImportStarted.resolve();
   await hooks.releaseHistoryImport.promise;
@@ -161,7 +161,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("CLI deferred imp
       yield* Effect.promise(() => hooks.historyImportStarted.promise);
       yield* Fiber.interrupt(history);
       hooks.releaseHistoryImport.resolve();
-      yield* Effect.promise(() => import("../claudeHistoryWorker.ts"));
+      yield* Effect.promise(() => import("@t3tools/provider-claude/claudeHistoryWorker"));
       assert.equal(hooks.runClaudeHistoryWorker.mock.calls.length, 0);
 
       yield* runCli(["__claude-history", "getSessionMessages", "session"]);

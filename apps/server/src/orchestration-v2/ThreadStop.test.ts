@@ -31,7 +31,7 @@ import * as TestClock from "effect/testing/TestClock";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import { CLAUDE_PROVIDER } from "./Adapters/ClaudeAdapterV2.ts";
+import { CLAUDE_PROVIDER } from "@t3tools/provider-claude/server/adapter";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import { OrchestrationEffectRequestV2 } from "./EffectOutbox.ts";

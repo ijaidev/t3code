@@ -1581,7 +1581,7 @@ const make = Effect.gen(function* () {
             CloudProviderHost.cloudProviderHostInstallCommand({
               hostDir,
               nodeVersion: CloudProviderHost.CLOUD_PROVIDER_NODE_VERSION,
-              opencodeVersion: CloudProviderHost.CLOUD_PROVIDER_OPENCODE_VERSION,
+              driver: input.driver,
             }),
             "start-host",
           );

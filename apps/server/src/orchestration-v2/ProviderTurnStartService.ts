@@ -40,7 +40,7 @@ import * as ServerConfig from "../config.ts";
 import {
   CLAUDE_PROVIDER,
   CLAUDE_QUERY_ENDED_BEFORE_TURN_DETAIL,
-} from "./Adapters/ClaudeAdapterV2.ts";
+} from "@t3tools/provider-claude/server/adapter";
 import { withTurnStartReservation, withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";

@@ -75,7 +75,9 @@ export class PortDiscovery extends Context.Service<
  * Agents launch with this set to their thread, and every job they start inherits it, so a
  * server stays attributed after its launching shell exits or the agent settles.
  */
-export const AGENT_THREAD_ENV = "T3CODE_THREAD_ID";
+import { AGENT_THREAD_ENV } from "@t3tools/provider-core/server/ports";
+
+export { AGENT_THREAD_ENV };
 
 export interface AgentCommandStopWatcher {
   /** The variable the CLI sets on each command it starts, naming that command. */

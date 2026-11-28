@@ -5,11 +5,11 @@ import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as TestClock from "effect/testing/TestClock";
 
-import { makeClaudeCodeModelRoutes } from "./ClaudeCodeModelRoutes.ts";
+import { makeClaudeCodeModelRoutes } from "@t3tools/provider-claude/server/codeModelRoutes";
 import {
   BUNDLED_CLAUDE_MODEL_CATALOG,
   resolveClaudeCatalogApiModelId,
-} from "./ClaudeModelCatalog.ts";
+} from "@t3tools/provider-claude/server/ClaudeModelCatalog";
 
 describe("Claude Code model routes", () => {
   it.effect(

@@ -33,8 +33,9 @@ import {
   type ClaudeAgentSdkQueryOpenInput,
   layerQueryRunner,
   makeClaudeDescendantPoll,
+  makeLayerQueryRunner,
   spawnClaudeProcessGroup,
-} from "./ClaudeAdapterV2.ts";
+} from "@t3tools/provider-claude/server/adapter";
 
 vi.mock("@anthropic-ai/claude-agent-sdk", { spy: true });
 
@@ -1168,18 +1169,15 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI pro
     let runningAgents = 0;
     let releaseAgent!: () => void;
     const agentReleased = new Promise<void>((resolve) => (releaseAgent = resolve));
-    const runner = layerQueryRunner.pipe(
-      Layer.provide(
-        Layer.mock(PortScanner.PortDiscovery)({
-          trackAgent: () => {
-            runningAgents += 1;
-            return () => {
-              runningAgents -= 1;
-              releaseAgent();
-            };
-          },
-        }),
-      ),
+    const runner = makeLayerQueryRunner({
+      trackAgent: () => {
+        runningAgents += 1;
+        return () => {
+          runningAgents -= 1;
+          releaseAgent();
+        };
+      },
+    }).pipe(
       Layer.provide(
         Layer.succeed(ProviderEventLoggers, { native: undefined, canonical: undefined }),
       ),

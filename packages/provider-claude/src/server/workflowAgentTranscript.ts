@@ -9,7 +9,10 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import { field, text } from "./unknownField.ts";
-import { readContainedWorkflowFile, type WorkflowFileIdentity } from "./workflowFileRead.ts";
+import {
+  readContainedWorkflowFile,
+  type WorkflowFileIdentity,
+} from "@t3tools/provider-core/server/workflowFileRead";
 
 const TRANSCRIPT_READ_BYTE_CAP = 512 * 1024;
 

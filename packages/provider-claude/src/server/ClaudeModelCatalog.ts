@@ -21,9 +21,12 @@ import {
   type ClaudeCodeProfile,
   decodeClaudeModelAdapter,
   decodeClaudeProfileAdapter,
-} from "./ClaudeModelManifest.ts";
+} from "@t3tools/provider-core/server/ClaudeModelManifest";
 import * as ModelCatalog from "@t3tools/provider-core/server/ModelCatalog";
-import { BUNDLED_MODEL_MANIFEST, resolveProviderCatalog } from "./ModelManifest.ts";
+import {
+  BUNDLED_MODEL_MANIFEST,
+  resolveProviderCatalog,
+} from "@t3tools/provider-core/server/modelManifest";
 
 const CLAUDE = ProviderDriverKind.make("claudeAgent");
 const EMPTY_CAPABILITIES: ModelCapabilities = { optionDescriptors: [] };
