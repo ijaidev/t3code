@@ -10,8 +10,11 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { resolveExtractedTextPath } from "@t3tools/provider-core/server/documentText";
 
 const extensions = new Set(["docx", "xlsx", "pptx", "odt", "ods", "odp", "rtf", "epub", "ipynb"]);
+
+export { resolveExtractedTextPath };
 
 class DocumentTextError extends Schema.TaggedError<DocumentTextError>()("DocumentTextError", {
   operation: Schema.Literal("extract"),
@@ -23,18 +26,6 @@ class DocumentTextError extends Schema.TaggedError<DocumentTextError>()("Documen
     return `Failed to ${this.operation} ${this.extension} document text.`;
   }
 }
-
-export const resolveExtractedTextPath = Effect.fn("DocumentText.resolveExtractedTextPath")(
-  function* (path: string) {
-    const extension = path.split(".").at(-1)?.toLowerCase();
-    if (!extension || !extensions.has(extension)) return;
-    const fs = yield* FileSystem.FileSystem;
-    return yield* fs.exists(path + ".txt").pipe(
-      Effect.map((exists) => (exists ? path + ".txt" : undefined)),
-      Effect.orElseSucceed(() => undefined),
-    );
-  },
-);
 
 export class DocumentText extends Context.Service<
   DocumentText,

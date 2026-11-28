@@ -239,6 +239,10 @@
       "types": "./src/server/attachments.ts",
       "import": "./src/server/attachments.ts"
     },
+    "./server/documentText": {
+      "types": "./src/server/documentText.ts",
+      "import": "./src/server/documentText.ts"
+    },
     "./server/attachmentPaths": {
       "types": "./src/server/attachmentPaths.ts",
       "import": "./src/server/attachmentPaths.ts"

@@ -65,9 +65,9 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as Scope from "effect/Scope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
-import packageJson from "../../../package.json" with { type: "json" };
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
+import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as EffectWorker from "../EffectWorker.ts";
 import * as Orchestrator from "../Orchestrator.ts";
@@ -711,7 +711,7 @@ function codexReplayPreamble(input: {
         id: 1,
         method: "initialize",
         params: {
-          clientInfo: { name: "T3 Code", title: "T3 Code", version: packageJson.version },
+          clientInfo: { name: "T3 Code", title: "T3 Code", version: "test" },
           capabilities: {
             experimentalApi: true,
             optOutNotificationMethods: ["turn/diff/updated"],
@@ -1023,9 +1023,9 @@ describe("CodexAdapterV2 process exit", () => {
         digest: yield* Digest.Digest,
         fileSystem: yield* FileSystem.FileSystem,
         idAllocator: yield* IdAllocator.IdAllocatorV2,
-        serverConfig: yield* ProviderReplayHarness.makeReplayServerConfig(scenario).pipe(
+        attachmentsDir: (yield* ProviderReplayHarness.makeReplayServerConfig(scenario).pipe(
           Effect.orDie,
-        ),
+        )).attachmentsDir,
       });
       const threadId = ThreadId.make(`thread-${scenario}`);
       const runtime = yield* adapter.openSession({
@@ -1114,14 +1114,14 @@ describe("CodexAdapterV2 process exit", () => {
     let runningAgents = 0;
     const factoryLayer = CodexAdapterV2.layerAppServerClientFactory.pipe(
       Layer.provide(
-        Layer.mock(PortScanner.PortDiscovery)({
+        Layer.succeed(ProviderHost.ProviderHost, {
           trackAgent: () => {
             runningAgents += 1;
             return () => {
               runningAgents -= 1;
             };
           },
-        }),
+        } as unknown as ProviderHost.ProviderHost["Service"]),
       ),
       Layer.provide(
         Layer.succeed(ProviderEventLoggers.ProviderEventLoggers, {
@@ -1217,9 +1217,9 @@ describe("CodexAdapterV2 session initialize", () => {
         digest: yield* Digest.Digest,
         fileSystem: yield* FileSystem.FileSystem,
         idAllocator: yield* IdAllocator.IdAllocatorV2,
-        serverConfig: yield* ProviderReplayHarness.makeReplayServerConfig(transcript.scenario).pipe(
-          Effect.orDie,
-        ),
+        attachmentsDir: (yield* ProviderReplayHarness.makeReplayServerConfig(
+          transcript.scenario,
+        ).pipe(Effect.orDie)).attachmentsDir,
       });
       const runtime = yield* adapter.openSession({
         threadId: ThreadId.make(`thread-${transcript.scenario}`),
@@ -1801,7 +1801,8 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         digest: yield* Digest.Digest,
         fileSystem,
         idAllocator,
-        serverConfig,
+        attachmentsDir: serverConfig.attachmentsDir,
+        clientVersion: "test",
         continuationRequests: {
           offer: (request) =>
             Effect.sync(() => {

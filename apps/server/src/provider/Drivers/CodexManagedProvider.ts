@@ -30,6 +30,8 @@ import {
 import { codexContinuationIdentity } from "./CodexHomeLayout.ts";
 import { withInstanceIdentity } from "@t3tools/provider-core/server/instanceIdentity";
 import { HttpClient } from "effect/http";
+import * as ServerConfig from "../../config.ts";
+import packageJson from "../../../package.json" with { type: "json" };
 const DRIVER = ProviderDriverKind.make("codex");
 
 export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(function* (
@@ -41,6 +43,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const host = yield* ProviderHost.ProviderHost;
+  const serverConfig = yield* ServerConfig.ServerConfig;
   const runtime = yield* makeCodexManagedRuntime({
     instanceId,
     enabled,
@@ -247,6 +250,8 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     onUsageLimits: (update) => snapshot.applyUsageLimits(update),
     models,
     resolveRuntime: runtime.resolve,
+    attachmentsDir: serverConfig.attachmentsDir,
+    clientVersion: packageJson.version,
   }).pipe(
     Effect.mapError(
       (cause) =>

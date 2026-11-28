@@ -1,0 +1,64 @@
+{
+  "name": "@t3tools/provider-codex",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./server/adapter": {
+      "types": "./src/server/adapter.ts",
+      "import": "./src/server/adapter.ts"
+    },
+    "./server/codexClient": {
+      "types": "./src/server/codexClient.ts",
+      "import": "./src/server/codexClient.ts"
+    },
+    "./server/CodexDeveloperInstructions": {
+      "types": "./src/server/CodexDeveloperInstructions.ts",
+      "import": "./src/server/CodexDeveloperInstructions.ts"
+    },
+    "./server/CodexHomeLayout": {
+      "types": "./src/server/CodexHomeLayout.ts",
+      "import": "./src/server/CodexHomeLayout.ts"
+    },
+    "./server/CodexManagedErrors": {
+      "types": "./src/server/CodexManagedErrors.ts",
+      "import": "./src/server/CodexManagedErrors.ts"
+    },
+    "./server/CodexThreadRevert": {
+      "types": "./src/server/CodexThreadRevert.ts",
+      "import": "./src/server/CodexThreadRevert.ts"
+    },
+    "./server/CodexTurnTokenUsage": {
+      "types": "./src/server/CodexTurnTokenUsage.ts",
+      "import": "./src/server/CodexTurnTokenUsage.ts"
+    },
+    "./server/codexLaunchArgs": {
+      "types": "./src/server/codexLaunchArgs.ts",
+      "import": "./src/server/codexLaunchArgs.ts"
+    },
+    "./server/codexUsageLimits": {
+      "types": "./src/server/codexUsageLimits.ts",
+      "import": "./src/server/codexUsageLimits.ts"
+    },
+    "./server/codexModelOptions": {
+      "types": "./src/server/codexModelOptions.ts",
+      "import": "./src/server/codexModelOptions.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "effect-tsgo tsrs --noEmit",
+    "test": "vp test run --config ../../vite.config.ts --dir ."
+  },
+  "dependencies": {
+    "@t3tools/contracts": "workspace:*",
+    "@t3tools/provider-core": "workspace:*",
+    "@t3tools/shared": "workspace:*",
+    "effect": "catalog:",
+    "effect-codex-app-server": "workspace:*"
+  },
+  "devDependencies": {
+    "@effect/platform-node": "catalog:",
+    "@effect/vitest": "catalog:",
+    "@types/node": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

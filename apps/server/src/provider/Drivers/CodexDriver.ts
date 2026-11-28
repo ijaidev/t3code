@@ -64,6 +64,7 @@ import * as CodexManagedTokenBroker from "../CodexManagedTokenBroker.ts";
 import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import packageJson from "../../../package.json" with { type: "json" };
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("codex");
@@ -185,6 +186,7 @@ export const CodexDriver: ProviderDriver<
     const latestVersions = yield* ProviderLatestVersions.ProviderLatestVersions;
     const installation = yield* CodexInstallation.CodexInstallation;
     const modelCatalog = yield* ModelCatalog.ModelCatalog;
+    const serverConfig = yield* ServerConfig.ServerConfig;
     const currentCatalog = modelCatalog.current(DRIVER_KIND);
     const processEnv = yield* mergeProviderInstanceEnvironment(
       environment,
@@ -255,6 +257,8 @@ export const CodexDriver: ProviderDriver<
           Effect.map((value) => value.models),
         ),
         compatibility: installation.compatibility,
+        attachmentsDir: serverConfig.attachmentsDir,
+        clientVersion: packageJson.version,
       },
     ).pipe(
       Effect.mapError(

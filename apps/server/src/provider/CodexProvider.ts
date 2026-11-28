@@ -41,6 +41,12 @@ import {
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { codexAppServerArgs, resolveCodexLaunchArgs } from "./codexLaunchArgs.ts";
 import {
+  buildCodexInitializeParams as buildCodexInitializeParamsWithVersion,
+  codexAppServerEnvironment,
+  codexDefaultReasoningEffortOverride,
+} from "@t3tools/provider-codex/server/codexClient";
+export { codexAppServerEnvironment };
+import {
   buildServerProvider,
   COMPACT_SLASH_COMMAND,
   DEFAULT_TIMEOUT_MS,
@@ -140,7 +146,6 @@ const CODEX_APP_SERVER_PROBE_FORCE_KILL_AFTER = "2 seconds" as const;
 const CODEX_CATALOG_REFRESH_TIMEOUT_MS = 3_000;
 const CODEX_CONFIG_PROBE_TIMEOUT_MS = 3_000;
 const CODEX_CATALOG_REFRESH_POLL = "100 millis" as const;
-const CODEX_CLIENT_NAME = "T3 Code";
 // Handshake plus account/models/skills requests can exceed the shared 10s probe budget.
 const CODEX_AUTH_PROBE_TIMEOUT_MS = 20_000;
 const CODEX_DISCOVERY_MARGIN_MS = 250;
@@ -247,10 +252,6 @@ export function codexPlanLabel(planType: string | null | undefined): string | un
 function codexAccountEmail(account: CodexSchema.V2GetAccountResponse["account"]) {
   if (!account || account.type !== "chatgpt") return undefined;
   return account.email;
-}
-
-export function codexDefaultReasoningEffortOverride(model: string): "medium" | undefined {
-  return codexModelFamily(model) === "gpt-6-astra" ? "medium" : undefined;
 }
 
 export function mapCodexModelCapabilities(
@@ -603,25 +604,8 @@ const requestCodexChatGptModels = Effect.fn("requestCodexChatGptModels")(functio
   );
 });
 
-/** Set originator at spawn; the pre-initialize refresh otherwise overwrites shared cache with plain-CLI models. */
-export const codexAppServerEnvironment = (
-  environment: NodeJS.ProcessEnv | undefined,
-): NodeJS.ProcessEnv => ({
-  CODEX_INTERNAL_ORIGINATOR_OVERRIDE: CODEX_CLIENT_NAME,
-  ...environment,
-});
-
 export function buildCodexInitializeParams(): CodexSchema.V1InitializeParams {
-  return {
-    clientInfo: {
-      name: CODEX_CLIENT_NAME,
-      title: CODEX_CLIENT_NAME,
-      version: packageJson.version,
-    },
-    capabilities: {
-      experimentalApi: true,
-    },
-  };
+  return buildCodexInitializeParamsWithVersion(packageJson.version);
 }
 
 const codexProcessEnvironment = Effect.fn("codexProcessEnvironment")(function* (input: {

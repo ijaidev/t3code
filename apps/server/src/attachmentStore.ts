@@ -16,15 +16,13 @@ import {
   createAttachmentId,
   PENDING_ATTACHMENT_THREAD_SEGMENT,
   resolveAttachmentPath,
+  resolveAttachmentPathById,
   toSafeThreadAttachmentSegment,
 } from "@t3tools/provider-core/server/attachments";
 import {
   normalizeAttachmentRelativePath,
   resolveAttachmentRelativePath,
 } from "@t3tools/provider-core/server/attachmentPaths";
-import { SAFE_IMAGE_FILE_EXTENSIONS } from "@t3tools/provider-core/server/imageMime";
-
-const ATTACHMENT_FILENAME_EXTENSIONS = [...SAFE_IMAGE_FILE_EXTENSIONS, ".bin"];
 
 export {
   ATTACHMENT_ID_THREAD_SEGMENT_MAX_CHARS,
@@ -33,6 +31,7 @@ export {
   createAttachmentId,
   PENDING_ATTACHMENT_THREAD_SEGMENT,
   resolveAttachmentPath,
+  resolveAttachmentPathById,
   toSafeThreadAttachmentSegment,
 };
 
@@ -130,34 +129,6 @@ export function threadHtmlRenderAttachmentIds(
       ? [attachmentId]
       : [];
   });
-}
-
-export function resolveAttachmentPathById(input: {
-  readonly attachmentsDir: string;
-  readonly attachmentId: string;
-}): string | null {
-  const normalizedId = normalizeAttachmentRelativePath(input.attachmentId);
-  if (!normalizedId || normalizedId.includes("/") || normalizedId.includes(".")) {
-    return null;
-  }
-  const fileExtension = parseAttachmentFileExtension(normalizedId);
-  if (fileExtension) {
-    const filePath = resolveAttachmentRelativePath({
-      attachmentsDir: input.attachmentsDir,
-      relativePath: `${normalizedId}.${fileExtension.toLowerCase()}`,
-    });
-    return filePath && NodeFS.existsSync(filePath) ? filePath : null;
-  }
-  for (const extension of ATTACHMENT_FILENAME_EXTENSIONS) {
-    const maybePath = resolveAttachmentRelativePath({
-      attachmentsDir: input.attachmentsDir,
-      relativePath: `${normalizedId}${extension}`,
-    });
-    if (maybePath && NodeFS.existsSync(maybePath)) {
-      return maybePath;
-    }
-  }
-  return null;
 }
 
 export type AttachmentClaimPlan =

@@ -1,4 +1,9 @@
-import type { ProviderDriverKind, ServerProviderCompatibilityAdvisory } from "@t3tools/contracts";
+import {
+  ProviderSetupError,
+  type ProviderDriverKind,
+  type ProviderInstanceId,
+  type ServerProviderCompatibilityAdvisory,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
 /** Rates a detected provider version against the host's compatibility policy. */
@@ -20,4 +25,18 @@ export function brokenVersionDetail(input: {
   const target =
     input.advisory.recommendedVersion ?? input.advisory.recommendedRange ?? "a newer version";
   return `${input.name} ${input.version} does not work with this T3 Code release. ${input.action ?? `Update ${input.name}`} to ${target}, then retry.`;
+}
+
+/** The one refusal for a runtime the policy rates `broken`; `action` names how this runtime is updated. */
+export function brokenRuntimeError(input: {
+  readonly instanceId: ProviderInstanceId;
+  readonly name: string;
+  readonly version: string;
+  readonly advisory: ServerProviderCompatibilityAdvisory | undefined;
+  readonly action?: string;
+}): ProviderSetupError | undefined {
+  const detail = brokenVersionDetail(input);
+  return detail === undefined
+    ? undefined
+    : new ProviderSetupError({ instanceId: input.instanceId, operation: "runtime", detail });
 }
