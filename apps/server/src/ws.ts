@@ -140,7 +140,7 @@ import * as DocumentText from "./provider/DocumentText.ts";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
 import * as SandboxAccounts from "./sandbox/SandboxAccounts.ts";
 import * as SandboxLifecycle from "./sandbox/SandboxLifecycle.ts";
-import * as CloudTargets from "./sandbox/CloudTargets.ts";
+import * as CloudTargetList from "./sandbox/CloudTargetList.ts";
 import * as CloudTerminal from "./sandbox/CloudTerminal.ts";
 import * as CloudThreadPorts from "./sandbox/CloudThreadPorts.ts";
 import * as CloudThreads from "./sandbox/CloudThreads.ts";
@@ -1578,6 +1578,7 @@ export const layerWsRpc = (
       const cloudThreadPorts = yield* CloudThreadPorts.CloudThreadPorts;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
       const providerInstances = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
+      const cloudTargetList = yield* CloudTargetList.CloudTargetList;
       const acpRegistryCatalog = yield* AcpRegistrySupport.AcpRegistryCatalog;
       const acpRegistryRuntimeCoordinator =
         yield* AcpRegistryRuntimeCoordinator.AcpRegistryRuntimeCoordinator;
@@ -1754,31 +1755,11 @@ export const layerWsRpc = (
         input: import("@t3tools/contracts").SandboxListCloudTargetsInput,
       ) {
         const remote = yield* projectPublicRemote(projectService, gitWorkflow, input.projectId);
-        const providers = yield* sandboxAccounts.list;
-        const requestedInstanceId = input.instanceId;
-        const instance =
-          requestedInstanceId === undefined
-            ? undefined
-            : yield* providerInstances.getInstance(requestedInstanceId);
-        const harness =
-          requestedInstanceId === undefined
-            ? undefined
-            : instance === undefined
-              ? { supported: false, credentialSupported: false }
-              : CloudTargets.cloudHarnessCapability({
-                  driver: instance.driverKind,
-                  config: Option.getOrUndefined(
-                    yield* providerInstances.getInstanceConfig(requestedInstanceId),
-                  ),
-                });
-        return {
-          targets: CloudTargets.sandboxCloudTargets({
-            remote,
-            accounts: providers.accounts,
-            providers: providers.providers,
-            ...(harness === undefined ? {} : { harness }),
-          }),
-        };
+        return yield* cloudTargetList.list({
+          remote,
+          ...(input.instanceId === undefined ? {} : { instanceId: input.instanceId }),
+          ...(input.extendedReasons === true ? { extendedReasons: true } : {}),
+        });
       });
       const sourceControlRepositories =
         yield* SourceControlRepositoryService.SourceControlRepositoryService;

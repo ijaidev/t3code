@@ -160,6 +160,8 @@ export const SandboxListCloudTargetsInput = Schema.Struct({
   projectId: ProjectId,
   /** The provider instance the new thread will use, so the list can refuse its harness. */
   instanceId: Schema.optionalKey(ProviderInstanceId),
+  /** New clients decode every reason; older clients keep the six-value union they shipped. */
+  extendedReasons: Schema.optionalKey(Schema.Boolean),
 });
 export type SandboxListCloudTargetsInput = typeof SandboxListCloudTargetsInput.Type;
 

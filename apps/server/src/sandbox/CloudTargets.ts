@@ -28,17 +28,66 @@ type CloudTargetAvailability =
   | { readonly enabled: false; readonly reason: CloudTargetDisabledReason };
 
 const CODEX_DRIVER = ProviderDriverKind.make("codex");
+const CLAUDE_DRIVER = ProviderDriverKind.make("claudeAgent");
+const OPENCODE_DRIVER = ProviderDriverKind.make("opencode");
 const decodeCodexSettings = Schema.decodeUnknownOption(CodexSettings);
+
+const CLAUDE_ANTHROPIC_CREDENTIALS = [
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+] as const;
+const CLAUDE_BEDROCK_CREDENTIALS = ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"] as const;
+const CODEX_SANDBOX_CREDENTIALS = ["OPENAI_API_KEY"] as const;
+
+const hasEnvironmentValue = (
+  environment: ReadonlyArray<{ readonly name: string; readonly value: string }>,
+  name: string,
+): boolean =>
+  environment.some((variable) => variable.name === name && variable.value.trim() !== "");
+
+const hasEveryEnvironmentValue = (
+  environment: ReadonlyArray<{ readonly name: string; readonly value: string }>,
+  names: ReadonlyArray<string>,
+): boolean => names.every((name) => hasEnvironmentValue(environment, name));
+
+/**
+ * The sandbox host clears provider home directories and receives only the resolved
+ * environment, so a controller-local OAuth/keychain/auth.json sign-in cannot reach it.
+ */
+const sandboxCredentialSupported = (
+  driver: ProviderDriverKind,
+  environment: ReadonlyArray<{ readonly name: string; readonly value: string }>,
+): boolean => {
+  if (driver === CLAUDE_DRIVER) {
+    return (
+      CLAUDE_ANTHROPIC_CREDENTIALS.some((name) => hasEnvironmentValue(environment, name)) ||
+      (hasEnvironmentValue(environment, "CLAUDE_CODE_USE_BEDROCK") &&
+        hasEveryEnvironmentValue(environment, CLAUDE_BEDROCK_CREDENTIALS))
+    );
+  }
+  if (driver === CODEX_DRIVER) {
+    return hasEveryEnvironmentValue(environment, CODEX_SANDBOX_CREDENTIALS);
+  }
+  if (driver === OPENCODE_DRIVER) {
+    // OpenCode's provider set is open, so any configured variable may be its credential.
+    return environment.some((variable) => variable.value.trim() !== "");
+  }
+  return false;
+};
 
 export const cloudHarnessCapability = (input: {
   readonly driver: ProviderDriverKind;
   readonly config: unknown;
+  readonly environment?: ReadonlyArray<{ readonly name: string; readonly value: string }>;
 }): CloudHarnessCapability => {
   const codex = input.driver === CODEX_DRIVER ? decodeCodexSettings(input.config) : Option.none();
   return {
     supported: cloudProviderHostSupportsDriver(input.driver),
-    // Managed ChatGPT sign-in keeps its token on the controller; the sandbox cannot reuse it.
-    credentialSupported: !(Option.isSome(codex) && codex.value.setupMode === "managed"),
+    credentialSupported:
+      // Managed ChatGPT sign-in keeps its token on the controller; the sandbox cannot reuse it.
+      !(Option.isSome(codex) && codex.value.setupMode === "managed") &&
+      sandboxCredentialSupported(input.driver, input.environment ?? []),
   };
 };
 
@@ -70,6 +119,31 @@ const cloudTargetAvailability = (input: {
   }
   return { enabled: true };
 };
+
+/** Reasons a client built before the harness/credential reasons can still decode. */
+const LEGACY_DISABLED_REASONS = new Set([
+  "no-remote",
+  "unsafe-remote",
+  "account-disabled",
+  "provider-unavailable",
+  "no-create",
+  "no-exec",
+]);
+
+const LEGACY_FALLBACK_REASON = "provider-unavailable" as const;
+
+/**
+ * Older clients decode `disabledReason` as the six-value union they shipped. Keep their
+ * response decodable instead of failing the whole target list on a newer reason.
+ */
+export const legacySandboxCloudTargets = (
+  targets: ReadonlyArray<SandboxCloudTarget>,
+): ReadonlyArray<SandboxCloudTarget> =>
+  targets.map((target) =>
+    target.disabledReason === undefined || LEGACY_DISABLED_REASONS.has(target.disabledReason)
+      ? target
+      : { ...target, disabledReason: LEGACY_FALLBACK_REASON },
+  );
 
 export const sandboxCloudTargets = (input: {
   readonly remote: CloudTargetRemote;

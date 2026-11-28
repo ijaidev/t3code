@@ -1562,34 +1562,60 @@ const make = Effect.gen(function* () {
         commandId: input.commandId,
         instanceId: input.modelSelection.instanceId,
       });
-      // Refuse before allocating a sandbox when this provider has no harness there.
-      if (input.workspaceStrategy.type === "cloud" && Option.isSome(providerInstances)) {
+      // An accepted launch replays from its receipt; a later capability change cannot retract it.
+      const acceptedLaunch =
+        Option.isSome(launchReceipt) &&
+        launchReceipt.value.status === "accepted" &&
+        launchReceipt.value.commandType === "thread.create";
+      // Refuse before allocating a sandbox when this provider has no usable harness there.
+      if (input.workspaceStrategy.type === "cloud" && !acceptedLaunch) {
+        if (Option.isNone(providerInstances)) {
+          return yield* mapError(
+            input,
+            "provision-worktree",
+          )(
+            "This provider is no longer available. Pick another provider or start the thread locally.",
+          );
+        }
         const instance = yield* providerInstances.value.getInstance(
           input.modelSelection.instanceId,
         );
-        if (instance !== undefined) {
-          const harness = CloudTargets.cloudHarnessCapability({
-            driver: instance.driverKind,
-            config: Option.getOrUndefined(
-              yield* providerInstances.value.getInstanceConfig(input.modelSelection.instanceId),
-            ),
-          });
-          if (!harness.supported) {
-            return yield* mapError(
-              input,
-              "provision-worktree",
-            )(
-              "This provider cannot run in a cloud sandbox yet. Pick another provider or start the thread locally.",
-            );
-          }
-          if (!harness.credentialSupported) {
-            return yield* mapError(
-              input,
-              "provision-worktree",
-            )(
-              "This provider's sign-in cannot be used in a cloud sandbox. Use an API key or start the thread locally.",
-            );
-          }
+        if (instance === undefined) {
+          return yield* mapError(
+            input,
+            "provision-worktree",
+          )(
+            "This provider is no longer available. Pick another provider or start the thread locally.",
+          );
+        }
+        const environment =
+          providerInstances.value.getResolvedEnvironment === undefined
+            ? []
+            : ((yield* providerInstances.value.getResolvedEnvironment(
+                input.modelSelection.instanceId,
+              )) ?? []);
+        const harness = CloudTargets.cloudHarnessCapability({
+          driver: instance.driverKind,
+          config: Option.getOrUndefined(
+            yield* providerInstances.value.getInstanceConfig(input.modelSelection.instanceId),
+          ),
+          environment,
+        });
+        if (!harness.supported) {
+          return yield* mapError(
+            input,
+            "provision-worktree",
+          )(
+            "This provider cannot run in a cloud sandbox yet. Pick another provider or start the thread locally.",
+          );
+        }
+        if (!harness.credentialSupported) {
+          return yield* mapError(
+            input,
+            "provision-worktree",
+          )(
+            "This provider's sign-in cannot be used in a cloud sandbox. Use an API key or start the thread locally.",
+          );
         }
       }
       return yield* Effect.gen(function* () {

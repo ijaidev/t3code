@@ -2,15 +2,19 @@ import {
   ProviderDriverKind,
   SandboxProviderAccountId,
   SandboxProviderKind,
+  type SandboxCloudTarget,
   type SandboxProviderCapabilities,
   type SandboxProviderSummary,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 
 import {
   cloudHarnessCapability,
   type CloudHarnessCapability,
   type CloudTargetRemote,
+  legacySandboxCloudTargets,
   sandboxCloudTargets,
 } from "./CloudTargets.ts";
 
@@ -102,13 +106,48 @@ describe("sandbox cloud targets", () => {
 });
 
 describe("cloud harness capability", () => {
-  it.each(["opencode", "claudeAgent", "codex"])("supports %s", (driver) => {
+  it.each([
+    ["opencode", "OPENROUTER_API_KEY"],
+    ["claudeAgent", "ANTHROPIC_API_KEY"],
+    ["codex", "OPENAI_API_KEY"],
+  ])("supports %s with a sandbox credential", (driver, variable) => {
     expect(
       cloudHarnessCapability({
         driver: ProviderDriverKind.make(driver),
         config: {},
+        environment: [{ name: variable, value: "secret" }],
       }),
     ).toEqual({ supported: true, credentialSupported: true });
+  });
+
+  it.each(["opencode", "claudeAgent", "codex"])(
+    "refuses %s without a sandbox credential",
+    (driver) => {
+      expect(
+        cloudHarnessCapability({
+          driver: ProviderDriverKind.make(driver),
+          config: {},
+          environment: [],
+        }),
+      ).toEqual({ supported: true, credentialSupported: false });
+    },
+  );
+
+  it("accepts an existing Codex sign-in only through an injected key", () => {
+    expect(
+      cloudHarnessCapability({
+        driver: ProviderDriverKind.make("codex"),
+        config: { setupMode: "existing" },
+        environment: [],
+      }).credentialSupported,
+    ).toBe(false);
+    expect(
+      cloudHarnessCapability({
+        driver: ProviderDriverKind.make("codex"),
+        config: { setupMode: "existing" },
+        environment: [{ name: "OPENAI_API_KEY", value: "sk-test" }],
+      }).credentialSupported,
+    ).toBe(true);
   });
 
   it("refuses providers without a sandbox adapter", () => {
@@ -116,8 +155,9 @@ describe("cloud harness capability", () => {
       cloudHarnessCapability({
         driver: ProviderDriverKind.make("cursor"),
         config: {},
+        environment: [{ name: "CURSOR_API_KEY", value: "secret" }],
       }),
-    ).toEqual({ supported: false, credentialSupported: true });
+    ).toEqual({ supported: false, credentialSupported: false });
   });
 
   it("refuses managed Codex sign-in, which cannot enter the sandbox", () => {
@@ -125,7 +165,54 @@ describe("cloud harness capability", () => {
       cloudHarnessCapability({
         driver: ProviderDriverKind.make("codex"),
         config: { setupMode: "managed" },
+        environment: [{ name: "OPENAI_API_KEY", value: "sk-test" }],
       }),
     ).toEqual({ supported: true, credentialSupported: false });
+  });
+});
+
+describe("legacy cloud target reasons", () => {
+  const LegacySandboxCloudTarget = Schema.Struct({
+    accountId: SandboxProviderAccountId,
+    providerKind: SandboxProviderKind,
+    label: Schema.String,
+    enabled: Schema.Boolean,
+    disabledReason: Schema.optionalKey(
+      Schema.Literals([
+        "no-remote",
+        "unsafe-remote",
+        "account-disabled",
+        "provider-unavailable",
+        "no-create",
+        "no-exec",
+      ]),
+    ),
+  });
+  const decodeLegacy = Schema.decodeUnknownOption(LegacySandboxCloudTarget);
+  const newReasons = [
+    "no-credential",
+    "no-harness",
+    "harness-unavailable",
+    "sign-in-unavailable",
+  ] as const;
+  const targetFor = (reason: SandboxCloudTarget["disabledReason"]): SandboxCloudTarget => ({
+    accountId,
+    providerKind: e2b,
+    label: "E2B",
+    enabled: false,
+    ...(reason === undefined ? {} : { disabledReason: reason }),
+  });
+
+  it.each(newReasons)("falls back for an older client: %s", (reason) => {
+    expect(Option.isNone(decodeLegacy(targetFor(reason)))).toBe(true);
+    const [legacy] = legacySandboxCloudTargets([targetFor(reason)]);
+    expect(legacy?.disabledReason).toBe("provider-unavailable");
+    expect(Option.isSome(decodeLegacy(legacy))).toBe(true);
+  });
+
+  it("keeps reasons the older union already knows", () => {
+    expect(legacySandboxCloudTargets([targetFor("account-disabled")])[0]?.disabledReason).toBe(
+      "account-disabled",
+    );
   });
 });

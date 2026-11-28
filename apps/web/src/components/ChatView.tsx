@@ -1439,6 +1439,7 @@ export default function ChatView(props: ChatViewProps) {
           environmentId,
           input: {
             projectId: activeProject.id,
+            extendedReasons: true,
             ...(activeProviderInstanceId === null ? {} : { instanceId: activeProviderInstanceId }),
           },
         })
