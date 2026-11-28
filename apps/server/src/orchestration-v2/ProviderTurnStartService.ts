@@ -2355,7 +2355,9 @@ export const layer: Layer.Layer<
       if (!native) {
         yield* Effect.gen(function* () {
           yield* beginRecovery;
-          yield* providerSessions.resumeCloudTurn({ threadId, runId });
+          yield* providerSessions
+            .resumeCloudTurn({ threadId, runId })
+            .pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
         }).pipe(Effect.ensuring(endRecovery));
         return;
       }
@@ -2403,7 +2405,12 @@ export const layer: Layer.Layer<
       const recoveredRequests: ReadonlyArray<ProviderAdapter.ProviderAdapterV2RecoveredRequest> =
         pendingApprovals.runtimeRequests.flatMap((request) => {
           const item = projection.turnItems.find(
-            (candidate) =>
+            (
+              candidate,
+            ): candidate is Extract<
+              OrchestrationV2TurnItem,
+              { readonly type: "approval_request" | "user_input_request" }
+            > =>
               (candidate.type === "approval_request" || candidate.type === "user_input_request") &&
               candidate.requestId === request.id,
           );
@@ -2439,7 +2446,7 @@ export const layer: Layer.Layer<
           status: "error",
           cwd,
           model: run.modelSelection.model,
-          capabilities: {},
+          capabilities: {} as OrchestrationV2ProviderSession["capabilities"],
           extensionStatuses: [],
           createdAt: projection.thread.createdAt,
           updatedAt: projection.thread.updatedAt,
@@ -2522,7 +2529,9 @@ export const layer: Layer.Layer<
       yield* Effect.gen(function* () {
         yield* beginRecovery;
         if (!native) {
-          yield* providerSessions.resumeCloudTurn({ threadId, runId });
+          yield* providerSessions
+            .resumeCloudTurn({ threadId, runId })
+            .pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
           return;
         }
         const opened = yield* providerSessions
@@ -2568,7 +2577,10 @@ export const layer: Layer.Layer<
               : providerSessions.close(providerSessionId).pipe(Effect.ignore),
           ),
         );
-      }).pipe(Effect.ensuring(endRecovery));
+      }).pipe(
+        Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })),
+        Effect.ensuring(endRecovery),
+      );
     });
 
     return ProviderTurnStartServiceV2.of({

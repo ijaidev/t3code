@@ -72,6 +72,8 @@ const machine = (state: {
         };
       }),
     writeAttachment: () => Effect.succeed(false),
+    beginRecovery: () => Effect.void,
+    endRecovery: () => Effect.void,
     openHost: () => Effect.die("unused"),
     openProviderHost: () => Effect.die("unused"),
     deleteForThread: () => Effect.void,

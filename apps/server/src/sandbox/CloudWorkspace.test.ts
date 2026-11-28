@@ -105,6 +105,8 @@ const machine = (input: TestWorkspace) =>
         Effect.as(true),
         Effect.orElseSucceed(() => false),
       ),
+    beginRecovery: () => Effect.void,
+    endRecovery: () => Effect.void,
     openHost: () => Effect.die("unused"),
     openProviderHost: () => Effect.die("unused"),
     deleteForThread: () => Effect.void,
