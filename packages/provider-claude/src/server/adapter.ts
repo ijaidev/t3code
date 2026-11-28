@@ -212,6 +212,7 @@ import {
 } from "@t3tools/provider-core/server/providerEventLogging";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import { collectUint8StreamText } from "@t3tools/provider-core/server/collectStreamText";
+import { claudeHistoryWorkerArguments } from "./ClaudeHistoryWorkerLaunch.ts";
 import { AGENT_THREAD_ENV } from "@t3tools/provider-core/server/ports";
 import { claudeRateLimitEventToUpdate, type ClaudeScopedLimitNames } from "./claudeUsageLimits.ts";
 import type { ManagedServerProvider } from "@t3tools/provider-core/server/snapshot";
@@ -1541,16 +1542,23 @@ const runClaudeWorker = Effect.fn("runClaudeWorker")(function* (input: {
   readonly environment: NodeJS.ProcessEnv;
 }) {
   const path = yield* Path.Path;
+  const fileSystem = yield* FileSystem.FileSystem;
   const fromSource = import.meta.url.endsWith(".ts");
-  // A single executable or bundle hosts the worker itself; only source runs a sibling entry.
-  const workerArguments = (yield* HostProcess.IsExecutable)
-    ? ["__claude-history"]
-    : fromSource
-      ? [
-          "--experimental-strip-types",
-          yield* path.fromFileUrl(new URL("../claude-history-worker.ts", import.meta.url)),
-        ]
-      : [yield* path.fromFileUrl(new URL(import.meta.url)), "__claude-history"];
+  const modulePath = yield* path.fromFileUrl(new URL(import.meta.url));
+  // The controller bundle splits adapters into chunks, so only bin.mjs dispatches the subcommand.
+  const controllerEntryPath = yield* path.fromFileUrl(new URL("./bin.mjs", import.meta.url));
+  const workerArguments = claudeHistoryWorkerArguments({
+    fromSource,
+    executable: yield* HostProcess.IsExecutable,
+    modulePath,
+    sourceEntryPath: yield* path.fromFileUrl(
+      new URL("../claude-history-worker.ts", import.meta.url),
+    ),
+    controllerEntryPath,
+    controllerEntryExists: yield* fileSystem
+      .exists(controllerEntryPath)
+      .pipe(Effect.orElseSucceed(() => false)),
+  });
   const executablePath = yield* HostProcess.ExecutablePath;
   const result = yield* spawnAndCollect(
     executablePath,
@@ -1581,7 +1589,9 @@ const runClaudeWorker = Effect.fn("runClaudeWorker")(function* (input: {
 const forkClaudeSessionInWorker = Effect.fn("forkClaudeSessionInWorker")(function* (
   input: ClaudeAgentSdkSessionForkInput,
 ) {
+  const fileSystem = yield* FileSystem.FileSystem;
   return yield* runClaudeWorker({ ...input, method: "forkSession" }).pipe(
+    Effect.provideService(FileSystem.FileSystem, fileSystem),
     Effect.flatMap(decodeClaudeHistoryFork),
   );
 });
@@ -1619,6 +1629,7 @@ export const makeLayerQueryRunner = (
   ClaudeAgentSdkQueryRunner,
   never,
   | ChildProcessSpawner.ChildProcessSpawner
+  | FileSystem.FileSystem
   | SecureRandom.SecureRandom
   | Path.Path
   | ProviderEventLoggers.ProviderEventLoggers
@@ -1629,6 +1640,7 @@ export const makeLayerQueryRunner = (
       const random = yield* SecureRandom.SecureRandom;
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const path = yield* Path.Path;
+      const fileSystem = yield* FileSystem.FileSystem;
       const { native: nativeEventLogger } = yield* ProviderEventLoggers.ProviderEventLoggers;
       const agentScope = yield* AgentScope;
       const providerProcesses = yield* ProviderProcesses;
@@ -1715,6 +1727,7 @@ export const makeLayerQueryRunner = (
           }).pipe(
             Effect.flatMap(decodeClaudeHistoryMessages),
             Effect.mapError((cause) => queryRunnerError(cause, "getSessionMessages")),
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
             Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
             Effect.provideService(Path.Path, path),
           );
@@ -2265,6 +2278,7 @@ export const makeLayerQueryRunner = (
                 catch: (cause) => queryRunnerError(cause, "forkSession"),
               })
             : forkClaudeSessionInWorker(input).pipe(
+                Effect.provideService(FileSystem.FileSystem, fileSystem),
                 Effect.mapError((cause) => queryRunnerError(cause, "forkSession")),
                 Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
                 Effect.provideService(Path.Path, path),

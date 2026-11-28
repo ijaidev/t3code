@@ -1975,7 +1975,7 @@ const captureSdkExecutablePaths = Effect.fn("captureSdkExecutablePaths")(functio
       enabled: true,
       config: { ...DEFAULT_CLAUDE_SETTINGS, binaryPath },
     },
-    {},
+    { attachmentsDir: "/tmp/t3-claude-attachments" },
   ).pipe(
     Effect.provide(
       ServerConfig.layerTest(process.cwd(), {
