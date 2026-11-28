@@ -6,7 +6,6 @@ import * as NodePath from "node:path";
 
 import * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -36,10 +35,9 @@ const readRecord = (recordPath: string) => {
   }
 };
 
-export const ProviderProcesses = Context.Reference<{
-  readonly register?: (pid: number) => () => void;
-  readonly hasOtherLiveOwner: boolean;
-}>("t3/process/ProviderProcesses", { defaultValue: () => ({ hasOtherLiveOwner: false }) });
+import { ProviderProcesses } from "@t3tools/provider-core/server/providerProcesses";
+
+export { ProviderProcesses };
 
 const make = Effect.gen(function* () {
   const platform = yield* HostProcess.Platform;

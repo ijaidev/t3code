@@ -14,3 +14,10 @@ export const sandboxProviderEnvironment = (environment: NodeJS.ProcessEnv): Node
   }
   return filtered;
 };
+
+/** Removes control variables from the host's own environment after startup reads them. */
+export const clearProviderHostControlEnvironment = (environment: NodeJS.ProcessEnv): void => {
+  for (const name of Object.keys(environment)) {
+    if (name.startsWith("T3_PROVIDER_HOST_")) delete environment[name];
+  }
+};

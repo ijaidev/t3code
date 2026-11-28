@@ -12,8 +12,8 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Predicate from "effect/Predicate";
 
-import { resolveAttachmentRelativePath } from "../attachmentPaths.ts";
-import { createAttachmentId } from "../attachmentStore.ts";
+import { resolveAttachmentRelativePath } from "@t3tools/provider-core/server/attachmentPaths";
+import { createAttachmentId } from "@t3tools/provider-core/server/attachments";
 
 const encoder = new TextEncoder();
 

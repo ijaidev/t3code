@@ -53,7 +53,7 @@ clients read declared capabilities, never provider names.
 
 ## Model manifest
 
-The bundled [`model-manifest.json`](../../apps/server/src/provider/model-manifest.json) enables
+The bundled [`model-manifest.json`](../../packages/provider-core/src/server/model-manifest.json) enables
 offline startup while remote fetches from `main` update metadata between releases. A bundled
 manifest outranks the cached remote copy by `updatedAt`, so **bump `updatedAt` on every edit**.
 Declare broken-version minimums in the manifest policy rather than as driver constants. Test catalog

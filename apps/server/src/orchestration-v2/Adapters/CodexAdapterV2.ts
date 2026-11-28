@@ -3,7 +3,7 @@ import * as DocumentText from "../../provider/DocumentText.ts";
 import { brokenRuntimeError } from "../../provider/providerCompatibility.ts";
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
-import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
+import { makeProviderTextDeltaCoalescer } from "@t3tools/provider-core/server/ProviderTextDeltaCoalescer";
 import {
   mcpToolPresentation,
   type McpToolPresentation,
@@ -142,7 +142,7 @@ import {
   MCP_APP_OUTPUT_KEY,
   MCP_APP_RESOURCE_SCHEME,
 } from "@t3tools/shared/mcpApp";
-import { snapshotMcpApp } from "../../mcpApps/McpAppSnapshot.ts";
+import { snapshotMcpApp } from "@t3tools/provider-core/server/McpAppSnapshot";
 import {
   ProviderAdapterDriverCreateError,
   type ProviderAdapterDriverCreateInput,

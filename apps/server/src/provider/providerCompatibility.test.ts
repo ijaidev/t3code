@@ -23,7 +23,7 @@ import {
   ProviderCompatibilityPolicy,
   resolveProviderCompatibility,
 } from "./providerCompatibility.ts";
-import bundledManifest from "./model-manifest.json" with { type: "json" };
+import { BUNDLED_MODEL_MANIFEST as bundledManifest } from "@t3tools/provider-core/server/modelManifest";
 
 const decodeCompatibilityPolicies = Schema.decodeUnknownSync(
   Schema.Array(ProviderCompatibilityPolicy),

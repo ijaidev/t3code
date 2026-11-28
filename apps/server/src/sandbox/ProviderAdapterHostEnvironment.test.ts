@@ -1,6 +1,9 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { sandboxProviderEnvironment } from "./ProviderAdapterHostEnvironment.ts";
+import {
+  clearProviderHostControlEnvironment,
+  sandboxProviderEnvironment,
+} from "./ProviderAdapterHostEnvironment.ts";
 
 describe("sandbox provider environment", () => {
   it("keeps provider credentials and drops host control variables", () => {
@@ -18,5 +21,18 @@ describe("sandbox provider environment", () => {
       OPENCODE_PASSWORD: "provider-password",
     });
     expect(environment.T3_PROVIDER_HOST_TOKEN).toBe("controller-token");
+  });
+
+  it("clears host control variables before the adapter spawns a harness", () => {
+    const environment: NodeJS.ProcessEnv = {
+      PATH: "/usr/bin",
+      ANTHROPIC_API_KEY: "provider-key",
+      T3_PROVIDER_HOST_TOKEN: "controller-token",
+      T3_PROVIDER_HOST_PORT: "8790",
+    };
+
+    clearProviderHostControlEnvironment(environment);
+
+    expect(environment).toEqual({ PATH: "/usr/bin", ANTHROPIC_API_KEY: "provider-key" });
   });
 });

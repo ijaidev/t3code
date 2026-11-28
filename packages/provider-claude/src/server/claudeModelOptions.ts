@@ -15,7 +15,7 @@ import {
   resolveClaudeCatalogModel,
   resolveClaudeModelSlug,
   type ClaudeModelCatalog,
-} from "./provider/ClaudeModelCatalog.ts";
+} from "./ClaudeModelCatalog.ts";
 
 const CLAUDE_CODE_MODEL_ALIASES = new Set(["opus", "sonnet", "haiku", "fable"]);
 

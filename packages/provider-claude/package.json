@@ -1,0 +1,118 @@
+{
+  "name": "@t3tools/provider-claude",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./server": {
+      "types": "./src/server.ts",
+      "import": "./src/server.ts"
+    },
+    "./server/adapter": {
+      "types": "./src/server/adapter.ts",
+      "import": "./src/server/adapter.ts"
+    },
+    "./server/ClaudeExecutable": {
+      "types": "./src/server/ClaudeExecutable.ts",
+      "import": "./src/server/ClaudeExecutable.ts"
+    },
+    "./server/ClaudeHome": {
+      "types": "./src/server/ClaudeHome.ts",
+      "import": "./src/server/ClaudeHome.ts"
+    },
+    "./server/ClaudeModelCatalog": {
+      "types": "./src/server/ClaudeModelCatalog.ts",
+      "import": "./src/server/ClaudeModelCatalog.ts"
+    },
+    "./server/ClaudeSkills": {
+      "types": "./src/server/ClaudeSkills.ts",
+      "import": "./src/server/ClaudeSkills.ts"
+    },
+    "./server/ClaudeTurnTokenUsage": {
+      "types": "./src/server/ClaudeTurnTokenUsage.ts",
+      "import": "./src/server/ClaudeTurnTokenUsage.ts"
+    },
+    "./server/claudeModelOptions": {
+      "types": "./src/server/claudeModelOptions.ts",
+      "import": "./src/server/claudeModelOptions.ts"
+    },
+    "./server/claudeUsageLimits": {
+      "types": "./src/server/claudeUsageLimits.ts",
+      "import": "./src/server/claudeUsageLimits.ts"
+    },
+    "./server/ClaudeTaskOutputTail": {
+      "types": "./src/server/ClaudeTaskOutputTail.ts",
+      "import": "./src/server/ClaudeTaskOutputTail.ts"
+    },
+    "./server/claudeWorkflowProgress": {
+      "types": "./src/server/claudeWorkflowProgress.ts",
+      "import": "./src/server/claudeWorkflowProgress.ts"
+    },
+    "./server/unknownField": {
+      "types": "./src/server/unknownField.ts",
+      "import": "./src/server/unknownField.ts"
+    },
+    "./server/workflowAgentAnswers": {
+      "types": "./src/server/workflowAgentAnswers.ts",
+      "import": "./src/server/workflowAgentAnswers.ts"
+    },
+    "./server/workflowAgentTranscript": {
+      "types": "./src/server/workflowAgentTranscript.ts",
+      "import": "./src/server/workflowAgentTranscript.ts"
+    },
+    "./server/provider": {
+      "types": "./src/server/provider.ts",
+      "import": "./src/server/provider.ts"
+    },
+    "./server/maintenance": {
+      "types": "./src/server/maintenance.ts",
+      "import": "./src/server/maintenance.ts"
+    },
+    "./server/textGeneration": {
+      "types": "./src/server/textGeneration.ts",
+      "import": "./src/server/textGeneration.ts"
+    },
+    "./server/resetCredits": {
+      "types": "./src/server/resetCredits.ts",
+      "import": "./src/server/resetCredits.ts"
+    },
+    "./server/ClaudeSkillDispatch": {
+      "types": "./src/server/ClaudeSkillDispatch.ts",
+      "import": "./src/server/ClaudeSkillDispatch.ts"
+    },
+    "./claudeHistoryWorker": {
+      "types": "./src/claudeHistoryWorker.ts",
+      "import": "./src/claudeHistoryWorker.ts"
+    },
+    "./server/codeModelRoutes": {
+      "types": "./src/server/codeModelRoutes.ts",
+      "import": "./src/server/codeModelRoutes.ts"
+    },
+    "./server/usage": {
+      "types": "./src/server/usage.ts",
+      "import": "./src/server/usage.ts"
+    },
+    "./server/ClaudeHistoryWorkerLaunch": {
+      "types": "./src/server/ClaudeHistoryWorkerLaunch.ts",
+      "import": "./src/server/ClaudeHistoryWorkerLaunch.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "effect-tsgo tsrs --noEmit",
+    "test": "vp test run --config ../../vite.config.ts --dir ."
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.321",
+    "@t3tools/contracts": "workspace:*",
+    "@t3tools/provider-core": "workspace:*",
+    "@t3tools/shared": "workspace:*",
+    "diff": "8.0.3",
+    "effect": "catalog:",
+    "yaml": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/platform-node": "catalog:",
+    "@effect/vitest": "catalog:",
+    "@types/node": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

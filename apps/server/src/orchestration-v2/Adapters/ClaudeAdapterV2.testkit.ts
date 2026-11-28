@@ -33,9 +33,9 @@ import * as ServerConfig from "../../config.ts";
 import {
   isWindowsClaudeLauncherShimPath,
   resolveClaudeSdkExecutablePath,
-} from "../../provider/Drivers/ClaudeExecutable.ts";
-import * as ClaudeAdapterV2 from "./ClaudeAdapterV2.ts";
-import { claudeTaskOutputRoot } from "./ClaudeTaskOutputTail.ts";
+} from "@t3tools/provider-claude/server/ClaudeExecutable";
+import * as ClaudeAdapterV2 from "@t3tools/provider-claude/server/adapter";
+import { claudeTaskOutputRoot } from "@t3tools/provider-claude/server/ClaudeTaskOutputTail";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderInstallationGate from "../../provider/ProviderInstallationGate.ts";
 import { ProviderAdapterDriverCreateError } from "@t3tools/provider-core/server/adapterDriver";
@@ -1051,7 +1051,7 @@ function layerClaudeProviderAdapterRegistryReplay(
               enabled: true,
               config: DEFAULT_CLAUDE_SETTINGS,
             },
-            {},
+            { attachmentsDir: tmpRoot },
           ).pipe(Effect.map((adapter) => [adapter])),
         ),
       ),

@@ -14,38 +14,34 @@ import * as Stream from "effect/Stream";
 import { HttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 
-import { makeClaudeTextGeneration } from "../../textGeneration/ClaudeTextGeneration.ts";
+import { makeClaudeTextGeneration } from "./textGeneration.ts";
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
-import * as ServerConfig from "../../config.ts";
+import * as ProviderInstallationGate from "@t3tools/provider-core/server/ProviderInstallationGate";
+
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
-import {
-  createClaudeAdapterV2,
-  type ClaudeAdapterV2DriverEnv,
-} from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
-import { ProviderDriverError } from "../Errors.ts";
-import { claudeUsageReader } from "./claudeUsage.ts";
-import { makeClaudeScopedLimitNames } from "../claudeUsageLimits.ts";
-import * as ClaudeResetCredits from "../claudeResetCredits.ts";
-import * as ResetCreditCoordinator from "../resetCreditCoordinator.ts";
+import { createClaudeAdapterV2, type ClaudeAdapterV2DriverEnv } from "./adapter.ts";
+import { ProviderDriverError } from "@t3tools/provider-core/server/errors";
+import { claudeUsageReader } from "./usage.ts";
+import { makeClaudeScopedLimitNames } from "./claudeUsageLimits.ts";
+import * as ClaudeResetCredits from "./resetCredits.ts";
+import * as ResetCreditCoordinator from "@t3tools/provider-core/server/resetCreditCoordinator";
 import {
   checkClaudeProviderStatus,
   makePendingClaudeProvider,
   probeClaudeCapabilities,
   probeClaudeWorkspaceSnapshot,
   type ClaudeCapabilitiesProbe,
-} from "../ClaudeProvider.ts";
+} from "./provider.ts";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
 import * as ModelCatalog from "@t3tools/provider-core/server/ModelCatalog";
 import {
   resolveClaudeModelCatalog,
   scopeClaudeUpgradeMessageToChannel,
-} from "../ClaudeModelCatalog.ts";
-import {
-  makeClaudeCodeModelRoutes,
-  resolveClaudeModelSettingsKey,
-} from "../ClaudeCodeModelRoutes.ts";
+} from "./ClaudeModelCatalog.ts";
+import { makeClaudeCodeModelRoutes, resolveClaudeModelSettingsKey } from "./codeModelRoutes.ts";
+import type { ServerSettings } from "@t3tools/contracts";
 import {
   defaultProviderContinuationIdentity,
   type ProviderDriver,
@@ -65,7 +61,7 @@ import {
   resolveClaudeHomePath,
 } from "./ClaudeHome.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { makeClaudeMaintenanceResolution } from "./ClaudeMaintenance.ts";
+import { makeClaudeMaintenanceResolution } from "./maintenance.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
@@ -89,7 +85,7 @@ export type ClaudeDriverEnv =
   | ModelCatalog.ModelCatalog
   | Path.Path
   | ProviderEventLoggers.ProviderEventLoggers
-  | ServerConfig.ServerConfig;
+  | ProviderInstallationGate.ProviderInstallationGate;
 
 export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.Path> = {
   driverKind: DRIVER_KIND,
@@ -113,10 +109,16 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     const path = yield* Path.Path;
     // The server cwd is $HOME in packaged desktop builds, and `claude`
     // wrappers that scope themselves to their cwd refuse to run there.
-    const { stateDir } = yield* ServerConfig.ServerConfig;
+    const providerHost = yield* ProviderHost.ProviderHost;
+    const { stateDir, attachmentsDir } = providerHost.paths;
+    const serverSettings = providerHost.settings.get.pipe(
+      Effect.map((settings) => settings as ServerSettings),
+      Effect.catchCause(() => Effect.undefined),
+    );
     const httpClient = yield* HttpClient.HttpClient;
     const latestVersions = yield* ProviderLatestVersions.ProviderLatestVersions;
     const resetCreditCoordinator = yield* ResetCreditCoordinator.ResetCreditCoordinator;
+    const installationGate = yield* ProviderInstallationGate.ProviderInstallationGate;
     const catalogService = yield* ModelCatalog.ModelCatalog;
     const modelCatalog = catalogService
       .current(DRIVER_KIND)
@@ -191,6 +193,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         onSessionInit: (cwd) => Queue.offer(workspaceRescans, cwd).pipe(Effect.asVoid),
         modelCatalog,
         routeModelCatalog: modelRoutes.route,
+        installationGate,
+        serverSettings,
+        resolveExtractedTextPath: (documentPath) =>
+          providerHost.resolveExtractedTextPath?.(documentPath) ?? Effect.undefined,
+        attachmentsDir,
       },
     ).pipe(
       Effect.mapError(
@@ -206,6 +213,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     const textGeneration = yield* makeClaudeTextGeneration(
       effectiveConfig,
       processEnv,
+      attachmentsDir,
       modelCatalog,
       modelRoutes.route,
     );

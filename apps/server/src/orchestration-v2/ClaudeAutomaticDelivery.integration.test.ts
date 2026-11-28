@@ -34,7 +34,7 @@ import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
-import * as ClaudeAdapterV2 from "./Adapters/ClaudeAdapterV2.ts";
+import * as ClaudeAdapterV2 from "@t3tools/provider-claude/server/adapter";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EventSink from "./EventSink.ts";

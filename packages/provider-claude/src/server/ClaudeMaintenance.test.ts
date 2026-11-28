@@ -27,7 +27,7 @@ import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import * as Sink from "effect/Sink";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
-import { makeClaudeMaintenanceResolution } from "./ClaudeMaintenance.ts";
+import { makeClaudeMaintenanceResolution } from "./maintenance.ts";
 
 const snapshot: ServerProvider = {
   instanceId: ProviderInstanceId.make("claude"),

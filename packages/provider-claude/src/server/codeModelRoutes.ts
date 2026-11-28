@@ -9,7 +9,7 @@ import * as Effect from "effect/Effect";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 
-import { claudeLocalSettingsDirectory } from "./Drivers/ClaudeHome.ts";
+import { claudeLocalSettingsDirectory } from "./ClaudeHome.ts";
 import { type ClaudeModelCatalog, withClaudeCodeModelRoutes } from "./ClaudeModelCatalog.ts";
 
 // Env names that pick the backend, its region, or the model a family alias resolves to.

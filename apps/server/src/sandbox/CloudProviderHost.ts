@@ -1,7 +1,11 @@
 // @effect-diagnostics nodeBuiltinImport:off -- SEA exposes the embedded host bundle through node:sea.
 import * as NodeSea from "node:sea";
 
-import { DEFAULT_SERVER_SETTINGS, type ServerSettings } from "@t3tools/contracts";
+import {
+  DEFAULT_SERVER_SETTINGS,
+  ProviderDriverKind,
+  type ServerSettings,
+} from "@t3tools/contracts";
 import type { ProviderAdapterHostPaths } from "@t3tools/provider-core/server/ProviderAdapterHostProtocol";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
@@ -14,6 +18,8 @@ import * as Path from "effect/Path";
  * never runs an adapter or OpenCode release the controller was not built against.
  */
 export const CLOUD_PROVIDER_OPENCODE_VERSION = "2.4.2";
+/** The Claude Code CLI the host spawns; the adapter ships inside the bundle. */
+const CLOUD_PROVIDER_CLAUDE_CODE_VERSION = "2.1.321";
 // E2B's base image ships Node 20; the server CLI requires ^22.16.
 export const CLOUD_PROVIDER_NODE_VERSION = "22.16.0";
 
@@ -41,17 +47,53 @@ export const cloudProviderHostPaths = (
 
 const versionMarker = (version: string) => version.replaceAll(/[^a-zA-Z0-9._-]/g, "_");
 
+const OPENCODE_DRIVER = ProviderDriverKind.make("opencode");
+const CLAUDE_DRIVER = ProviderDriverKind.make("claudeAgent");
+
+/** Runtime packages the host installs for a driver; its binaries land in `<prefix>/bin`. */
+const cloudProviderHostRuntimePackages = (
+  driver: ProviderDriverKind,
+): ReadonlyArray<{
+  readonly packageName: string;
+  readonly version: string;
+  readonly binary: string;
+}> =>
+  driver === CLAUDE_DRIVER
+    ? [
+        {
+          packageName: "@anthropic-ai/claude-code",
+          version: CLOUD_PROVIDER_CLAUDE_CODE_VERSION,
+          binary: "claude",
+        },
+      ]
+    : driver === OPENCODE_DRIVER
+      ? [
+          {
+            packageName: "@opencode/cli",
+            version: CLOUD_PROVIDER_OPENCODE_VERSION,
+            binary: "opencode",
+          },
+        ]
+      : [];
+
+export const cloudProviderHostSupportsDriver = (driver: ProviderDriverKind): boolean =>
+  cloudProviderHostRuntimePackages(driver).length > 0;
+
 /**
- * Installs the pinned Node and OpenCode runtimes into a private prefix instead of
- * the system installation, so the sandbox cannot substitute another version.
+ * Installs the pinned Node and driver runtime into a private prefix instead of the
+ * system installation, so the sandbox cannot substitute another version.
  */
 export const cloudProviderHostInstallCommand = (input: {
   readonly hostDir: string;
-  readonly opencodeVersion: string;
   readonly nodeVersion: string;
+  readonly driver?: ProviderDriverKind;
 }) => {
+  const packages = cloudProviderHostRuntimePackages(input.driver ?? OPENCODE_DRIVER);
   const prefix = `${input.hostDir}/${RUNTIME_DIR}`;
-  const marker = `${prefix}/.installed-${versionMarker(input.nodeVersion)}-${versionMarker(input.opencodeVersion)}`;
+  const marker = `${prefix}/.installed-${[
+    versionMarker(input.nodeVersion),
+    ...packages.map((entry) => versionMarker(`${entry.packageName}@${entry.version}`)),
+  ].join("-")}`;
   const npmFlags = '--global --prefix "$prefix" --no-audit --no-fund --loglevel=error';
   return [
     "set -eu",
@@ -60,11 +102,13 @@ export const cloudProviderHostInstallCommand = (input: {
     `if [ ! -f "$marker" ]; then`,
     `  mkdir -p "$prefix"`,
     `  npm install ${npmFlags} ${shellQuote(`node@${input.nodeVersion}`)}`,
-    `  npm install ${npmFlags} ${shellQuote(`@opencode/cli@${input.opencodeVersion}`)}`,
+    ...packages.map(
+      (entry) => `  npm install ${npmFlags} ${shellQuote(`${entry.packageName}@${entry.version}`)}`,
+    ),
     `  : > "$marker"`,
     "fi",
     `test -x "$prefix/bin/node"`,
-    `test -x "$prefix/bin/opencode"`,
+    ...packages.map((entry) => `test -x "$prefix/bin/${entry.binary}"`),
   ].join("\n");
 };
 
@@ -148,6 +192,20 @@ export const providerHostWebSocketUrl = (accessUrl: string): string => {
   const url = new URL(accessUrl);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   return url.toString();
+};
+
+/** The host owns the Claude CLI; bind it to the runtime installed beside the workspace. */
+export const cloudClaudeHostConfig = (config: unknown, runtimeDir: string): unknown => {
+  const base =
+    typeof config === "object" && config !== null && !Array.isArray(config)
+      ? (config as Readonly<Record<string, unknown>>)
+      : {};
+  return {
+    ...base,
+    binaryPath: `${runtimeDir}/bin/claude`,
+    // A controller home does not exist in the sandbox; the host's own home holds the session.
+    homePath: "",
+  };
 };
 
 /**

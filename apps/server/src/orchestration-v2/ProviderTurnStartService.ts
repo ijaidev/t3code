@@ -40,7 +40,7 @@ import * as ServerConfig from "../config.ts";
 import {
   CLAUDE_PROVIDER,
   CLAUDE_QUERY_ENDED_BEFORE_TURN_DETAIL,
-} from "./Adapters/ClaudeAdapterV2.ts";
+} from "@t3tools/provider-claude/server/adapter";
 import { withTurnStartReservation, withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -2349,7 +2349,8 @@ export const layer: Layer.Layer<
       });
       const native =
         Option.isSome(cloudProviderRuntime) &&
-        cloudProviderRuntime.value.supports(providerThread.driver);
+        cloudProviderRuntime.value.supports(providerThread.driver) &&
+        !providerThread.nativeThreadRef?.nativeId?.startsWith("cloud:");
       // Legacy hosts keep their existing recovery even if newer projection records are absent.
       if (!native) {
         yield* Effect.gen(function* () {

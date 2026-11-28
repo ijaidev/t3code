@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 
 import { parseRateTable, priceUsage } from "../../usage/usagePricing.ts";
-import { claudeUsageFormat, parseClaudeLine } from "./claudeUsage.ts";
+import { claudeUsageFormat, parseClaudeLine } from "@t3tools/provider-claude/server/usage";
 
 function claudeLine(overrides: {
   messageId: string;

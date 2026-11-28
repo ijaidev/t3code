@@ -3,7 +3,6 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
-import type { ChatAttachment } from "@t3tools/contracts";
 import {
   htmlRenderFromToolItem,
   mcpAppFromToolItem,
@@ -11,13 +10,32 @@ import {
 } from "@t3tools/shared/toolOutput";
 
 import {
+  ATTACHMENT_ID_THREAD_SEGMENT_MAX_CHARS,
+  attachmentFileExtension,
+  attachmentRelativePath,
+  createAttachmentId,
+  PENDING_ATTACHMENT_THREAD_SEGMENT,
+  resolveAttachmentPath,
+  toSafeThreadAttachmentSegment,
+} from "@t3tools/provider-core/server/attachments";
+import {
   normalizeAttachmentRelativePath,
   resolveAttachmentRelativePath,
-} from "./attachmentPaths.ts";
-import { inferImageExtension, SAFE_IMAGE_FILE_EXTENSIONS } from "./imageMime.ts";
+} from "@t3tools/provider-core/server/attachmentPaths";
+import { SAFE_IMAGE_FILE_EXTENSIONS } from "@t3tools/provider-core/server/imageMime";
 
 const ATTACHMENT_FILENAME_EXTENSIONS = [...SAFE_IMAGE_FILE_EXTENSIONS, ".bin"];
-export const ATTACHMENT_ID_THREAD_SEGMENT_MAX_CHARS = 80;
+
+export {
+  ATTACHMENT_ID_THREAD_SEGMENT_MAX_CHARS,
+  attachmentFileExtension,
+  attachmentRelativePath,
+  createAttachmentId,
+  PENDING_ATTACHMENT_THREAD_SEGMENT,
+  resolveAttachmentPath,
+  toSafeThreadAttachmentSegment,
+};
+
 const ATTACHMENT_ID_THREAD_SEGMENT_PATTERN = "[a-z0-9_]+(?:-[a-z0-9_]+)*";
 const ATTACHMENT_ID_UUID_PATTERN = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 const ATTACHMENT_ID_FILE_EXTENSION_PATTERN = "[a-z0-9]{1,10}";
@@ -26,33 +44,8 @@ const ATTACHMENT_ID_PATTERN = new RegExp(
   "i",
 );
 
-export const PENDING_ATTACHMENT_THREAD_SEGMENT = "pending";
 const PENDING_ATTACHMENT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const PARTIAL_UPLOAD_MAX_AGE_MS = 60 * 60 * 1000;
-
-export function toSafeThreadAttachmentSegment(threadId: string): string | null {
-  const segment = threadId
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/gi, "-")
-    .replace(/-+/g, "-")
-    .replace(/^[-_]+|[-_]+$/g, "")
-    .slice(0, ATTACHMENT_ID_THREAD_SEGMENT_MAX_CHARS)
-    .replace(/[-_]+$/g, "");
-  if (segment.length === 0) {
-    return null;
-  }
-  return segment === PENDING_ATTACHMENT_THREAD_SEGMENT ? "_pending" : segment;
-}
-
-export function attachmentFileExtension(fileName: string): string {
-  const extension = NodePath.extname(fileName).toLowerCase();
-  // .part is reserved for pending uploads; the stale-upload sweep would delete stored files.
-  if (extension === ".part" || !/^\.[a-z0-9]{1,10}$/.test(extension)) {
-    return ".bin";
-  }
-  return extension;
-}
 
 function attachmentIdExtensionSuffix(extension: string | undefined): string {
   if (!extension) {
@@ -82,14 +75,6 @@ export function parseAttachmentFileExtension(attachmentId: string): string | nul
     return null;
   }
   return normalizedId.match(ATTACHMENT_ID_PATTERN)?.[3]?.toLowerCase() ?? null;
-}
-
-export function createAttachmentId(threadId: string, extension?: string): string | null {
-  const threadSegment = toSafeThreadAttachmentSegment(threadId);
-  if (!threadSegment) {
-    return null;
-  }
-  return `${threadSegment}-${NodeCrypto.randomUUID()}${attachmentIdExtensionSuffix(extension)}`;
 }
 
 export function createDeterministicAttachmentId(
@@ -144,36 +129,6 @@ export function threadHtmlRenderAttachmentIds(
       parseThreadSegmentFromAttachmentId(attachmentId) === segment
       ? [attachmentId]
       : [];
-  });
-}
-
-export function attachmentRelativePath(attachment: ChatAttachment): string | null {
-  switch (attachment.type) {
-    case "image": {
-      const extension = inferImageExtension({
-        mimeType: attachment.mimeType,
-        fileName: attachment.name,
-      });
-      return `${attachment.id}${extension}`;
-    }
-    case "file":
-      return `${attachment.id}${attachmentFileExtension(attachment.name)}`;
-    default:
-      return null;
-  }
-}
-
-export function resolveAttachmentPath(input: {
-  readonly attachmentsDir: string;
-  readonly attachment: ChatAttachment;
-}): string | null {
-  const relativePath = attachmentRelativePath(input.attachment);
-  if (!relativePath) {
-    return null;
-  }
-  return resolveAttachmentRelativePath({
-    attachmentsDir: input.attachmentsDir,
-    relativePath,
   });
 }
 

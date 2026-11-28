@@ -1,3 +1,8 @@
-import { runProviderAdapterHostMain } from "./sandbox/ProviderAdapterHostMain.ts";
+import {
+  runClaudeHistoryWorkerIfRequested,
+  runProviderAdapterHostMain,
+} from "./sandbox/ProviderAdapterHostMain.ts";
 
-await runProviderAdapterHostMain();
+if (!(await runClaudeHistoryWorkerIfRequested())) {
+  await runProviderAdapterHostMain();
+}
