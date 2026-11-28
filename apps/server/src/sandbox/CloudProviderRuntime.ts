@@ -31,6 +31,10 @@ import * as CloudThreads from "./CloudThreads.ts";
 
 const CLAUDE_DRIVER = ProviderDriverKind.make("claudeAgent");
 
+/** The Python host stored a synthetic native id; Claude Code has no such conversation. */
+const isLegacyCloudNativeThreadId = (nativeId: string | null | undefined): boolean =>
+  nativeId?.startsWith("cloud:") ?? false;
+
 export interface CloudProviderRuntimeOpenInput {
   readonly threadId: ThreadId;
   readonly providerSessionId: ProviderSessionId;
@@ -40,6 +44,8 @@ export interface CloudProviderRuntimeOpenInput {
   /** The provider instance's own settings, decoded by the controller. */
   readonly config: unknown;
   readonly settings: ServerSettings;
+  /** Existing native thread to resume, when the session reattaches to a stored thread. */
+  readonly initialNativeThreadId?: string;
 }
 
 export class CloudProviderRuntime extends Context.Service<
@@ -77,6 +83,31 @@ const make = Effect.gen(function* () {
         detail: "No cloud sandbox is recorded for this thread.",
       });
     }
+    if (isLegacyCloudNativeThreadId(input.initialNativeThreadId)) {
+      return yield* new ProviderAdapterProtocolError({
+        driver: base.driver,
+        detail:
+          "This thread started on the retired Claude cloud host. Start a new cloud thread for this project to continue with the native Claude harness.",
+      });
+    }
+    const workspacePath = record.value.workspacePath;
+    const sandboxRuntimePolicy = (policy: ProviderAdapterV2RuntimePolicy) => ({
+      ...policy,
+      cwd: workspacePath,
+      ...(policy.workspace === undefined
+        ? {}
+        : {
+            workspace: {
+              ...policy.workspace,
+              folders: policy.workspace.folders.map((folder) => ({
+                ...folder,
+                path: workspacePath,
+              })),
+              // The controller's other roots do not exist in the sandbox.
+              extraRoots: [],
+            },
+          }),
+    });
     const runtimeDir = CloudProviderHost.cloudProviderHostRuntimeDir(record.value.homePath);
     const host = yield* cloudThreads
       .openProviderHost(input.threadId, {
@@ -106,7 +137,7 @@ const make = Effect.gen(function* () {
       threadId: input.threadId,
       providerSessionId: input.providerSessionId,
       modelSelection: input.modelSelection,
-      runtimePolicy: input.runtimePolicy,
+      runtimePolicy: sandboxRuntimePolicy(input.runtimePolicy),
     });
 
     const stageAttachments = Effect.fn("CloudProviderRuntime.stageAttachments")(function* (
@@ -139,7 +170,12 @@ const make = Effect.gen(function* () {
     const startTurn = (turnInput: ProviderAdapterV2TurnInput) =>
       beginTurn.pipe(
         Effect.andThen(stageAttachments(turnInput.message.attachments)),
-        Effect.andThen(runtime.startTurn(turnInput)),
+        Effect.andThen(
+          runtime.startTurn({
+            ...turnInput,
+            runtimePolicy: sandboxRuntimePolicy(turnInput.runtimePolicy),
+          }),
+        ),
         Effect.onError(() => cloudThreads.endTurn(input.threadId)),
       );
     const compactNativeThread = runtime.compactThread;
@@ -149,7 +185,12 @@ const make = Effect.gen(function* () {
         : (turnInput: ProviderAdapterV2TurnInput) =>
             beginTurn.pipe(
               Effect.andThen(stageAttachments(turnInput.message.attachments)),
-              Effect.andThen(compactNativeThread(turnInput)),
+              Effect.andThen(
+                compactNativeThread({
+                  ...turnInput,
+                  runtimePolicy: sandboxRuntimePolicy(turnInput.runtimePolicy),
+                }),
+              ),
               Effect.onError(() => cloudThreads.endTurn(input.threadId)),
             );
     const resumeNativeTurn = runtime.resumeTurn;
@@ -158,9 +199,34 @@ const make = Effect.gen(function* () {
         ? undefined
         : (turnInput: ProviderAdapterV2ResumeTurnInput) =>
             beginTurn.pipe(
-              Effect.andThen(resumeNativeTurn(turnInput)),
+              Effect.andThen(
+                resumeNativeTurn({
+                  ...turnInput,
+                  runtimePolicy: sandboxRuntimePolicy(turnInput.runtimePolicy),
+                }),
+              ),
               Effect.onError(() => cloudThreads.endTurn(input.threadId)),
             );
+
+    const ensureThread: ProviderAdapterV2SessionRuntime["ensureThread"] = (ensureInput) =>
+      runtime.ensureThread({
+        ...ensureInput,
+        runtimePolicy: sandboxRuntimePolicy(ensureInput.runtimePolicy),
+      });
+    const resumeThread: ProviderAdapterV2SessionRuntime["resumeThread"] = (resumeInput) =>
+      runtime.resumeThread({
+        ...resumeInput,
+        ...(resumeInput.runtimePolicy === undefined
+          ? {}
+          : { runtimePolicy: sandboxRuntimePolicy(resumeInput.runtimePolicy) }),
+      });
+    const forkThread: ProviderAdapterV2SessionRuntime["forkThread"] = (forkInput) =>
+      runtime.forkThread({
+        ...forkInput,
+        ...(forkInput.runtimePolicy === undefined
+          ? {}
+          : { runtimePolicy: sandboxRuntimePolicy(forkInput.runtimePolicy) }),
+      });
 
     return {
       ...runtime,
@@ -169,6 +235,9 @@ const make = Effect.gen(function* () {
           event.type === "turn.terminal" ? cloudThreads.endTurn(input.threadId) : Effect.void,
         ),
       ),
+      ensureThread,
+      resumeThread,
+      forkThread,
       startTurn,
       ...(compactThread === undefined ? {} : { compactThread }),
       ...(resumeTurn === undefined ? {} : { resumeTurn }),

@@ -2349,7 +2349,8 @@ export const layer: Layer.Layer<
       });
       const native =
         Option.isSome(cloudProviderRuntime) &&
-        cloudProviderRuntime.value.supports(providerThread.driver);
+        cloudProviderRuntime.value.supports(providerThread.driver) &&
+        !providerThread.nativeThreadRef?.nativeId?.startsWith("cloud:");
       // Legacy hosts keep their existing recovery even if newer projection records are absent.
       if (!native) {
         yield* Effect.gen(function* () {

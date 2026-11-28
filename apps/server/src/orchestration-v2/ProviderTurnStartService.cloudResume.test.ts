@@ -60,7 +60,7 @@ const layerFor = (input: {
   }) => Effect.Effect<ProviderAdapter.ProviderAdapterV2SessionRuntime, unknown>;
   readonly startRootRun: (
     runInput: RunExecutionService.RunExecutionServiceV2StartRootRunInput,
-  ) => Effect.Effect<void>;
+  ) => Effect.Effect<void, unknown>;
   readonly supports?: boolean;
   readonly close?: () => Effect.Effect<void>;
   readonly resumeCloudTurn?: () => Effect.Effect<void>;
@@ -113,8 +113,11 @@ const layerFor = (input: {
     ),
   );
 
-const makeProjection = (now: DateTime.Utc): OrchestrationV2ThreadProjection =>
+const makeProjection = (
+  now: DateTime.Utc,
+): OrchestrationV2ThreadProjection & { readonly hasConversation: boolean } =>
   ({
+    hasConversation: true,
     thread: {
       id: threadId,
       runtimeMode: "full-access",
@@ -243,7 +246,7 @@ const makeProjection = (now: DateTime.Utc): OrchestrationV2ThreadProjection =>
         resolvedAt: null,
       },
     ],
-  }) as unknown as OrchestrationV2ThreadProjection;
+  }) as unknown as OrchestrationV2ThreadProjection & { readonly hasConversation: boolean };
 
 const fakeSession = (resumeTurn: () => Effect.Effect<void>) =>
   ({
@@ -321,6 +324,44 @@ it.effect("resumes one native cloud turn and keeps its pending approval", () => 
   });
 });
 
+it.effect("keeps a legacy cloud thread on the legacy host", () => {
+  let opened = 0;
+  let legacyResumed = 0;
+  return Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const base = makeProjection(now);
+    const projection = {
+      ...base,
+      providerThreads: base.providerThreads.map((thread) => ({
+        ...thread,
+        nativeThreadRef: { driver, nativeId: `cloud:${threadId}`, strength: "strong" as const },
+      })),
+    } as OrchestrationV2ThreadProjection;
+    const layer = layerFor({
+      projection: () => projection,
+      open: () => {
+        opened += 1;
+        return Effect.die("a legacy thread must not open the native host");
+      },
+      startRootRun: () => Effect.die("a legacy thread must not start a native run"),
+      resumeCloudTurn: () => {
+        legacyResumed += 1;
+        return Effect.void;
+      },
+    });
+
+    yield* Effect.gen(function* () {
+      yield* (yield* ProviderTurnStart.ProviderTurnStartServiceV2).resumeCloudTurn({
+        threadId,
+        runId,
+      });
+    }).pipe(Effect.provide(layer));
+
+    expect(opened).toBe(0);
+    expect(legacyResumed).toBe(1);
+  });
+});
+
 it.effect("closes a session opened before a failed resume", () => {
   let opened = 0;
   let closed = 0;
@@ -333,7 +374,13 @@ it.effect("closes a session opened before a failed resume", () => {
         opened += 1;
         return Effect.succeed(session);
       },
-      startRootRun: () => Effect.fail(new Error("terminal write failed")),
+      startRootRun: () =>
+        Effect.fail(
+          new ProviderTurnStart.ProviderTurnStartError({
+            runId,
+            cause: new Error("terminal write failed"),
+          }),
+        ),
       close: () => {
         closed += 1;
         return Effect.void;

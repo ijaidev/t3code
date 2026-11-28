@@ -3361,6 +3361,9 @@ export const layerWithOptions = (
                         environment,
                         config: instanceConfig,
                         settings,
+                        ...(input.initialNativeThreadId === undefined
+                          ? {}
+                          : { initialNativeThreadId: input.initialNativeThreadId }),
                       },
                       adapter,
                     );

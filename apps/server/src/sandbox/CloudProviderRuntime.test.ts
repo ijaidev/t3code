@@ -289,6 +289,121 @@ describe("cloud provider runtime", () => {
     }),
   );
 
+  it.effect("refuses to resume a retired cloud-host thread natively", () =>
+    Effect.gen(function* () {
+      const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
+      const adapter = makeFakeAdapter(events);
+      const cloud = {
+        getRecord: () => Effect.succeedSome(record),
+        openProviderHost: () => Effect.die("a legacy thread must not start the native host"),
+      } as unknown as CloudThreads.CloudThreads["Service"];
+
+      return yield* Effect.gen(function* () {
+        const service = yield* CloudProviderRuntime.CloudProviderRuntime;
+        const failure = yield* service
+          .openSession(
+            {
+              threadId,
+              providerSessionId: ProviderSessionId.make("session-1"),
+              modelSelection,
+              runtimePolicy: {
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                cwd: "/Users/me/project",
+              },
+              environment: [],
+              config: { binaryPath: "/usr/local/bin/opencode", customModels: [] },
+              settings: DEFAULT_SERVER_SETTINGS,
+              initialNativeThreadId: `cloud:${threadId}`,
+            },
+            adapter,
+          )
+          .pipe(Effect.flip);
+        expect(failure._tag).toBe("ProviderAdapterProtocolError");
+        expect(failure.detail).toContain("Start a new cloud thread");
+      }).pipe(Effect.scoped, Effect.provide(testLayer(cloud)));
+    }),
+  );
+
+  it.effect("rewrites controller workspace paths to the sandbox workspace", () =>
+    Effect.gen(function* () {
+      const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
+      const controllerCwd = "/Users/me/project";
+      let openedPolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy | null = null;
+      let turnPolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy | null = null;
+      const session = makeFakeSession(events);
+      const trackedSession: ProviderAdapter.ProviderAdapterV2SessionRuntime = {
+        ...session,
+        startTurn: (input) => {
+          turnPolicy = input.runtimePolicy;
+          return Effect.void;
+        },
+      };
+      const adapter = {
+        ...makeFakeAdapter(events),
+        openSession: (input: {
+          readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
+        }) => {
+          openedPolicy = input.runtimePolicy;
+          return Effect.succeed(trackedSession);
+        },
+      } as unknown as ProviderAdapter.ProviderAdapterV2["Service"];
+      const cloud = {
+        getRecord: () => Effect.succeedSome(record),
+        openProviderHost: () =>
+          Effect.succeed({
+            adapter,
+            paths,
+            protocolVersion: "1",
+            hostVersion: "t3-provider-adapter-host-v1",
+            close: Effect.void,
+          }),
+        beginTurn: () => Effect.void,
+        endTurn: () => Effect.void,
+      } as unknown as CloudThreads.CloudThreads["Service"];
+      const workspace = {
+        folders: [{ name: "project", path: controllerCwd, isGitRepository: true }],
+        extraRoots: [`${controllerCwd}/extra`],
+      };
+
+      return yield* Effect.gen(function* () {
+        const service = yield* CloudProviderRuntime.CloudProviderRuntime;
+        const runtime = yield* service.openSession(
+          {
+            threadId,
+            providerSessionId: ProviderSessionId.make("session-1"),
+            modelSelection,
+            runtimePolicy: {
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              cwd: controllerCwd,
+              workspace,
+            },
+            environment: [],
+            config: { binaryPath: "/usr/local/bin/opencode", customModels: [] },
+            settings: DEFAULT_SERVER_SETTINGS,
+          },
+          adapter,
+        );
+        expect(openedPolicy?.cwd).toBe(paths.cwd);
+        expect(openedPolicy?.workspace?.folders[0]?.path).toBe(paths.cwd);
+        expect(openedPolicy?.workspace?.extraRoots).toEqual([]);
+
+        yield* runtime.startTurn({
+          ...makeTurnInput("unused"),
+          runtimePolicy: {
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            cwd: controllerCwd,
+            workspace,
+          },
+        });
+        expect(turnPolicy?.cwd).toBe(paths.cwd);
+        expect(turnPolicy?.workspace?.folders[0]?.path).toBe(paths.cwd);
+      }).pipe(Effect.scoped, Effect.provide(testLayer(cloud)));
+    }),
+  );
+
   it.effect("binds Claude settings to the sandbox runtime", () =>
     Effect.gen(function* () {
       const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
