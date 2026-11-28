@@ -46,8 +46,6 @@ import {
   summarizeProviderEvent,
 } from "@t3tools/provider-core/server/providerEventLogging";
 
-export { boundProviderEventForLogging, shouldPersistProviderEvent };
-
 export type EventNdjsonStream = "native" | "canonical" | "orchestration";
 
 export interface EventNdjsonLogStore {

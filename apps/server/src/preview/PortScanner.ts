@@ -75,17 +75,12 @@ export class PortDiscovery extends Context.Service<
  * Agents launch with this set to their thread, and every job they start inherits it, so a
  * server stays attributed after its launching shell exits or the agent settles.
  */
-import { AGENT_THREAD_ENV } from "@t3tools/provider-core/server/ports";
+import {
+  AGENT_THREAD_ENV,
+  type AgentCommandStopWatcher,
+} from "@t3tools/provider-core/server/ports";
 
-export { AGENT_THREAD_ENV };
-
-export interface AgentCommandStopWatcher {
-  /** The variable the CLI sets on each command it starts, naming that command. */
-  readonly variable: string;
-  readonly onStop: (command: string) => Effect.Effect<void>;
-  /** The signal never reached the command, so it is still running or ended by itself. */
-  readonly onStopAbandoned: (command: string) => Effect.Effect<void>;
-}
+export { AGENT_THREAD_ENV, type AgentCommandStopWatcher };
 
 /** `0` turns off listener discovery; configured preview URLs are still probed. */
 const PORT_DISCOVERY_ENV = "T3CODE_PORT_DISCOVERY";

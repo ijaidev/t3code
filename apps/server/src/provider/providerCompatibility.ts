@@ -1,11 +1,8 @@
 import {
   type ProviderDriverKind,
-  type ProviderInstanceId,
   type ServerProvider,
   type ServerProviderCompatibilityAdvisory,
-  ProviderSetupError,
 } from "@t3tools/contracts";
-import { brokenVersionDetail } from "@t3tools/provider-core/server/compatibility";
 import {
   ProviderCompatibilityPolicy,
   resolveProviderCompatibility as resolveCompatibility,
@@ -13,6 +10,7 @@ import {
 import packageJson from "../../package.json" with { type: "json" };
 
 export { ProviderCompatibilityPolicy };
+export { brokenRuntimeError } from "@t3tools/provider-core/server/compatibility";
 
 export const resolveProviderCompatibility = (
   policies: Parameters<typeof resolveCompatibility>[0],
@@ -21,20 +19,6 @@ export const resolveProviderCompatibility = (
   t3CodeVersion = packageJson.version,
 ): ServerProviderCompatibilityAdvisory | undefined =>
   resolveCompatibility(policies, driver, version, t3CodeVersion);
-
-/** The one refusal for a runtime the policy rates `broken`; `action` names how this runtime is updated. */
-export function brokenRuntimeError(input: {
-  readonly instanceId: ProviderInstanceId;
-  readonly name: string;
-  readonly version: string;
-  readonly advisory: ServerProviderCompatibilityAdvisory | undefined;
-  readonly action?: string;
-}): ProviderSetupError | undefined {
-  const detail = brokenVersionDetail(input);
-  return detail === undefined
-    ? undefined
-    : new ProviderSetupError({ instanceId: input.instanceId, operation: "runtime", detail });
-}
 
 export function applyProviderCompatibility(
   snapshot: ServerProvider,

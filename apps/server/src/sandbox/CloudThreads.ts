@@ -1348,40 +1348,22 @@ const make = Effect.gen(function* () {
       });
       return yield* Effect.gen(function* () {
         const { account, driver } = yield* resolveSandbox(sandbox, "prepare");
-        const writeFile = driver.writeFile;
-        if (writeFile === undefined || driver.startProcess === undefined) {
+        if (driver.writeFile === undefined || driver.startProcess === undefined) {
           return yield* cleanup("This sandbox provider cannot run a cloud thread host.");
         }
         const home = yield* run(sandbox, driver, account, 'printf %s "$HOME"', "prepare");
         const homePath = home.stdout.trim();
         if (homePath === "") return yield* cleanup("The sandbox did not report a home directory.");
-        const hostPath = `${homePath}/${HOST_SCRIPT_PATH}`;
         const workspacePath = `${homePath}/${THREADS_DIR}/${input.threadId}`;
         yield* run(
           sandbox,
           driver,
           account,
-          `mkdir -p ${shellQuote(`${homePath}/.t3/thread-host`)} ${shellQuote(`${homePath}/${THREADS_DIR}`)}`,
+          `mkdir -p ${shellQuote(`${homePath}/${THREADS_DIR}`)}`,
           "prepare",
         );
-        yield* writeFile({
-          account,
-          providerSandboxId: sandbox.providerSandboxId!,
-          path: hostPath,
-          data: CLOUD_THREAD_HOST_SCRIPT,
-        }).pipe(
-          Effect.mapError(
-            (error) =>
-              new CloudThreadError({
-                operation: "prepare",
-                threadId: input.threadId,
-                detail: error.detail,
-              }),
-          ),
-          Effect.catchTags({
-            CloudThreadError: (error) => cleanup(error.detail, error),
-          }),
-        );
+        // New threads run a native provider host. The retired Python host is installed
+        // only when a legacy thread starts it, so a fresh sandbox never carries it.
         // A public clone must not receive a credential at all. Probe first, then resolve only for
         // a remote that asks for authentication; a private clone retries with the app credential.
         const probe = yield* driver
@@ -1810,6 +1792,13 @@ const make = Effect.gen(function* () {
         });
       }
       // Re-upload on every start: the agent can edit anything it can read.
+      yield* run(
+        sandbox,
+        driver,
+        account,
+        `mkdir -p ${shellQuote(`${homePath}/.t3/thread-host`)}`,
+        "start-host",
+      );
       yield* writeFile({
         account,
         providerSandboxId: sandbox.providerSandboxId,

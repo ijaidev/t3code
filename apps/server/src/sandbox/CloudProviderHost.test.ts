@@ -31,6 +31,19 @@ describe("cloud provider host", () => {
     expect(command).toContain('test -x "$prefix/bin/claude"');
   });
 
+  it("installs the pinned Codex CLI for a Codex host", () => {
+    const command = CloudProviderHost.cloudProviderHostInstallCommand({
+      hostDir: "/home/t3/.t3/provider-host",
+      nodeVersion: "22.16.0",
+      driver: "codex" as never,
+    });
+
+    expect(command).toContain("'node@22.16.0'");
+    expect(command).toContain("'@openai/codex@0.166.0'");
+    expect(command).not.toContain("@opencode/cli");
+    expect(command).toContain('test -x "$prefix/bin/codex"');
+  });
+
   it("replaces only the host named by its own pid file", () => {
     const command = CloudProviderHost.cloudProviderHostStartCommand({
       hostDir: "/home/t3/.t3/provider-host",
@@ -113,6 +126,27 @@ describe("cloud provider host", () => {
       binaryPath: "/home/t3/.t3/provider-host/runtime/bin/claude",
       homePath: "",
       launchArgs: "--chrome",
+    });
+  });
+
+  it("binds Codex to the sandbox runtime and home", () => {
+    expect(
+      CloudProviderHost.cloudCodexHostConfig(
+        {
+          binaryPath: "/Users/me/.local/bin/codex",
+          homePath: "/Users/me/.codex",
+          shadowHomePath: "/Users/me/.codex-t3/work",
+          launchArgs: "--search",
+          customModels: [],
+        },
+        "/home/t3/.t3/provider-host/runtime",
+      ),
+    ).toEqual({
+      binaryPath: "/home/t3/.t3/provider-host/runtime/bin/codex",
+      homePath: "",
+      shadowHomePath: "",
+      launchArgs: "--search",
+      customModels: [],
     });
   });
 

@@ -195,43 +195,48 @@ const makeState = (overrides: Partial<FakeState> = {}) =>
   });
 
 describe("cloud threads", () => {
-  it.effect("provisions one sandbox, writes the host, and clones the selected branch", () => {
-    const state = Effect.gen(function* () {
-      const fake = yield* makeState();
-      const driver = fakeDriver(fake);
-      return yield* Effect.gen(function* () {
-        yield* connect;
-        const cloud = yield* CloudThreads.CloudThreads;
-        const sandbox = yield* cloud.prepare({
-          threadId,
-          accountId,
-          cloneUrl: "https://github.com/example/public.git",
-          baseRef: "main",
-          branch: "main",
-        });
-        expect(sandbox.threadId).toBe(threadId);
-        expect(sandbox.status).toBe("running");
-        expect(fake.created).toBe(1);
-        const execs = yield* Ref.get(fake.execs);
-        expect(execs.some((command) => command.includes("git clone --branch 'main'"))).toBe(true);
-        expect(execs.some((command) => command.includes("--single-branch"))).toBe(false);
-        expect(
-          execs.some((command) => command.includes("https://github.com/example/public.git")),
-        ).toBe(true);
-        const writes = yield* Ref.get(fake.writes);
-        expect(writes.some((path) => path.endsWith("/.t3/thread-host/thread-host.py"))).toBe(true);
-        const lifecycle = yield* SandboxLifecycle.SandboxLifecycle;
-        const listed = yield* lifecycle.listTestSandboxes;
-        expect(listed.sandboxes).toEqual([]);
-        const record = yield* cloud.getRecord(threadId);
-        expect(record._tag).toBe("Some");
-        if (record._tag === "Some") {
-          expect(record.value.workspacePath).toBe(`/home/t3/.t3/threads/${threadId}`);
-        }
-      }).pipe(Effect.provide(testLayer(driver)));
-    });
-    return state;
-  });
+  it.effect(
+    "provisions one sandbox, clones the selected branch, and installs no retired host",
+    () => {
+      const state = Effect.gen(function* () {
+        const fake = yield* makeState();
+        const driver = fakeDriver(fake);
+        return yield* Effect.gen(function* () {
+          yield* connect;
+          const cloud = yield* CloudThreads.CloudThreads;
+          const sandbox = yield* cloud.prepare({
+            threadId,
+            accountId,
+            cloneUrl: "https://github.com/example/public.git",
+            baseRef: "main",
+            branch: "main",
+          });
+          expect(sandbox.threadId).toBe(threadId);
+          expect(sandbox.status).toBe("running");
+          expect(fake.created).toBe(1);
+          const execs = yield* Ref.get(fake.execs);
+          expect(execs.some((command) => command.includes("git clone --branch 'main'"))).toBe(true);
+          expect(execs.some((command) => command.includes("--single-branch"))).toBe(false);
+          expect(
+            execs.some((command) => command.includes("https://github.com/example/public.git")),
+          ).toBe(true);
+          const writes = yield* Ref.get(fake.writes);
+          expect(writes.some((path) => path.endsWith("/.t3/thread-host/thread-host.py"))).toBe(
+            false,
+          );
+          const lifecycle = yield* SandboxLifecycle.SandboxLifecycle;
+          const listed = yield* lifecycle.listTestSandboxes;
+          expect(listed.sandboxes).toEqual([]);
+          const record = yield* cloud.getRecord(threadId);
+          expect(record._tag).toBe("Some");
+          if (record._tag === "Some") {
+            expect(record.value.workspacePath).toBe(`/home/t3/.t3/threads/${threadId}`);
+          }
+        }).pipe(Effect.provide(testLayer(driver)));
+      });
+      return state;
+    },
+  );
 
   it.effect("returns the same sandbox when preparation retries after ready", () => {
     const state = Effect.gen(function* () {

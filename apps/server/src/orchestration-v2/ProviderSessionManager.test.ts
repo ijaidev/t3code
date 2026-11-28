@@ -6127,6 +6127,57 @@ it.effect("opens a supported cloud thread through the sandbox provider runtime",
   }),
 );
 
+it.effect("refuses a cloud thread whose driver has no native host instead of starting Python", () =>
+  Effect.gen(function* () {
+    const testState = yield* Ref.make(emptyState);
+    const legacyOpened = yield* Ref.make(0);
+    const cloudRuntime = CloudThreadRuntime.CloudThreadRuntime.of({
+      hasThread: () => Effect.succeed(true),
+      openSession: () =>
+        Ref.update(legacyOpened, (count) => count + 1).pipe(
+          Effect.andThen(Effect.die("the legacy cloud host must not run")),
+        ),
+    } as unknown as CloudThreadRuntime.CloudThreadRuntime["Service"]);
+    const cloudProviderRuntime = CloudProviderRuntime.CloudProviderRuntime.of({
+      supports: () => false,
+      openSession: () => Effect.die("unsupported drivers must not open the native host"),
+    } as unknown as CloudProviderRuntime.CloudProviderRuntime["Service"]);
+
+    return yield* Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const threadId = ThreadId.make("thread-provider-session-manager-cloud-unsupported");
+      const providerSessionId = yield* idAllocator.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId,
+      });
+      yield* eventSink.write({
+        events: [
+          yield* makeThreadCreatedEvent({ idAllocator, threadId, now: yield* DateTime.now }),
+        ],
+      });
+      const error = yield* manager
+        .open({ threadId, providerSessionId, modelSelection, runtimePolicy })
+        .pipe(Effect.flip);
+      assert.equal(error._tag, "ProviderSessionOpenError");
+      assert.equal(yield* Ref.get(legacyOpened), 0);
+    }).pipe(
+      Effect.provide(
+        layerTest({
+          state: testState,
+          idleTimeoutMs: 1_000,
+          cloudRuntimeLayer: Layer.succeed(CloudThreadRuntime.CloudThreadRuntime, cloudRuntime),
+          cloudProviderRuntimeLayer: Layer.succeed(
+            CloudProviderRuntime.CloudProviderRuntime,
+            cloudProviderRuntime,
+          ),
+        }),
+      ),
+    );
+  }),
+);
+
 it.effect("resumes one cloud turn, starts no new turn, and stays busy until it settles", () => {
   return Effect.gen(function* () {
     const testState = yield* Ref.make(emptyState);

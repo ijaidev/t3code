@@ -1000,12 +1000,12 @@ it.effect("settles a resumed turn and its provider turn when the session cannot 
         mockEventSink({
           writeIfRunCurrent: (input) =>
             Effect.sync(() => {
-              writes.push(...(input.events as typeof writes));
+              writes.push(...Array.from(input.events));
               return { committed: true, storedEvents: [] };
             }),
           writeWithEffects: (input) =>
             Effect.sync(() => {
-              writes.push(...(input.events as typeof writes));
+              writes.push(...Array.from(input.events));
               return [];
             }),
         }),

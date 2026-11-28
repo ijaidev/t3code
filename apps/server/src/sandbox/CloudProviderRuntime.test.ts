@@ -466,12 +466,77 @@ describe("cloud provider runtime", () => {
     }),
   );
 
+  it.effect("binds Codex settings to the sandbox runtime", () =>
+    Effect.gen(function* () {
+      const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
+      let opened: CloudThreads.CloudProviderHostInput | null = null;
+      const codexInstanceId = ProviderInstanceId.make("codex");
+      const codexSelection: ModelSelection = {
+        instanceId: codexInstanceId,
+        model: "codex/gpt-5",
+      };
+      const codexDriver = ProviderDriverKind.make("codex");
+      const adapter = {
+        ...makeFakeAdapter(events),
+        driver: codexDriver,
+      } as unknown as ProviderAdapter.ProviderAdapterV2["Service"];
+      const cloud = {
+        getRecord: () => Effect.succeedSome(record),
+        openProviderHost: (_threadId: ThreadId, input: CloudThreads.CloudProviderHostInput) => {
+          opened = input;
+          return Effect.succeed({
+            adapter,
+            paths,
+            protocolVersion: "1",
+            hostVersion: "t3-provider-adapter-host-v1",
+            close: Effect.void,
+          });
+        },
+        beginTurn: () => Effect.void,
+        endTurn: () => Effect.void,
+      } as unknown as CloudThreads.CloudThreads["Service"];
+
+      return yield* Effect.gen(function* () {
+        const service = yield* CloudProviderRuntime.CloudProviderRuntime;
+        yield* service.openSession(
+          {
+            threadId,
+            providerSessionId: ProviderSessionId.make("session-1"),
+            modelSelection: codexSelection,
+            runtimePolicy: {
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              cwd: paths.cwd,
+            },
+            environment: [{ name: "OPENAI_API_KEY", value: "sk-codex-test" }],
+            config: {
+              binaryPath: "/usr/local/bin/codex",
+              homePath: "/home/me/.codex",
+              shadowHomePath: "/home/me/.codex-t3/work",
+            },
+            settings: DEFAULT_SERVER_SETTINGS,
+          },
+          adapter,
+        );
+
+        expect(opened?.driver).toBe(codexDriver);
+        expect(opened?.config).toEqual({
+          binaryPath: "/home/t3/.t3/provider-host/runtime/bin/codex",
+          homePath: "",
+          shadowHomePath: "",
+        });
+        expect(opened?.environment).toEqual([{ name: "OPENAI_API_KEY", value: "sk-codex-test" }]);
+      }).pipe(Effect.scoped, Effect.provide(testLayer(cloud)));
+    }),
+  );
+
   it.effect("refuses providers without a sandbox host implementation", () =>
     Effect.gen(function* () {
       const service = yield* CloudProviderRuntime.CloudProviderRuntime;
       expect(service.supports(driver)).toBe(true);
       expect(service.supports(ProviderDriverKind.make("claudeAgent"))).toBe(true);
-      expect(service.supports(ProviderDriverKind.make("codex"))).toBe(false);
+      expect(service.supports(ProviderDriverKind.make("codex"))).toBe(true);
+      expect(service.supports(ProviderDriverKind.make("cursor"))).toBe(false);
     }).pipe(Effect.provide(testLayer({} as CloudThreads.CloudThreads["Service"]))),
   );
 });

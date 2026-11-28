@@ -3333,6 +3333,7 @@ export const layerWithOptions = (
                 ) {
                   if (
                     input.forceLegacyCloudRuntime !== true &&
+                    input.initialNativeThreadId?.startsWith("cloud:") !== true &&
                     Option.isSome(cloudProviderRuntime) &&
                     cloudProviderRuntime.value.supports(adapter.driver)
                   ) {
@@ -3370,6 +3371,15 @@ export const layerWithOptions = (
                       },
                       adapter,
                     );
+                  }
+                  if (
+                    input.forceLegacyCloudRuntime !== true &&
+                    input.initialNativeThreadId?.startsWith("cloud:") !== true
+                  ) {
+                    return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                      driver: adapter.driver,
+                      detail: `Cloud threads cannot run the ${adapter.driver} provider yet.`,
+                    });
                   }
                   const environment =
                     registry.getResolvedEnvironment === undefined

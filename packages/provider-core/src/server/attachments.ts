@@ -1,11 +1,15 @@
 // @effect-diagnostics nodeBuiltinImport:off -- attachment ids use the platform's path rules.
 import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
 import type { ChatAttachment } from "@t3tools/contracts";
 
-import { resolveAttachmentRelativePath } from "./attachmentPaths.ts";
-import { inferImageExtension } from "./imageMime.ts";
+import {
+  normalizeAttachmentRelativePath,
+  resolveAttachmentRelativePath,
+} from "./attachmentPaths.ts";
+import { inferImageExtension, SAFE_IMAGE_FILE_EXTENSIONS } from "./imageMime.ts";
 
 export const ATTACHMENT_ID_THREAD_SEGMENT_MAX_CHARS = 80;
 const ATTACHMENT_ID_FILE_EXTENSION_PATTERN = "[a-z0-9]{1,10}";
@@ -82,4 +86,38 @@ export function resolveAttachmentPath(input: {
     attachmentsDir: input.attachmentsDir,
     relativePath,
   });
+}
+
+const ATTACHMENT_ID_PATTERN = new RegExp(
+  `^([a-z0-9_]+(?:-[a-z0-9_]+)*)-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:-(${ATTACHMENT_ID_FILE_EXTENSION_PATTERN}))?$`,
+  "i",
+);
+const ATTACHMENT_FILENAME_EXTENSIONS = [...SAFE_IMAGE_FILE_EXTENSIONS, ".bin"];
+
+export function resolveAttachmentPathById(input: {
+  readonly attachmentsDir: string;
+  readonly attachmentId: string;
+}): string | null {
+  const normalizedId = normalizeAttachmentRelativePath(input.attachmentId);
+  if (!normalizedId || normalizedId.includes("/") || normalizedId.includes(".")) {
+    return null;
+  }
+  const fileExtension = normalizedId.match(ATTACHMENT_ID_PATTERN)?.[3]?.toLowerCase();
+  if (fileExtension) {
+    const filePath = resolveAttachmentRelativePath({
+      attachmentsDir: input.attachmentsDir,
+      relativePath: `${normalizedId}.${fileExtension}`,
+    });
+    return filePath && NodeFS.existsSync(filePath) ? filePath : null;
+  }
+  for (const extension of ATTACHMENT_FILENAME_EXTENSIONS) {
+    const maybePath = resolveAttachmentRelativePath({
+      attachmentsDir: input.attachmentsDir,
+      relativePath: `${normalizedId}${extension}`,
+    });
+    if (maybePath && NodeFS.existsSync(maybePath)) {
+      return maybePath;
+    }
+  }
+  return null;
 }

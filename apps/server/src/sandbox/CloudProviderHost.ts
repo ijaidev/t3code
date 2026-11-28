@@ -20,6 +20,8 @@ import * as Path from "effect/Path";
 export const CLOUD_PROVIDER_OPENCODE_VERSION = "2.4.2";
 /** The Claude Code CLI the host spawns; the adapter ships inside the bundle. */
 const CLOUD_PROVIDER_CLAUDE_CODE_VERSION = "2.1.321";
+/** The Codex CLI the host spawns; the adapter ships inside the bundle. */
+const CLOUD_PROVIDER_CODEX_VERSION = "0.166.0";
 // E2B's base image ships Node 20; the server CLI requires ^22.16.
 export const CLOUD_PROVIDER_NODE_VERSION = "22.16.0";
 
@@ -49,6 +51,7 @@ const versionMarker = (version: string) => version.replaceAll(/[^a-zA-Z0-9._-]/g
 
 const OPENCODE_DRIVER = ProviderDriverKind.make("opencode");
 const CLAUDE_DRIVER = ProviderDriverKind.make("claudeAgent");
+const CODEX_DRIVER = ProviderDriverKind.make("codex");
 
 /** Runtime packages the host installs for a driver; its binaries land in `<prefix>/bin`. */
 const cloudProviderHostRuntimePackages = (
@@ -66,15 +69,23 @@ const cloudProviderHostRuntimePackages = (
           binary: "claude",
         },
       ]
-    : driver === OPENCODE_DRIVER
+    : driver === CODEX_DRIVER
       ? [
           {
-            packageName: "@opencode/cli",
-            version: CLOUD_PROVIDER_OPENCODE_VERSION,
-            binary: "opencode",
+            packageName: "@openai/codex",
+            version: CLOUD_PROVIDER_CODEX_VERSION,
+            binary: "codex",
           },
         ]
-      : [];
+      : driver === OPENCODE_DRIVER
+        ? [
+            {
+              packageName: "@opencode/cli",
+              version: CLOUD_PROVIDER_OPENCODE_VERSION,
+              binary: "opencode",
+            },
+          ]
+        : [];
 
 export const cloudProviderHostSupportsDriver = (driver: ProviderDriverKind): boolean =>
   cloudProviderHostRuntimePackages(driver).length > 0;
@@ -205,6 +216,23 @@ export const cloudClaudeHostConfig = (config: unknown, runtimeDir: string): unkn
     binaryPath: `${runtimeDir}/bin/claude`,
     // A controller home does not exist in the sandbox; the host's own home holds the session.
     homePath: "",
+  };
+};
+
+/**
+ * The host owns the Codex CLI and CODEX_HOME. A controller path or auth overlay does
+ * not exist in the sandbox, so the host uses its own home and injected credentials.
+ */
+export const cloudCodexHostConfig = (config: unknown, runtimeDir: string): unknown => {
+  const base =
+    typeof config === "object" && config !== null && !Array.isArray(config)
+      ? (config as Readonly<Record<string, unknown>>)
+      : {};
+  return {
+    ...base,
+    binaryPath: `${runtimeDir}/bin/codex`,
+    homePath: "",
+    shadowHomePath: "",
   };
 };
 

@@ -334,11 +334,12 @@ it.effect("keeps a legacy cloud thread on the legacy host", () => {
     const base = makeProjection(now);
     const projection = {
       ...base,
+      hasConversation: true,
       providerThreads: base.providerThreads.map((thread) => ({
         ...thread,
         nativeThreadRef: { driver, nativeId: `cloud:${threadId}`, strength: "strong" as const },
       })),
-    } as OrchestrationV2ThreadProjection;
+    } as OrchestrationV2ThreadProjection & { readonly hasConversation: boolean };
     const layer = layerFor({
       projection: () => projection,
       open: () => {
@@ -404,7 +405,11 @@ it.effect("fails native recovery clearly when a required record is missing", () 
   let opened = 0;
   return Effect.gen(function* () {
     const now = yield* DateTime.now;
-    const projection = { ...makeProjection(now), messages: [] } as OrchestrationV2ThreadProjection;
+    const projection = {
+      ...makeProjection(now),
+      messages: [],
+      hasConversation: true,
+    } as OrchestrationV2ThreadProjection & { readonly hasConversation: boolean };
     const layer = layerFor({
       projection: () => projection,
       open: () => {
@@ -428,7 +433,11 @@ it.effect("lets the legacy cloud host resume before native-only records are chec
   let resumed = 0;
   return Effect.gen(function* () {
     const now = yield* DateTime.now;
-    const projection = { ...makeProjection(now), messages: [] } as OrchestrationV2ThreadProjection;
+    const projection = {
+      ...makeProjection(now),
+      messages: [],
+      hasConversation: true,
+    } as OrchestrationV2ThreadProjection & { readonly hasConversation: boolean };
     const layer = layerFor({
       projection: () => projection,
       open: () => Effect.die("the native host must not open"),
