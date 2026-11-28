@@ -54,7 +54,9 @@ const providerInstanceId = ProviderInstanceId.make("opencode");
 const driver = ProviderDriverKind.make("opencode");
 
 const layerFor = (input: {
-  readonly projection: () => OrchestrationV2ThreadProjection;
+  readonly projection: () => OrchestrationV2ThreadProjection & {
+    readonly hasConversation: boolean;
+  };
   readonly open: (openInput: {
     readonly resumeCloudTurn?: { readonly providerThreadId: ProviderThreadId };
   }) => Effect.Effect<ProviderAdapter.ProviderAdapterV2SessionRuntime, unknown>;

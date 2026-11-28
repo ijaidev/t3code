@@ -258,6 +258,8 @@ export interface ProviderSessionManagerV2Shape {
     readonly initialProviderItemIdentityVersion?: 2;
     /** Reattaches a cloud turn that kept running in its sandbox while the server restarted. */
     readonly resumeCloudTurn?: CloudThreadRuntime.CloudThreadRuntimeResumeTurn;
+    /** A `cloud:` thread must keep the legacy host even when a native runtime is available. */
+    readonly forceLegacyCloudRuntime?: boolean;
   }) => Effect.Effect<
     ProviderAdapter.ProviderAdapterV2SessionRuntime,
     ProviderSessionManagerV2Error
@@ -3330,6 +3332,7 @@ export const layerWithOptions = (
                   (yield* cloudRuntime.value.hasThread(input.threadId))
                 ) {
                   if (
+                    input.forceLegacyCloudRuntime !== true &&
                     Option.isSome(cloudProviderRuntime) &&
                     cloudProviderRuntime.value.supports(adapter.driver)
                   ) {
@@ -3915,6 +3918,9 @@ export const layerWithOptions = (
               nextItemOrdinal,
               approvals,
             },
+            ...(providerThread.nativeThreadRef?.nativeId?.startsWith("cloud:")
+              ? { forceLegacyCloudRuntime: true }
+              : {}),
           });
         }),
       });

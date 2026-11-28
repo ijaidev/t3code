@@ -6176,6 +6176,14 @@ it.effect("resumes one cloud turn, starts no new turn, and stays busy until it s
         }),
     } as unknown as CloudThreadRuntime.CloudThreadRuntime["Service"]);
     const cloudRuntimeLayer = Layer.succeed(CloudThreadRuntime.CloudThreadRuntime, cloudRuntime);
+    let nativeOpened = 0;
+    const cloudProviderRuntime = CloudProviderRuntime.CloudProviderRuntime.of({
+      supports: () => true,
+      openSession: () => {
+        nativeOpened += 1;
+        return Effect.die("a legacy cloud thread must not open the native host");
+      },
+    } as unknown as CloudProviderRuntime.CloudProviderRuntime["Service"]);
 
     return yield* Effect.gen(function* () {
       const eventSink = yield* EventSink.EventSinkV2;
@@ -6187,7 +6195,13 @@ it.effect("resumes one cloud turn, starts no new turn, and stays busy until it s
         providerInstanceId: modelSelection.instanceId,
         threadId,
       });
-      const providerThread = makeProviderThread({ idAllocator, threadId, providerSessionId, now });
+      const providerThread = makeProviderThread({
+        idAllocator,
+        threadId,
+        providerSessionId,
+        now,
+        nativeThreadId: `cloud:${threadId}`,
+      });
       const runId = idAllocator.derive.run({ threadId, ordinal: 1 });
       const attemptId = idAllocator.derive.runAttempt({ runId, attemptOrdinal: 1 });
       const rootNodeId = idAllocator.derive.rootNode({ runId });
@@ -6346,6 +6360,7 @@ it.effect("resumes one cloud turn, starts no new turn, and stays busy until it s
       );
       yield* manager.resumeCloudTurn({ threadId, runId });
       assert.equal(yield* Ref.get(openCount), 1);
+      assert.equal(nativeOpened, 0);
       assert.equal(yield* Ref.get(startTurnCount), 0);
       assert.deepEqual(yield* Ref.get(resumedApprovalStatuses), ["resolved"]);
       assert.isTrue(yield* manager.isLive(providerSessionId));
@@ -6379,6 +6394,10 @@ it.effect("resumes one cloud turn, starts no new turn, and stays busy until it s
           state: testState,
           idleTimeoutMs: 1_000,
           cloudRuntimeLayer,
+          cloudProviderRuntimeLayer: Layer.succeed(
+            CloudProviderRuntime.CloudProviderRuntime,
+            cloudProviderRuntime,
+          ),
         }),
       ),
     );

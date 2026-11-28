@@ -320,7 +320,9 @@ describe("cloud provider runtime", () => {
           )
           .pipe(Effect.flip);
         expect(failure._tag).toBe("ProviderAdapterProtocolError");
-        expect(failure.detail).toContain("Start a new cloud thread");
+        expect((failure as { readonly detail?: string }).detail).toContain(
+          "Start a new cloud thread",
+        );
       }).pipe(Effect.scoped, Effect.provide(testLayer(cloud)));
     }),
   );
